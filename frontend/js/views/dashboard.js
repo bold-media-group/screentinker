@@ -39,7 +39,7 @@ function renderDeviceCard(device) {
     : null;
 
   return `
-    <div class="device-card" data-device-id="${device.id}" onclick="window.location.hash='/device/${device.id}'">
+    <div class="device-card" draggable="true" data-device-id="${device.id}" data-device-name="${esc(device.name)}" onclick="window.location.hash='/device/${device.id}'">
       <div class="device-card-preview" id="preview-${device.id}">
         ${screenshotUrl
           ? `<img src="${screenshotUrl}" alt="Screenshot" loading="lazy">`
@@ -363,10 +363,12 @@ async function loadDashboard() {
       html += renderGroupSection(g, g.devices, playlists);
     }
 
-    // Render ungrouped devices
+    // Render ungrouped devices. The wrapper is tagged data-ungrouped="1" so
+    // attachGroupHandlers can wire it as a drop target — dropping a device here
+    // removes it from every group it currently belongs to.
     if (ungrouped.length > 0) {
       html += `
-        <div style="margin-bottom:24px">
+        <div class="ungrouped-section" data-ungrouped="1" style="margin-bottom:24px">
           ${groups.length > 0 ? `
           <div style="display:flex;align-items:center;margin-bottom:10px;padding:8px 12px;background:var(--bg-secondary);border-radius:8px;border-left:4px solid var(--text-muted)">
             <strong style="font-size:15px;color:var(--text-muted)">Ungrouped</strong>
@@ -388,6 +390,94 @@ async function loadDashboard() {
 }
 
 function attachGroupHandlers(groupsWithDevices, allDevices) {
+  // Drag-and-drop: device cards are draggable; group sections + the Ungrouped
+  // wrapper are drop targets. Drop on a group adds membership (mirrors the
+  // Manage modal). Drop on Ungrouped removes the device from every group it's
+  // currently a member of.
+  const groupsByDeviceId = new Map();
+  for (const g of groupsWithDevices) {
+    g.memberIds.forEach(id => {
+      if (!groupsByDeviceId.has(id)) groupsByDeviceId.set(id, []);
+      groupsByDeviceId.get(id).push({ id: g.id, name: g.name });
+    });
+  }
+
+  document.querySelectorAll('.device-card').forEach(card => {
+    card.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('text/device-id', card.dataset.deviceId);
+      e.dataTransfer.setData('text/device-name', card.dataset.deviceName || '');
+      e.dataTransfer.effectAllowed = 'move';
+    });
+  });
+
+  function highlightOn(el) { el.style.outline = '2px solid var(--primary)'; el.style.outlineOffset = '2px'; }
+  function highlightOff(el) { el.style.outline = ''; el.style.outlineOffset = ''; }
+
+  document.querySelectorAll('.group-section').forEach(section => {
+    section.addEventListener('dragover', (e) => {
+      if (!e.dataTransfer.types.includes('text/device-id')) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      highlightOn(section);
+    });
+    section.addEventListener('dragleave', (e) => {
+      // Avoid flicker when moving across child elements
+      if (e.target === section) highlightOff(section);
+    });
+    section.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      highlightOff(section);
+      const deviceId = e.dataTransfer.getData('text/device-id');
+      const deviceName = e.dataTransfer.getData('text/device-name') || 'this device';
+      if (!deviceId) return;
+      const groupId = section.dataset.groupId;
+      const targetGroup = groupsWithDevices.find(g => g.id === groupId);
+      if (!targetGroup) return;
+      // Already in this group — no-op.
+      if (targetGroup.memberIds.has(deviceId)) {
+        showToast(`${deviceName} is already in ${targetGroup.name}`, 'info');
+        return;
+      }
+      // If the device is in another group, mirror the Manage modal's confirm.
+      const others = (groupsByDeviceId.get(deviceId) || []).map(g => g.name);
+      if (others.length > 0) {
+        if (!confirm(`${deviceName} is already in: ${others.join(', ')}\n\nAdd it to "${targetGroup.name}" too?`)) return;
+      }
+      try {
+        await api.addDeviceToGroup(groupId, deviceId);
+        showToast(`Moved ${deviceName} to ${targetGroup.name}`, 'success');
+        loadDashboard();
+      } catch (err) { showToast(err.message, 'error'); }
+    });
+  });
+
+  // Ungrouped wrapper: remove device from every group it's in.
+  document.querySelectorAll('[data-ungrouped="1"]').forEach(section => {
+    section.addEventListener('dragover', (e) => {
+      if (!e.dataTransfer.types.includes('text/device-id')) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      highlightOn(section);
+    });
+    section.addEventListener('dragleave', (e) => {
+      if (e.target === section) highlightOff(section);
+    });
+    section.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      highlightOff(section);
+      const deviceId = e.dataTransfer.getData('text/device-id');
+      const deviceName = e.dataTransfer.getData('text/device-name') || 'this device';
+      if (!deviceId) return;
+      const memberships = groupsByDeviceId.get(deviceId) || [];
+      if (memberships.length === 0) return; // already ungrouped
+      try {
+        await Promise.all(memberships.map(m => api.removeDeviceFromGroup(m.id, deviceId)));
+        showToast(`Removed ${deviceName} from ${memberships.length} group${memberships.length !== 1 ? 's' : ''}`, 'success');
+        loadDashboard();
+      } catch (err) { showToast(err.message, 'error'); }
+    });
+  });
+
   // Playlist assignment handlers
   document.querySelectorAll('.group-playlist-select').forEach(select => {
     select.addEventListener('change', async (e) => {
