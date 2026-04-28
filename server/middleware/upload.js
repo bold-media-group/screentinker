@@ -26,10 +26,14 @@ const fileFilter = (req, file, cb) => {
   }
 };
 
+// `defParamCharset: 'utf8'` makes busboy decode multipart filename headers as UTF-8.
+// Default is latin1, which mangles umlauts and other non-ASCII characters
+// (e.g. "Größe.jpg" arrives as "GrÃ¶ÃŸe.jpg" and gets stored that way).
 const upload = multer({
   storage,
   fileFilter,
-  limits: { fileSize: config.maxFileSize }
+  limits: { fileSize: config.maxFileSize },
+  defParamCharset: 'utf8'
 });
 
 module.exports = upload;
