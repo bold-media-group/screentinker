@@ -995,7 +995,13 @@
     }, 2000);
 
     // ==================== Fullscreen ====================
-    document.addEventListener('click', () => {
+    // Only attempt fullscreen on genuine user clicks. Synthetic clicks dispatched
+    // by the remote-control feature (touch forwarding from the dashboard) are not
+    // trusted by the browser and requestFullscreen() rejects with a "Permissions
+    // check failed" / "API can only be initiated by a user gesture" error every
+    // time, spamming the console.
+    document.addEventListener('click', (e) => {
+      if (!e.isTrusted) return;
       if (!document.fullscreenElement && config.paired) {
         document.documentElement.requestFullscreen?.() ||
         document.documentElement.webkitRequestFullscreen?.();
