@@ -11,6 +11,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import com.remotedisplay.player.util.ImageLoader
 import java.io.File
 
 class MediaPlayerManager(
@@ -18,7 +19,8 @@ class MediaPlayerManager(
     private val playerView: PlayerView,
     private val imageView: ImageView,
     private val youtubeWebView: WebView? = null,
-    private val onVideoComplete: () -> Unit
+    private val onVideoComplete: () -> Unit,
+    private val onImageError: (() -> Unit)? = null
 ) {
     private var exoPlayer: ExoPlayer? = null
     private var currentType: MediaType = MediaType.NONE
@@ -89,20 +91,16 @@ class MediaPlayerManager(
 
         exoPlayer?.stop()
 
-        // Load image from URL in background
         Thread {
-            try {
-                val connection = java.net.URL(url).openConnection()
-                connection.connectTimeout = 10000
-                connection.readTimeout = 30000
-                val input = connection.getInputStream()
-                val bitmap = android.graphics.BitmapFactory.decodeStream(input)
-                input.close()
-                if (bitmap != null) {
-                    imageView.post { imageView.setImageBitmap(bitmap) }
+            val bitmap = ImageLoader.decodeUrl(url, ImageLoader.screenWidth(context), ImageLoader.screenHeight(context))
+            if (bitmap != null) {
+                imageView.post {
+                    try { imageView.setImageBitmap(bitmap) }
+                    catch (e: Throwable) { Log.e("MediaPlayerManager", "setImageBitmap failed: ${e.message}"); onImageError?.invoke() }
                 }
-            } catch (e: Exception) {
-                Log.e("MediaPlayerManager", "Remote image load failed: ${e.message}")
+            } else {
+                Log.w("MediaPlayerManager", "Skipping unloadable remote image: $url")
+                imageView.post { onImageError?.invoke() }
             }
         }.start()
     }
@@ -128,24 +126,23 @@ class MediaPlayerManager(
         Log.i("MediaPlayerManager", "Showing image: ${file.absolutePath}")
         currentType = MediaType.IMAGE
 
-        // Show image, hide player
         playerView.visibility = android.view.View.GONE
         imageView.visibility = android.view.View.VISIBLE
         youtubeWebView?.visibility = android.view.View.GONE
 
-        // Stop video if playing
         exoPlayer?.stop()
 
-        // Load image
+        val bitmap = ImageLoader.decodeFile(file, ImageLoader.screenWidth(context), ImageLoader.screenHeight(context))
+        if (bitmap == null) {
+            Log.w("MediaPlayerManager", "Skipping unloadable image: ${file.name}")
+            onImageError?.invoke()
+            return
+        }
         try {
-            val bitmap = android.graphics.BitmapFactory.decodeFile(file.absolutePath)
-            if (bitmap != null) {
-                imageView.setImageBitmap(bitmap)
-            } else {
-                Log.e("MediaPlayerManager", "Failed to decode image: ${file.absolutePath}")
-            }
-        } catch (e: Exception) {
-            Log.e("MediaPlayerManager", "Error loading image: ${e.message}")
+            imageView.setImageBitmap(bitmap)
+        } catch (e: Throwable) {
+            Log.e("MediaPlayerManager", "setImageBitmap failed: ${e.message}")
+            onImageError?.invoke()
         }
     }
 

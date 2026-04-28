@@ -144,10 +144,17 @@ class MainActivity : AppCompatActivity() {
             playerView = playerView,
             imageView = imageView,
             youtubeWebView = youtubeWebView,
-            onVideoComplete = { playlistController.onVideoComplete() }
+            onVideoComplete = { playlistController.onVideoComplete() },
+            onImageError = {
+                Log.w("MainActivity", "Image failed to load, skipping to next item")
+                handler.postDelayed({ playlistController.next() }, 500)
+            }
         )
 
-        // Restore cached playlist for offline cold-start (play immediately from disk cache)
+        // Restore cached playlist for offline cold-start (play immediately from disk cache).
+        // Catch Throwable (not just Exception) so an OOM or corrupt entry can't kill the app
+        // before the WebSocket connects — that's the crash-loop scenario. If the cache is
+        // unusable for any reason, drop it and continue; the server will resend on connect.
         val cachedJson = config.cachedPlaylist
         if (cachedJson.isNotEmpty()) {
             try {
@@ -158,8 +165,9 @@ class MainActivity : AppCompatActivity() {
                     playlistController.updatePlaylist(assignments)
                     playlistController.startIfNeeded()
                 }
-            } catch (e: Exception) {
-                Log.w("MainActivity", "Failed to restore cached playlist: ${e.message}")
+            } catch (e: Throwable) {
+                Log.w("MainActivity", "Failed to restore cached playlist, clearing cache: ${e.message}")
+                try { config.clearPlaylistCache() } catch (_: Throwable) {}
             }
         }
 

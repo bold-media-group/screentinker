@@ -20,6 +20,7 @@
         android:allowBackup="true"
         android:icon="@android:drawable/ic_media_play"
         android:label="RemoteDisplay"
+        android:largeHeap="true"
         android:theme="@style/Theme.RemoteDisplay"
         android:usesCleartextTraffic="true"
         android:supportsRtl="true">

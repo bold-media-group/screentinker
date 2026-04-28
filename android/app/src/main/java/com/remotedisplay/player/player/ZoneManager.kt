@@ -180,22 +180,30 @@ class ZoneManager(
                         layoutParams = params
                     }
 
-                    // Load image
+                    // Target the zone size (already known) so we don't decode larger than the
+                    // visible region. Falls back to screen size if zone hasn't been measured.
+                    val targetW = if (w > 0) w else com.remotedisplay.player.util.ImageLoader.screenWidth(context)
+                    val targetH = if (h > 0) h else com.remotedisplay.player.util.ImageLoader.screenHeight(context)
+
                     val file = contentId?.let { contentCache.getCachedFile(it) }
                     if (file != null) {
-                        val bitmap = android.graphics.BitmapFactory.decodeFile(file.absolutePath)
-                        if (bitmap != null) imageView.setImageBitmap(bitmap)
+                        val bitmap = com.remotedisplay.player.util.ImageLoader.decodeFile(file, targetW, targetH)
+                        if (bitmap != null) {
+                            try { imageView.setImageBitmap(bitmap) }
+                            catch (e: Throwable) { Log.e(TAG, "setImageBitmap failed: ${e.message}") }
+                        } else {
+                            Log.w(TAG, "Zone ${zone.name}: skipping unloadable image $contentId")
+                        }
                     } else if (!remoteUrl.isNullOrEmpty()) {
-                        // Load from URL in background
                         Thread {
-                            try {
-                                val connection = java.net.URL(remoteUrl).openConnection()
-                                val input = connection.getInputStream()
-                                val bitmap = android.graphics.BitmapFactory.decodeStream(input)
-                                input.close()
-                                imageView.post { if (bitmap != null) imageView.setImageBitmap(bitmap) }
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Image load failed: ${e.message}")
+                            val bitmap = com.remotedisplay.player.util.ImageLoader.decodeUrl(remoteUrl, targetW, targetH)
+                            if (bitmap != null) {
+                                imageView.post {
+                                    try { imageView.setImageBitmap(bitmap) }
+                                    catch (e: Throwable) { Log.e(TAG, "setImageBitmap failed: ${e.message}") }
+                                }
+                            } else {
+                                Log.w(TAG, "Zone ${zone.name}: skipping unloadable remote image")
                             }
                         }.start()
                     }
