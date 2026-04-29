@@ -1,10 +1,12 @@
 User-agent: *
 Allow: /
 Allow: /legal/
-Allow: /player/
+Allow: /compare/
+Allow: /guides/
 
 Disallow: /api/
 Disallow: /app
+Disallow: /player
 Disallow: /uploads/
 Disallow: /scripts/
 

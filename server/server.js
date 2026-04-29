@@ -143,6 +143,19 @@ app.get('/app', (req, res) => {
   res.sendFile(path.join(config.frontendDir, 'index.html'));
 });
 
+// Sitemap and robots — served explicitly so the Content-Type is guaranteed
+// and these endpoints are immune to any future static-middleware reshuffle.
+app.get('/sitemap.xml', (req, res) => {
+  res.type('application/xml');
+  res.setHeader('Cache-Control', 'public, max-age=3600'); // 1h, sitemap rarely changes
+  res.sendFile(path.join(config.frontendDir, 'sitemap.xml'));
+});
+app.get('/robots.txt', (req, res) => {
+  res.type('text/plain');
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  res.sendFile(path.join(config.frontendDir, 'robots.txt'));
+});
+
 // Serve frontend static files
 // JS/CSS/HTML: no-cache (always revalidate, uses ETag/304)
 // Images/fonts/icons: long cache for Cloudflare + browser
