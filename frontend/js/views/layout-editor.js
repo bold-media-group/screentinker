@@ -1,5 +1,6 @@
 import { api } from '../api.js';
 import { showToast } from '../components/toast.js';
+import { t, tn } from '../i18n.js';
 
 const API = (url, opts = {}) => fetch('/api' + url, { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}`, ...opts.headers }, ...opts }).then(r => r.json());
 
@@ -15,22 +16,22 @@ export async function render(container) {
 async function renderList(container) {
   container.innerHTML = `
     <div class="page-header">
-      <div><h1>Layouts <span class="help-tip" data-tip="Create multi-zone screen layouts. Use templates or build custom ones. Drag zones to position, resize with corner handle. Assign layouts to devices in the Playlist tab.">?</span></h1><div class="subtitle">Screen layouts and templates</div></div>
+      <div><h1>${t('layout.title')} <span class="help-tip" data-tip="${t('layout.help_tip')}">?</span></h1><div class="subtitle">${t('layout.subtitle')}</div></div>
       <button class="btn btn-primary" id="newLayoutBtn">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        New Layout
+        ${t('layout.new_layout')}
       </button>
     </div>
-    <h3 style="margin-bottom:12px;font-size:14px;color:var(--text-secondary)">Templates</h3>
+    <h3 style="margin-bottom:12px;font-size:14px;color:var(--text-secondary)">${t('layout.templates')}</h3>
     <div class="content-grid" id="templateGrid"></div>
-    <h3 style="margin:24px 0 12px;font-size:14px;color:var(--text-secondary)">My Layouts</h3>
+    <h3 style="margin:24px 0 12px;font-size:14px;color:var(--text-secondary)">${t('layout.my_layouts')}</h3>
     <div class="content-grid" id="layoutGrid"></div>
   `;
 
   document.getElementById('newLayoutBtn').onclick = async () => {
-    const name = prompt('Layout name:');
+    const name = prompt(t('layout.prompt_name'));
     if (!name) return;
-    const layout = await API('/layouts', { method: 'POST', body: JSON.stringify({ name, zones: [{ name: 'Main', x_percent: 0, y_percent: 0, width_percent: 100, height_percent: 100 }] }) });
+    const layout = await API('/layouts', { method: 'POST', body: JSON.stringify({ name, zones: [{ name: t('layout.default_zone_name'), x_percent: 0, y_percent: 0, width_percent: 100, height_percent: 100 }] }) });
     window.location.hash = `#/layout/${layout.id}`;
   };
 
@@ -41,9 +42,8 @@ async function renderList(container) {
 
     document.getElementById('templateGrid').innerHTML = templates.map(l => renderLayoutCard(l, true)).join('');
     document.getElementById('layoutGrid').innerHTML = custom.length ? custom.map(l => renderLayoutCard(l, false)).join('') :
-      '<div class="empty-state" style="grid-column:1/-1"><p>No custom layouts yet</p></div>';
+      `<div class="empty-state" style="grid-column:1/-1"><p>${t('layout.empty_custom')}</p></div>`;
 
-    // Use template click
     container.querySelectorAll('[data-use-template]').forEach(btn => {
       btn.onclick = async () => {
         const layout = await API(`/layouts/${btn.dataset.useTemplate}/duplicate`, { method: 'POST', body: '{}' });
@@ -51,23 +51,21 @@ async function renderList(container) {
       };
     });
 
-    // Edit layout click
     container.querySelectorAll('[data-edit-layout]').forEach(btn => {
       btn.onclick = () => { window.location.hash = `#/layout/${btn.dataset.editLayout}`; };
     });
 
-    // Delete layout click
     container.querySelectorAll('[data-delete-layout]').forEach(btn => {
       btn.onclick = async (e) => {
         e.stopPropagation();
         const name = btn.dataset.layoutName;
-        if (!confirm(`Delete layout "${name}"? This cannot be undone.`)) return;
+        if (!confirm(t('layout.confirm_delete', { name }))) return;
         try {
           await API(`/layouts/${btn.dataset.deleteLayout}`, { method: 'DELETE' });
-          showToast('Layout deleted');
+          showToast(t('layout.toast.deleted'));
           renderList(container);
         } catch (err) {
-          showToast(err.message || 'Failed to delete layout', 'error');
+          showToast(err.message || t('layout.toast.delete_failed'), 'error');
         }
       };
     });
@@ -77,6 +75,8 @@ async function renderList(container) {
 }
 
 function renderLayoutCard(layout, isTemplate) {
+  const zoneCount = layout.zones?.length || 0;
+  const zonesText = tn('layout.zone_count', zoneCount);
   return `
     <div class="content-item" style="cursor:pointer">
       <div class="content-item-preview" style="position:relative;background:var(--bg-primary)">
@@ -90,14 +90,14 @@ function renderLayoutCard(layout, isTemplate) {
       </div>
       <div class="content-item-body">
         <div class="content-item-name">${layout.name}</div>
-        <div class="content-item-size">${layout.zones?.length || 0} zone(s) ${isTemplate ? '• Template' : ''}</div>
+        <div class="content-item-size">${zonesText}${isTemplate ? ' • ' + t('layout.template_label') : ''}</div>
       </div>
       <div class="content-item-actions">
         ${isTemplate
-          ? `<button class="btn btn-primary btn-sm" data-use-template="${layout.id}">Use Template</button>`
-          : `<button class="btn btn-secondary btn-sm" data-edit-layout="${layout.id}">Edit</button>`
+          ? `<button class="btn btn-primary btn-sm" data-use-template="${layout.id}">${t('layout.use_template')}</button>`
+          : `<button class="btn btn-secondary btn-sm" data-edit-layout="${layout.id}">${t('common.edit')}</button>`
         }
-        <button class="btn btn-danger btn-sm" data-delete-layout="${layout.id}" data-layout-name="${layout.name}" style="margin-left:4px">Delete</button>
+        <button class="btn btn-danger btn-sm" data-delete-layout="${layout.id}" data-layout-name="${layout.name}" style="margin-left:4px">${t('common.delete')}</button>
       </div>
     </div>
   `;
@@ -107,44 +107,43 @@ async function renderEditor(container, layoutId) {
   let layout;
   try {
     layout = await API(`/layouts/${layoutId}`);
-  } catch { container.innerHTML = '<div class="empty-state"><h3>Layout not found</h3></div>'; return; }
+  } catch { container.innerHTML = `<div class="empty-state"><h3>${t('layout.not_found')}</h3></div>`; return; }
 
   container.innerHTML = `
     <a href="#/layouts" class="back-link" style="display:inline-flex;align-items:center;gap:6px;color:var(--text-secondary);margin-bottom:16px;font-size:13px">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
-      Back to Layouts
+      ${t('layout.back')}
     </a>
     <div class="page-header">
       <h1 id="layoutName">${layout.name}</h1>
       <div style="display:flex;gap:8px">
-        <button class="btn btn-secondary btn-sm" id="addZoneBtn">Add Zone</button>
-        <button class="btn btn-primary btn-sm" id="saveLayoutBtn">Save</button>
+        <button class="btn btn-secondary btn-sm" id="addZoneBtn">${t('layout.add_zone')}</button>
+        <button class="btn btn-primary btn-sm" id="saveLayoutBtn">${t('common.save')}</button>
       </div>
     </div>
     <div style="display:flex;gap:20px">
       <div style="flex:1">
         <div id="canvasWrap" style="position:relative;background:var(--bg-primary);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden">
           <div id="canvas" style="position:relative;width:100%;padding-top:56.25%">
-            <!-- Zones rendered here -->
           </div>
         </div>
       </div>
       <div style="width:280px">
-        <h3 style="font-size:14px;margin-bottom:12px">Zones</h3>
+        <h3 style="font-size:14px;margin-bottom:12px">${t('layout.zones')}</h3>
         <div id="zoneList"></div>
         <div id="zoneProperties" style="margin-top:16px;display:none">
-          <h3 style="font-size:14px;margin-bottom:12px">Properties</h3>
-          <div class="form-group"><label>Name</label><input type="text" id="propName" class="input"></div>
-          <div class="form-group"><label>X (%)</label><input type="number" id="propX" class="input" min="0" max="100" step="0.1"></div>
-          <div class="form-group"><label>Y (%)</label><input type="number" id="propY" class="input" min="0" max="100" step="0.1"></div>
-          <div class="form-group"><label>Width (%)</label><input type="number" id="propW" class="input" min="1" max="100" step="0.1"></div>
-          <div class="form-group"><label>Height (%)</label><input type="number" id="propH" class="input" min="1" max="100" step="0.1"></div>
-          <div class="form-group"><label>Type</label>
+          <h3 style="font-size:14px;margin-bottom:12px">${t('layout.properties')}</h3>
+          <div class="form-group"><label>${t('layout.prop.name')}</label><input type="text" id="propName" class="input"></div>
+          <div class="form-group"><label>${t('layout.prop.x')}</label><input type="number" id="propX" class="input" min="0" max="100" step="0.1"></div>
+          <div class="form-group"><label>${t('layout.prop.y')}</label><input type="number" id="propY" class="input" min="0" max="100" step="0.1"></div>
+          <div class="form-group"><label>${t('layout.prop.width')}</label><input type="number" id="propW" class="input" min="1" max="100" step="0.1"></div>
+          <div class="form-group"><label>${t('layout.prop.height')}</label><input type="number" id="propH" class="input" min="1" max="100" step="0.1"></div>
+          <div class="form-group"><label>${t('layout.prop.type')}</label>
             <select id="propType" class="input" style="background:var(--bg-input)">
-              <option value="content">Content</option><option value="widget">Widget</option>
+              <option value="content">${t('layout.type_content')}</option><option value="widget">${t('layout.type_widget')}</option>
             </select>
           </div>
-          <button class="btn btn-danger btn-sm" id="deleteZoneBtn" style="width:100%;justify-content:center;margin-top:8px">Delete Zone</button>
+          <button class="btn btn-danger btn-sm" id="deleteZoneBtn" style="width:100%;justify-content:center;margin-top:8px">${t('layout.delete_zone')}</button>
         </div>
       </div>
     </div>
@@ -156,7 +155,6 @@ async function renderEditor(container, layoutId) {
 
   function renderZones() {
     const canvas = document.getElementById('canvas');
-    // Clear only zone divs
     canvas.querySelectorAll('.zone-el').forEach(z => z.remove());
 
     zones.forEach((z, i) => {
@@ -170,7 +168,6 @@ async function renderEditor(container, layoutId) {
         user-select:none;z-index:${z.z_index || 0}`;
       el.textContent = z.name;
 
-      // Drag to move
       el.onmousedown = (e) => {
         if (e.target !== el) return;
         e.preventDefault();
@@ -200,7 +197,6 @@ async function renderEditor(container, layoutId) {
         document.addEventListener('mouseup', onUp);
       };
 
-      // Resize handle
       const handle = document.createElement('div');
       handle.style.cssText = 'position:absolute;right:0;bottom:0;width:12px;height:12px;cursor:se-resize;background:var(--accent);border-radius:2px 0 0 0;opacity:0.7';
       handle.onmousedown = (e) => {
@@ -228,7 +224,6 @@ async function renderEditor(container, layoutId) {
       canvas.appendChild(el);
     });
 
-    // Zone list sidebar
     document.getElementById('zoneList').innerHTML = zones.map((z, i) => `
       <div style="padding:8px 10px;background:${selectedZone === i ? 'var(--bg-card-hover)' : 'var(--bg-secondary)'};
         border:1px solid ${selectedZone === i ? 'var(--accent)' : 'var(--border)'};border-radius:var(--radius);
@@ -256,7 +251,6 @@ async function renderEditor(container, layoutId) {
     document.getElementById('propType').value = z.zone_type;
   }
 
-  // Property input handlers
   ['propName', 'propX', 'propY', 'propW', 'propH', 'propType'].forEach(id => {
     document.getElementById(id).oninput = () => {
       if (selectedZone === null) return;
@@ -272,7 +266,7 @@ async function renderEditor(container, layoutId) {
   });
 
   document.getElementById('addZoneBtn').onclick = () => {
-    zones.push({ id: null, name: `Zone ${zones.length + 1}`, x_percent: 10, y_percent: 10, width_percent: 30, height_percent: 30, z_index: 0, zone_type: 'content', fit_mode: 'cover', background_color: '#000000', sort_order: zones.length });
+    zones.push({ id: null, name: t('layout.zone_n', { n: zones.length + 1 }), x_percent: 10, y_percent: 10, width_percent: 30, height_percent: 30, z_index: 0, zone_type: 'content', fit_mode: 'cover', background_color: '#000000', sort_order: zones.length });
     selectedZone = zones.length - 1;
     renderZones();
     updateProperties();
@@ -288,14 +282,13 @@ async function renderEditor(container, layoutId) {
 
   document.getElementById('saveLayoutBtn').onclick = async () => {
     try {
-      // Delete existing zones and recreate
       for (const z of layout.zones || []) {
         await API(`/layouts/${layoutId}/zones/${z.id}`, { method: 'DELETE' });
       }
       for (const z of zones) {
         await API(`/layouts/${layoutId}/zones`, { method: 'POST', body: JSON.stringify(z) });
       }
-      showToast('Layout saved', 'success');
+      showToast(t('layout.toast.saved'), 'success');
       layout = await API(`/layouts/${layoutId}`);
       zones = layout.zones;
     } catch (err) {
