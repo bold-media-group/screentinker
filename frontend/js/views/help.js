@@ -1,7 +1,13 @@
+import { t } from '../i18n.js';
+
+// Help guides + FAQ are documentation. Page chrome is translated; the body
+// content is intentionally left in English because partial machine
+// translation of multi-paragraph docs reads worse than a single source of
+// truth. A native-language docs site is the right long-term answer.
 export function render(container) {
   container.innerHTML = `
     <div class="page-header">
-      <div><h1>Help Center</h1><div class="subtitle">Quick guides and FAQ</div></div>
+      <div><h1>${t('help.title')}</h1><div class="subtitle">${t('help.subtitle')}</div></div>
     </div>
 
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;margin-bottom:32px">
@@ -25,7 +31,7 @@ export function render(container) {
     </div>
 
     <div class="settings-section">
-      <h3>Frequently Asked Questions</h3>
+      <h3>${t('help.faq')}</h3>
       ${[
         { q: 'What devices are supported?', a: 'Android TV/tablets (APK), Raspberry Pi, Windows, ChromeOS, LG webOS, Samsung Tizen, Fire TV, and any device with a web browser.' },
         { q: 'How does the free trial work?', a: 'New accounts get a 14-day free trial of the Pro plan (15 devices, all features). After 14 days, you\'re moved to the Free plan (1 device) unless you upgrade.' },
@@ -46,10 +52,10 @@ export function render(container) {
     </div>
 
     <div class="settings-section">
-      <h3>Keyboard Shortcuts</h3>
+      <h3>${t('help.shortcuts')}</h3>
       <div style="display:grid;grid-template-columns:auto 1fr;gap:8px 16px;font-size:13px">
-        <kbd style="background:var(--bg-input);padding:2px 8px;border-radius:4px;font-family:monospace">Esc</kbd> <span style="color:var(--text-secondary)">Reset web player (on player page)</span>
-        <kbd style="background:var(--bg-input);padding:2px 8px;border-radius:4px;font-family:monospace">F</kbd> <span style="color:var(--text-secondary)">Toggle fullscreen (web player)</span>
+        <kbd style="background:var(--bg-input);padding:2px 8px;border-radius:4px;font-family:monospace">Esc</kbd> <span style="color:var(--text-secondary)">${t('help.shortcut_esc')}</span>
+        <kbd style="background:var(--bg-input);padding:2px 8px;border-radius:4px;font-family:monospace">F</kbd> <span style="color:var(--text-secondary)">${t('help.shortcut_f')}</span>
       </div>
     </div>
   `;

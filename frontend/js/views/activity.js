@@ -1,16 +1,17 @@
 import { showToast } from '../components/toast.js';
 import { esc } from '../utils.js';
+import { t } from '../i18n.js';
 
 const API = (url) => fetch('/api' + url, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }}).then(r => r.json());
 
 export async function render(container) {
   container.innerHTML = `
     <div class="page-header">
-      <div><h1>Activity Log</h1><div class="subtitle">Audit trail of all actions</div></div>
+      <div><h1>${t('activity.title')}</h1><div class="subtitle">${t('activity.subtitle')}</div></div>
     </div>
-    <div id="activityList"><div class="empty-state"><h3>Loading...</h3></div></div>
+    <div id="activityList"><div class="empty-state"><h3>${t('common.loading')}</h3></div></div>
     <div style="text-align:center;margin-top:16px">
-      <button class="btn btn-secondary btn-sm" id="loadMoreBtn" style="display:none">Load More</button>
+      <button class="btn btn-secondary btn-sm" id="loadMoreBtn" style="display:none">${t('activity.load_more')}</button>
     </div>
   `;
 
@@ -25,14 +26,14 @@ export async function render(container) {
       if (!append) list.innerHTML = '';
 
       if (items.length === 0 && offset === 0) {
-        list.innerHTML = '<div class="empty-state"><h3>No activity yet</h3><p>Actions will appear here as you use the system.</p></div>';
+        list.innerHTML = `<div class="empty-state"><h3>${t('activity.empty_title')}</h3><p>${t('activity.empty_desc')}</p></div>`;
         return;
       }
 
       const html = items.map(item => {
         const time = new Date(item.created_at * 1000);
-        const timeStr = time.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' +
-                        time.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+        const timeStr = time.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' +
+                        time.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
         const icon = getActionIcon(item.action);
 
         return `
@@ -40,7 +41,7 @@ export async function render(container) {
             <div style="width:32px;height:32px;border-radius:50%;background:var(--bg-card);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:14px">${icon}</div>
             <div style="flex:1;min-width:0">
               <div style="font-size:13px">
-                <strong>${esc(item.user_name || item.user_email || 'System')}</strong>
+                <strong>${esc(item.user_name || item.user_email || t('activity.system'))}</strong>
                 <span style="color:var(--text-secondary)"> ${esc(formatAction(item.action))}</span>
               </div>
               ${item.details ? `<div style="font-size:12px;color:var(--text-muted);margin-top:2px">${esc(item.details)}</div>` : ''}
@@ -81,22 +82,29 @@ function getActionIcon(action) {
   return '&#128196;';
 }
 
+// Action verbs are user-visible; translate them through t() so they switch
+// languages with the rest of the UI. The mapping below preserves the original
+// verb-then-noun structure of the English version.
 function formatAction(action) {
-  return action
-    .replace('POST /api/', 'created ')
-    .replace('PUT /api/', 'updated ')
-    .replace('DELETE /api/', 'deleted ')
-    .replace('/provision/pair', 'paired a device')
-    .replace('/content/remote', 'added remote content')
-    .replace('/content', 'content')
-    .replace('/devices/:id', 'device')
-    .replace('/assignments/device/:deviceId', 'playlist assignment')
-    .replace('/assignments/:id', 'assignment')
-    .replace('/layouts', 'layout')
-    .replace('/widgets', 'widget')
-    .replace('/schedules', 'schedule')
-    .replace('/walls', 'video wall')
-    .replace('alert:device_offline', 'alert: device went offline');
+  // Verbs
+  let s = action
+    .replace('POST /api/', t('activity.verb_created') + ' ')
+    .replace('PUT /api/', t('activity.verb_updated') + ' ')
+    .replace('DELETE /api/', t('activity.verb_deleted') + ' ');
+  // Specific endpoints
+  s = s
+    .replace('/provision/pair', t('activity.action_paired_device'))
+    .replace('/content/remote', t('activity.action_added_remote_content'))
+    .replace('/content', t('activity.noun_content'))
+    .replace('/devices/:id', t('activity.noun_device'))
+    .replace('/assignments/device/:deviceId', t('activity.noun_playlist_assignment'))
+    .replace('/assignments/:id', t('activity.noun_assignment'))
+    .replace('/layouts', t('activity.noun_layout'))
+    .replace('/widgets', t('activity.noun_widget'))
+    .replace('/schedules', t('activity.noun_schedule'))
+    .replace('/walls', t('activity.noun_video_wall'))
+    .replace('alert:device_offline', t('activity.alert_device_offline'));
+  return s;
 }
 
 export function cleanup() {}
