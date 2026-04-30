@@ -50,6 +50,22 @@
     .zone img { width: 100%; height: 100%; object-fit: cover; }
     .zone iframe { width: 100%; height: 100%; border: none; }
 
+    /* Video wall mode.
+       wall-stage maps the wall's player_rect into this device's viewport
+       using vw/vh — so the device fills its full viewport edge-to-edge
+       (no pillarbox at the seam between adjacent screens).
+       object-fit:fill is intentional: it stretches the source to the stage,
+       which keeps vertical position identical between devices that share
+       a viewport height — without that, cover-cropping on different stage
+       aspects (different innerWidths) shifts content vertically. */
+    #playerContainer.wall-mode { overflow: hidden; background: #000; }
+    .wall-stage { position: absolute; }
+    .wall-stage > video,
+    .wall-stage > img { width: 100%; height: 100%; object-fit: fill; display: block; }
+    .wall-stage > iframe { width: 100%; height: 100%; border: none; display: block; }
+    .wall-mode #playerContainer > iframe,
+    .wall-mode #playerContainer > div > iframe { position: static !important; width: 100% !important; height: 100% !important; }
+
     /* Status overlay */
     #statusOverlay {
       position: fixed; inset: 0; background: #000; display: flex; flex-direction: column;
@@ -200,6 +216,21 @@
     // playback muted).
     let userHasInteracted = false;
     let advanceTimer = null;
+    // Video wall state. wallConfig is the tile assignment from the server
+    // (null when this device isn't in a wall). The leader runs the playlist
+    // normally and broadcasts wall:sync every second; followers don't run
+    // their own advance timers and instead align their currentIndex and
+    // video position to whatever the leader is playing.
+    let wallConfig = null;
+    let wallSyncTimer = null;
+    let lastWallSync = null;
+    let currentVideoEl = null;
+    let currentItemStartedAt = 0;
+    // Followers in a video wall must stay silent — N copies of the same audio
+    // slightly out of sync produce a flanged echo across the wall. Only the
+    // leader is allowed to make sound. This helper is the single source of
+    // truth used by every code path that would otherwise unmute audio.
+    function isWallFollower() { return !!(wallConfig && !wallConfig.is_leader); }
     // YouTube player state. Declared up front because the cached-playlist restore
     // (a few lines below) may synchronously call into createYoutubeEmbed before the
     // script reaches the original declaration site, which used to throw a temporal
@@ -209,25 +240,89 @@
     let activeYtPlayer = null;
     let ytGeneration = 0;
 
+    // AudioContext is created lazily on the first user gesture. Resuming it
+    // is what convinces stricter browsers (Firefox) that the site is "user-
+    // activated" for audio. Reused across all later unmute attempts.
+    let _audioCtx = null;
+    function unlockAudioContext() {
+      try {
+        if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (_audioCtx.state === 'suspended') _audioCtx.resume().catch(() => {});
+        // Play a 1-sample silent buffer to fully promote the context to running.
+        const buf = _audioCtx.createBuffer(1, 1, 22050);
+        const src = _audioCtx.createBufferSource();
+        src.buffer = buf;
+        src.connect(_audioCtx.destination);
+        src.start(0);
+      } catch (e) { /* harmless */ }
+    }
+
+    // Try to unmute and play the leader video. MUST be called synchronously
+    // from inside a real user-gesture handler — any preceding await would
+    // throw away the gesture's user-activation in stricter browsers (Firefox).
+    // Returns immediately; the play() promise is resolved/rejected async.
+    function tryUnmuteLeader() {
+      const video = document.querySelector('#playerContainer video');
+      if (!video) return false;
+      if (!video.muted) return true;
+      // Capture state, unmute, do a fresh pause+play within the same task.
+      // Firefox is more permissive when play() is treated as a brand-new
+      // gesture-driven start rather than the unmute of an autoplaying video.
+      const t = video.currentTime;
+      video.muted = false;
+      video.volume = 1.0;
+      video.pause();
+      const p = video.play();
+      if (p && typeof p.then === 'function') {
+        p.then(() => {
+          if (isFinite(t)) { try { video.currentTime = t; } catch {} }
+          console.log('[wall/audio] unmuted play() ok muted=' + video.muted + ' volume=' + video.volume);
+          hideEnableAudioPrompt();
+        }).catch((err) => {
+          console.warn('[wall/audio] unmuted play() rejected: ' + (err?.name || err?.message || err));
+          // Remute so playback continues; surface the prompt for explicit consent.
+          video.muted = true;
+          video.play().catch((e2) => console.error('[wall/audio] muted-fallback play() failed: ' + (e2?.name || e2?.message || e2)));
+          showEnableAudioPrompt();
+        });
+      }
+      return true;
+    }
+
+    // Visible "tap to enable audio" prompt for leaders whose unmute failed.
+    // The user clicking this prompt is itself a fresh gesture, which is the
+    // most reliable path past Firefox's autoplay restriction.
+    function showEnableAudioPrompt() {
+      if (isWallFollower()) return;
+      if (document.getElementById('enableAudioPrompt')) return;
+      const ov = document.createElement('div');
+      ov.id = 'enableAudioPrompt';
+      ov.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.88);color:#fff;padding:12px 22px;border-radius:8px;cursor:pointer;z-index:10000;font-size:14px;display:flex;gap:10px;align-items:center;box-shadow:0 4px 16px rgba(0,0,0,0.4)';
+      ov.innerHTML = '<span style="font-size:20px">&#128263;</span><span>Tap to enable audio</span>';
+      ov.addEventListener('click', () => {
+        unlockAudioContext();
+        tryUnmuteLeader();
+      });
+      document.body.appendChild(ov);
+    }
+    function hideEnableAudioPrompt() {
+      document.getElementById('enableAudioPrompt')?.remove();
+    }
+
     // Track user interaction for autoplay policy
     ['click', 'touchstart', 'keydown'].forEach(evt => {
       document.addEventListener(evt, () => {
+        const wasFirst = !userHasInteracted;
         userHasInteracted = true;
-        // HTML5 video: setting muted=false on a video that's been muted-autoplaying
-        // causes the browser to pause it as a side effect. We have a real user
-        // gesture here, so play() should succeed — but if it doesn't, fall back to
-        // muted playback rather than leaving a black/paused screen.
-        const video = document.querySelector('#playerContainer video');
-        if (video && video.muted) {
-          video.muted = false;
-          video.play()
-            .then(() => console.log('Unmuted video after user interaction'))
-            .catch(err => {
-              console.warn('Unmuted play() rejected, falling back to muted:', err?.message || err);
-              video.muted = true;
-              video.play().catch(e => console.warn('Muted fallback play() failed:', e?.message || e));
-            });
-        }
+        // First gesture: prime the AudioContext. This signals "site activated"
+        // to Firefox and unlocks subsequent <video> unmute attempts.
+        if (wasFirst) unlockAudioContext();
+        // Followers in a video wall must stay muted forever — even after a
+        // user gesture. Otherwise tapping a follower screen would unmute it
+        // and cause echo with the leader.
+        if (isWallFollower()) return;
+        if (wasFirst) console.log('[wall/audio] first user gesture detected — attempting unmute');
+        tryUnmuteLeader();
         // Unmute YouTube player if active
         if (activeYtPlayer && typeof activeYtPlayer.unMute === 'function') {
           try { activeYtPlayer.unMute(); activeYtPlayer.setVolume(100); console.log('Unmuted YouTube player'); } catch {}
@@ -337,6 +432,8 @@
         src.connect(ctx.destination);
         src.start(0);
       } catch(e) { console.warn('Audio unlock failed:', e); }
+      // Wall followers must stay muted — leader is the only audio source.
+      if (isWallFollower()) return;
       // Unmute any playing HTML5 video
       document.querySelectorAll('video').forEach(v => { v.muted = false; });
       // Unmute the active YouTube embed (iframe — querySelectorAll('video') misses it)
@@ -447,6 +544,50 @@
         handlePlaylistUpdate(data);
       });
 
+      // Video wall sync (leader broadcasts; followers align)
+      socket.on('wall:sync', (data) => {
+        if (!wallConfig || wallConfig.is_leader) return;
+        if (data.wall_id !== wallConfig.wall_id) return;
+        lastWallSync = data;
+        // If leader switched item, jump to it
+        if (typeof data.current_index === 'number' && data.current_index !== currentIndex && playlist.length > 0) {
+          currentIndex = ((data.current_index % playlist.length) + playlist.length) % playlist.length;
+          playCurrentItem();
+        }
+        // Hold the follower close to the leader's clock. Account for relay
+        // latency: the leader was at position_sec when sent_at was stamped;
+        // by now a bit more time has elapsed, so target = position + latency.
+        if (currentVideoEl && typeof data.position_sec === 'number') {
+          const now = Date.now();
+          const latency = data.sent_at ? Math.max(0, (now - data.sent_at) / 1000) : 0;
+          const target = data.position_sec + latency;
+          const drift = (currentVideoEl.currentTime || 0) - target;
+          const absDrift = Math.abs(drift);
+          if (absDrift > 0.3 && isFinite(currentVideoEl.duration) && target < currentVideoEl.duration) {
+            // Big drift: hard seek and reset rate.
+            try { currentVideoEl.currentTime = target; } catch (_) {}
+            try { currentVideoEl.playbackRate = 1.0; } catch (_) {}
+          } else if (absDrift > 0.05) {
+            // Small drift: nudge playbackRate to converge gently. ±3% is
+            // imperceptible on most content but pulls in 50ms drift in <2s.
+            try { currentVideoEl.playbackRate = drift > 0 ? 0.97 : 1.03; } catch (_) {}
+          } else if (currentVideoEl.playbackRate !== 1.0) {
+            // In-window: ride at normal rate.
+            try { currentVideoEl.playbackRate = 1.0; } catch (_) {}
+          }
+        }
+      });
+
+      // Leader receives a sync-request from a (re)connecting follower and
+      // immediately broadcasts its position so the requester can align without
+      // waiting for the next periodic tick.
+      socket.on('wall:sync-request', (data) => {
+        if (!wallConfig?.is_leader) return;
+        if (data?.wall_id && data.wall_id !== wallConfig.wall_id) return;
+        console.log('[wall] sync-request received from ' + data?.requested_by + ', broadcasting current position');
+        emitWallSync();
+      });
+
       socket.on('device:content-delete', (data) => {
         playlist = playlist.filter(p => p.content_id !== data.content_id);
         savePlaylistCache(playlist);
@@ -487,14 +628,15 @@
             if (video) { video.paused ? video.play() : video.pause(); }
             break;
           case 'KEYCODE_VOLUME_UP':
-            if (video) { video.volume = Math.min(1, video.volume + 0.1); video.muted = false; }
+            // Wall followers ignore volume changes — they stay silent.
+            if (video && !isWallFollower()) { video.volume = Math.min(1, video.volume + 0.1); video.muted = false; }
             break;
           case 'KEYCODE_VOLUME_DOWN':
             if (video) { video.volume = Math.max(0, video.volume - 0.1); }
             break;
           case 'KEYCODE_MENU':
-            // Toggle mute
-            if (video) { video.muted = !video.muted; }
+            // Toggle mute (followers can't unmute)
+            if (video && !(isWallFollower() && video.muted)) { video.muted = !video.muted; }
             break;
           case 'KEYCODE_HOME':
             // Go back to first item
@@ -605,6 +747,107 @@
       }, 30000);
     }
 
+    // ==================== Video Wall ====================
+    // Convert a wall_config payload into CSS that sizes & positions the wall
+    // stage so this device's tile is the visible portion. Each tile is
+    // 100vw × 100vh; the stage is the full grid, translated by this tile's
+    // grid position (plus bezel offsets in px between tiles).
+    function applyWallMode(config) {
+      const container = document.getElementById('playerContainer');
+      // Tear down previous wall mode (clear sync timer regardless of new state)
+      if (wallSyncTimer) { clearInterval(wallSyncTimer); wallSyncTimer = null; }
+      lastWallSync = null;
+
+      if (!config) {
+        wallConfig = null;
+        container.classList.remove('wall-mode');
+        console.log('[wall] exited wall mode');
+        return;
+      }
+      wallConfig = config;
+      container.classList.add('wall-mode');
+      console.log('[wall] applyWallMode wall=' + config.wall_id + ' is_leader=' + config.is_leader + ' userHasInteracted=' + userHasInteracted);
+
+      // Enforce the audio rule on the currently-mounted video right now.
+      // If the role flipped (e.g., leader was reassigned mid-stream), the
+      // existing video element keeps its old muted state until we touch it.
+      if (currentVideoEl) {
+        if (config.is_leader) {
+          // Defer to autoplay policy — leader can be unmuted once the user
+          // has gestured. Don't yank audio if it's already playing.
+        } else {
+          if (!currentVideoEl.muted) currentVideoEl.muted = true;
+        }
+      }
+
+      if (config.is_leader) {
+        // Leader emits at 4Hz so followers can apply small playbackRate
+        // corrections instead of jerk-seeking. Higher rates would saturate
+        // the relay; 4Hz balances tightness against server load.
+        wallSyncTimer = setInterval(emitWallSync, 250);
+        // Immediate broadcast so any follower that's already up aligns now,
+        // without waiting up to 250ms for the first scheduled tick. This
+        // also covers a leader reclaiming the role after a reconnect.
+        setTimeout(emitWallSync, 100);
+      } else {
+        // Follower: ask the leader for its current position. Without this,
+        // the screen shows the start of the current item until the leader's
+        // next periodic tick (up to ~1s of visible drift on a fresh join).
+        if (socket?.connected) {
+          console.log('[wall] follower emitting sync-request for wall ' + config.wall_id);
+          socket.emit('wall:sync-request', { wall_id: config.wall_id });
+        }
+      }
+    }
+
+    function emitWallSync() {
+      if (!wallConfig?.is_leader || !socket?.connected || playlist.length === 0) return;
+      const item = playlist[currentIndex];
+      if (!item) return;
+      const position = currentVideoEl
+        ? (currentVideoEl.currentTime || 0)
+        : Math.max(0, (Date.now() - currentItemStartedAt) / 1000);
+      socket.emit('wall:sync', {
+        wall_id: wallConfig.wall_id,
+        device_id: config.deviceId,
+        current_index: currentIndex,
+        content_id: item.content_id || null,
+        position_sec: position,
+        sent_at: Date.now(),
+      });
+    }
+
+    // Map the player rect into this device's viewport using vw/vh so the
+    // viewport fills edge-to-edge (no pillarbox at the seam between adjacent
+    // screens). With object-fit:fill on the video, the source stretches to
+    // the stage — which keeps the vertical position of every source pixel
+    // identical across devices that share a viewport height (1vh maps to
+    // the same physical pixel on each).
+    function styleWallStage(stageEl) {
+      if (!wallConfig?.screen_rect || !wallConfig?.player_rect) return;
+      const s = wallConfig.screen_rect;
+      const p = wallConfig.player_rect;
+      if (!s.w || !s.h) return;
+      const left   = ((p.x - s.x) / s.w) * 100;
+      const top    = ((p.y - s.y) / s.h) * 100;
+      const width  = (p.w / s.w) * 100;
+      const height = (p.h / s.h) * 100;
+      const dev = (config.deviceId || '?').slice(0, 8);
+      console.log('[wall/render ' + dev + '] screen_rect: ' + JSON.stringify(s) + ' player_rect: ' + JSON.stringify(p));
+      console.log('[wall/render ' + dev + '] viewport: ' + window.innerWidth + 'x' + window.innerHeight + ' DPR=' + window.devicePixelRatio);
+      console.log('[wall/render ' + dev + '] stage: left=' + left.toFixed(4) + 'vw top=' + top.toFixed(4) + 'vh width=' + width.toFixed(4) + 'vw height=' + height.toFixed(4) + 'vh');
+      stageEl.style.left = left + 'vw';
+      stageEl.style.top = top + 'vh';
+      stageEl.style.width = width + 'vw';
+      stageEl.style.height = height + 'vh';
+      stageEl.style.transform = '';
+    }
+
+    // No-op kept for callers that bind a resize listener (kept around in case
+    // future zoom/orientation tweaks need it). vw/vh stage updates with the
+    // viewport automatically, so explicit re-style isn't needed today.
+    function bindWallResizeOnce() {}
+
     // ==================== Playlist ====================
     function handlePlaylistUpdate(data) {
       // Check if device is suspended (trial expired / over limit)
@@ -642,9 +885,26 @@
         }
       }
 
+      // Apply (or clear) wall mode. Force re-render when wall config changes
+      // even if the playlist itself didn't, so leader/follower role transitions
+      // and tile reassignments take effect immediately.
+      function wallKey(c) {
+        if (!c) return '';
+        const s = c.screen_rect || {}, p = c.player_rect || {};
+        return `${c.wall_id}:${c.is_leader}:s${s.x},${s.y},${s.w},${s.h}:p${p.x},${p.y},${p.w},${p.h}`;
+      }
+      const wallChanged = wallKey(wallConfig) !== wallKey(data.wall_config);
+      if (wallChanged) applyWallMode(data.wall_config || null);
+      // A fresh playlist-update on a follower (typical after socket reconnect)
+      // is a good signal to ask the leader for its current position even when
+      // the wall config itself didn't change. Cheap, debounced server-side.
+      if (!wallChanged && wallConfig && !wallConfig.is_leader && socket?.connected) {
+        socket.emit('wall:sync-request', { wall_id: wallConfig.wall_id });
+      }
+
       layout = data.layout || null;
 
-      if (newFp === oldFp && playlist.length > 0) {
+      if (newFp === oldFp && playlist.length > 0 && !wallChanged) {
         console.log('Playlist unchanged');
         return;
       }
@@ -676,18 +936,26 @@
       hideStatus();
       const item = playlist[currentIndex];
       console.log('Playing:', item.filename, `(${currentIndex + 1}/${playlist.length})`);
+      currentItemStartedAt = Date.now();
+      currentVideoEl = null;
 
-      // Send play event
-      if (socket?.connected) {
+      // Only the leader (or single, non-walled players) records a play_start —
+      // followers would just spam duplicate proof-of-play rows for the same item.
+      if (socket?.connected && (!wallConfig || wallConfig.is_leader)) {
         socket.emit('device:play-event', {
           device_id: config.deviceId,
           event: 'play_start',
           content_id: item.content_id,
           content_name: item.filename,
+          duration_sec: item.duration_sec || null,
         });
       }
 
       renderContent(item);
+
+      // Push an immediate sync so followers don't have to wait up to 1s for
+      // the next periodic tick before snapping to the new item.
+      if (wallConfig?.is_leader) emitWallSync();
     }
 
     function nextItem() {
@@ -847,6 +1115,23 @@
       container.style.display = 'block';
       container.innerHTML = '';
 
+      // In wall mode, mount content into a stage that maps the player_rect
+      // into this device's viewport. playerContainer's overflow:hidden clips
+      // the parts of the stage outside this device's viewport, so each
+      // device shows exactly its slice of the wall.
+      let mount = container;
+      if (wallConfig) {
+        const stage = document.createElement('div');
+        stage.className = 'wall-stage';
+        styleWallStage(stage);
+        container.appendChild(stage);
+        mount = stage;
+      }
+
+      // Followers don't run their own advance timers — the leader's wall:sync
+      // dictates index transitions. Single-screen and leader behave normally.
+      const isFollower = !!wallConfig && !wallConfig.is_leader;
+
       const isYoutube = item.mime_type === 'video/youtube';
       const isVideo = !isYoutube && item.mime_type?.startsWith('video/');
       const isImage = item.mime_type?.startsWith('image/');
@@ -854,47 +1139,85 @@
       const serverUrl = config.serverUrl;
       const src = remoteUrl || `${serverUrl}/uploads/content/${item.filepath}`;
 
-      if (layout && layout.zones && layout.zones.length > 1) {
+      if (layout && layout.zones && layout.zones.length > 1 && !wallConfig) {
         renderZones(container, item);
       } else {
-        // Fullscreen
+        // Fullscreen / wall-tile
         if (isYoutube) {
-          createYoutubeEmbed(src, item, container);
+          createYoutubeEmbed(src, item, mount);
         } else if (isVideo) {
           const video = document.createElement('video');
           video.src = src;
           video.autoplay = true;
-          video.muted = !userHasInteracted; // Unmuted if user has interacted
+          // Followers stay muted unconditionally (leader-only audio); leaders
+          // start muted only if the user hasn't gestured yet (autoplay policy).
+          video.muted = isFollower ? true : !userHasInteracted;
+          // Explicit max volume on the leader so audio is at full level when
+          // unmute happens (default is 1.0 but make it visible in logs).
+          if (!isFollower) video.volume = 1.0;
           video.playsInline = true;
           video.crossOrigin = 'anonymous';
-          video.style.cssText = 'width:100%;height:100%;object-fit:contain;background:#000';
+          // Wall mode uses object-fit:fill so the source stretches to the
+          // stage exactly. Cover would re-crop based on each device's stage
+          // aspect (different innerWidths produce different cover scales),
+          // which is the original vertical-misalignment bug. Fill keeps the
+          // vertical mapping uniform across devices that share a viewport
+          // height. Solo (non-wall) keeps contain to preserve aspect.
+          video.style.cssText = wallConfig
+            ? 'width:100%;height:100%;object-fit:fill;background:#000'
+            : 'width:100%;height:100%;object-fit:contain;background:#000';
           video.loop = (playlist.length === 1);
-          video.onended = () => { if (!video.loop) nextItem(); };
-          video.onerror = (e) => { console.error('Video error:', src, e); advanceTimer = setTimeout(nextItem, 3000); };
-          video.onloadeddata = () => {
-            console.log('Video loaded:', item.filename, 'muted:', video.muted);
+          video.onended = () => { if (!video.loop && !isFollower) nextItem(); };
+          video.onerror = (e) => {
+            console.error('Video error:', src, e);
+            if (!isFollower) advanceTimer = setTimeout(nextItem, 3000);
           };
-          container.appendChild(video);
-          // Try playing unmuted, fall back to muted
-          video.play().catch(() => { video.muted = true; video.play().catch(() => {}); });
+          video.onloadeddata = () => {
+            console.log('[wall/audio] video loaded file=' + item.filename + ' role=' + (wallConfig ? (wallConfig.is_leader ? 'leader' : 'follower') : 'solo') + ' muted=' + video.muted + ' volume=' + video.volume);
+          };
+          // If anything (browser, scripts, the user) tries to unmute a
+          // follower, snap it back. This is the safety net for the audio
+          // bug — without it, a single stray unmute call causes echo.
+          if (isFollower) {
+            video.addEventListener('volumechange', () => {
+              if (!video.muted) { video.muted = true; }
+            });
+          }
+          mount.appendChild(video);
+          currentVideoEl = video;
+          // Try playing as we set muted above. If the browser blocks
+          // unmuted autoplay (e.g. no user gesture yet), retry muted.
+          video.play().then(() => {
+            console.log('[wall/audio] play() ok muted=' + video.muted + ' volume=' + video.volume);
+          }).catch((err) => {
+            console.warn('[wall/audio] play() rejected, falling back to muted: ' + (err?.name || err?.message || err));
+            video.muted = true;
+            video.play()
+              .then(() => console.log('[wall/audio] muted-fallback play() ok'))
+              .catch((e2) => console.error('[wall/audio] muted-fallback play() also failed: ' + (e2?.name || e2?.message || e2)));
+          });
           // Fallback: force play if not started after 2s
           setTimeout(() => { if (video.paused) { video.muted = true; video.play().catch(() => {}); } }, 2000);
         } else if (isImage) {
           const img = document.createElement('img');
           img.src = src;
-          img.style.cssText = 'width:100%;height:100%;object-fit:contain';
-          img.onerror = () => { console.error('Image error'); advanceTimer = setTimeout(nextItem, 3000); };
-          container.appendChild(img);
-          // Auto advance for images
-          advanceTimer = setTimeout(nextItem, (item.duration_sec || 10) * 1000);
+          img.style.cssText = wallConfig
+            ? 'width:100%;height:100%;object-fit:fill'
+            : 'width:100%;height:100%;object-fit:contain';
+          img.onerror = () => {
+            console.error('Image error');
+            if (!isFollower) advanceTimer = setTimeout(nextItem, 3000);
+          };
+          mount.appendChild(img);
+          // Leader / single screen drives image advance; follower waits for sync
+          if (!isFollower) advanceTimer = setTimeout(nextItem, (item.duration_sec || 10) * 1000);
         } else if (item.widget_id) {
           const iframe = document.createElement('iframe');
           iframe.src = `${serverUrl}/api/widgets/${item.widget_id}/render`;
           iframe.style.cssText = 'width:100%;height:100%;border:none;background:#000';
           iframe.allow = 'autoplay; fullscreen';
-          container.appendChild(iframe);
-          // Auto advance for widgets
-          advanceTimer = setTimeout(nextItem, (item.duration_sec || 30) * 1000);
+          mount.appendChild(iframe);
+          if (!isFollower) advanceTimer = setTimeout(nextItem, (item.duration_sec || 30) * 1000);
         }
       }
     }

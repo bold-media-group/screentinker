@@ -235,6 +235,12 @@ CREATE TABLE IF NOT EXISTS video_walls (
     sync_mode       TEXT NOT NULL DEFAULT 'leader',
     leader_device_id TEXT REFERENCES devices(id) ON DELETE SET NULL,
     content_id      TEXT REFERENCES content(id) ON DELETE SET NULL,
+    playlist_id     TEXT REFERENCES playlists(id) ON DELETE SET NULL,
+    -- Free-form player rect on the wall canvas (NULL = use bounding box of screens)
+    player_x        REAL,
+    player_y        REAL,
+    player_width    REAL,
+    player_height   REAL,
     created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')),
     updated_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
@@ -246,6 +252,11 @@ CREATE TABLE IF NOT EXISTS video_wall_devices (
     grid_col        INTEGER NOT NULL,
     grid_row        INTEGER NOT NULL,
     rotation        INTEGER NOT NULL DEFAULT 0,
+    -- Free-form canvas rect (NULL = derive from grid_col/row + bezel as a fallback)
+    canvas_x        REAL,
+    canvas_y        REAL,
+    canvas_width    REAL,
+    canvas_height   REAL,
     UNIQUE(wall_id, device_id),
     UNIQUE(wall_id, grid_col, grid_row)
 );
@@ -307,6 +318,7 @@ CREATE TABLE IF NOT EXISTS device_groups (
     user_id         TEXT NOT NULL REFERENCES users(id),
     name            TEXT NOT NULL,
     color           TEXT DEFAULT '#3B82F6',
+    playlist_id     TEXT REFERENCES playlists(id) ON DELETE SET NULL,
     created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
 

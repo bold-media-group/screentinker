@@ -48,6 +48,16 @@ export function connectSocket() {
     emit('playback-state', data);
   });
 
+  // Playback progress (play_start with duration — drives device-card progress bars)
+  dashboardSocket.on('dashboard:playback-progress', (data) => {
+    emit('playback-progress', data);
+  });
+
+  // Wall changed — dashboard refreshes wall cards + device-grouping layout
+  dashboardSocket.on('dashboard:wall-changed', () => {
+    emit('wall-changed');
+  });
+
   // Content ack
   dashboardSocket.on('dashboard:content-ack', (data) => {
     emit('content-ack', data);

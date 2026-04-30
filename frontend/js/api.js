@@ -128,6 +128,13 @@ export const api = {
   removeDeviceFromGroup: (groupId, deviceId) => request(`/groups/${groupId}/devices/${deviceId}`, { method: 'DELETE' }),
   sendGroupCommand: (groupId, type, payload) => request(`/groups/${groupId}/command`, { method: 'POST', body: JSON.stringify({ type, payload }) }),
 
+  // Video walls
+  getWalls: () => request('/walls'),
+  createWall: (data) => request('/walls', { method: 'POST', body: JSON.stringify(data) }),
+  setWallDevices: (id, devices) => request(`/walls/${id}/devices`, { method: 'PUT', body: JSON.stringify({ devices }) }),
+  updateWall: (id, data) => request(`/walls/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteWall: (id) => request(`/walls/${id}`, { method: 'DELETE' }),
+
   // Playlists
   getPlaylists: () => request('/playlists'),
   createPlaylist: (name, description) => request('/playlists', { method: 'POST', body: JSON.stringify({ name, description }) }),

@@ -76,6 +76,20 @@ const migrations = [
   "CREATE INDEX IF NOT EXISTS idx_content_folders_user ON content_folders(user_id, parent_id)",
   "ALTER TABLE content ADD COLUMN folder_id TEXT REFERENCES content_folders(id) ON DELETE SET NULL",
   "CREATE INDEX IF NOT EXISTS idx_content_folder ON content(folder_id)",
+  // Group-level playlist: when set, devices added to the group inherit it.
+  "ALTER TABLE device_groups ADD COLUMN playlist_id TEXT REFERENCES playlists(id) ON DELETE SET NULL",
+  // Wall-level playlist: video walls now play a playlist (not just one content).
+  "ALTER TABLE video_walls ADD COLUMN playlist_id TEXT REFERENCES playlists(id) ON DELETE SET NULL",
+  // Free-form canvas layout: walls store a player rect; member devices store
+  // their own rect. Coordinates are in arbitrary canvas units (effectively px).
+  "ALTER TABLE video_walls ADD COLUMN player_x REAL",
+  "ALTER TABLE video_walls ADD COLUMN player_y REAL",
+  "ALTER TABLE video_walls ADD COLUMN player_width REAL",
+  "ALTER TABLE video_walls ADD COLUMN player_height REAL",
+  "ALTER TABLE video_wall_devices ADD COLUMN canvas_x REAL",
+  "ALTER TABLE video_wall_devices ADD COLUMN canvas_y REAL",
+  "ALTER TABLE video_wall_devices ADD COLUMN canvas_width REAL",
+  "ALTER TABLE video_wall_devices ADD COLUMN canvas_height REAL",
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (e) { /* already exists */ }

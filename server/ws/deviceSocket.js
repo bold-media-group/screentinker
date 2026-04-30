@@ -46,7 +46,7 @@ function logDeviceStatus(deviceId, status) {
 // Build playlist payload with layout and zones
 // Reads from published_snapshot (Phase 3) so draft edits don't affect live devices
 function buildPlaylistPayload(deviceId) {
-  const device = db.prepare('SELECT playlist_id, layout_id, orientation FROM devices WHERE id = ?').get(deviceId);
+  const device = db.prepare('SELECT playlist_id, layout_id, orientation, wall_id FROM devices WHERE id = ?').get(deviceId);
 
   let assignments = [];
   if (device?.playlist_id) {
@@ -64,7 +64,68 @@ function buildPlaylistPayload(deviceId) {
     }
   }
 
-  return { assignments, layout, orientation: device?.orientation || 'landscape' };
+  // Wall membership flips the player into wall mode. The renderer needs two
+  // rectangles in canvas-space: this device's screen rect, and the wall's
+  // player rect. The intersection is what this screen displays. The leader
+  // drives playback; followers track via wall:sync.
+  let wall_config = null;
+  if (device?.wall_id) {
+    const wall = db.prepare('SELECT * FROM video_walls WHERE id = ?').get(device.wall_id);
+    const pos = db.prepare('SELECT * FROM video_wall_devices WHERE wall_id = ? AND device_id = ?').get(device.wall_id, deviceId);
+    if (wall && pos) {
+      const baseW = 320, baseH = 180;
+      const bezelH = wall.bezel_h_mm || 0;
+      const bezelV = wall.bezel_v_mm || 0;
+
+      // Backfill canvas rect from grid math when canvas_* is unset (legacy
+      // walls that haven't been touched by the new editor yet). Coords are
+      // rounded to integers so sub-pixel drift can't cause two visually
+      // identical rects to compute different stage offsets.
+      const screenRect = {
+        x: Math.round(pos.canvas_x ?? (pos.grid_col * (baseW + bezelH))),
+        y: Math.round(pos.canvas_y ?? (pos.grid_row * (baseH + bezelV))),
+        w: Math.round(pos.canvas_width ?? baseW),
+        h: Math.round(pos.canvas_height ?? baseH),
+      };
+
+      // Player rect defaults to the bounding box of all screens on the wall.
+      let playerRect;
+      if (wall.player_x !== null && wall.player_x !== undefined) {
+        playerRect = { x: wall.player_x, y: wall.player_y, w: wall.player_width, h: wall.player_height };
+      } else {
+        const all = db.prepare('SELECT * FROM video_wall_devices WHERE wall_id = ?').all(wall.id);
+        let x = Infinity, y = Infinity, x2 = -Infinity, y2 = -Infinity;
+        for (const p of all) {
+          const px = p.canvas_x ?? (p.grid_col * (baseW + bezelH));
+          const py = p.canvas_y ?? (p.grid_row * (baseH + bezelV));
+          const pw = p.canvas_width ?? baseW;
+          const ph = p.canvas_height ?? baseH;
+          if (px < x) x = px;
+          if (py < y) y = py;
+          if (px + pw > x2) x2 = px + pw;
+          if (py + ph > y2) y2 = py + ph;
+        }
+        playerRect = isFinite(x)
+          ? { x, y, w: x2 - x, h: y2 - y }
+          : { x: 0, y: 0, w: baseW, h: baseH };
+      }
+      // Round the player rect too — same rationale.
+      playerRect = {
+        x: Math.round(playerRect.x), y: Math.round(playerRect.y),
+        w: Math.round(playerRect.w), h: Math.round(playerRect.h),
+      };
+
+      wall_config = {
+        wall_id: wall.id,
+        screen_rect: screenRect,
+        player_rect: playerRect,
+        is_leader: wall.leader_device_id === deviceId,
+        rotation: pos.rotation || 0,
+      };
+    }
+  }
+
+  return { assignments, layout, orientation: device?.orientation || 'landscape', wall_config };
 }
 
 // Check if a device should show trial expired screen
@@ -240,6 +301,40 @@ module.exports = function setupDeviceSocket(io) {
           socket.emit('device:registered', { device_id, device_token: tokenToSend, status: 'online' });
           logDeviceStatus(device_id, 'online');
 
+          // If this device is part of a wall, re-evaluate leadership.
+          // Preferred leader = online member with smallest (canvas_x +
+          // canvas_y), falling back to grid 0,0. If the original leader
+          // (top-left tile) is back, they reclaim the role and peers re-sync.
+          if (device.wall_id) {
+            try {
+              const wall = db.prepare('SELECT * FROM video_walls WHERE id = ?').get(device.wall_id);
+              if (wall) {
+                const candidates = db.prepare(`
+                  SELECT vwd.device_id, vwd.canvas_x, vwd.canvas_y, vwd.grid_col, vwd.grid_row
+                  FROM video_wall_devices vwd
+                  JOIN devices d ON d.id = vwd.device_id
+                  WHERE vwd.wall_id = ? AND d.status = 'online'
+                `).all(wall.id);
+                if (candidates.length > 0) {
+                  const score = (c) => (c.canvas_x ?? c.grid_col * 320) + (c.canvas_y ?? c.grid_row * 180);
+                  candidates.sort((a, b) => score(a) - score(b));
+                  const preferredLeader = candidates[0].device_id;
+                  if (wall.leader_device_id !== preferredLeader) {
+                    db.prepare('UPDATE video_walls SET leader_device_id = ? WHERE id = ?').run(preferredLeader, wall.id);
+                    console.log(`Wall ${wall.id} leader reassigned to ${preferredLeader} on reconnect`);
+                    // Re-push payload to every member so role flags refresh.
+                    const members = db.prepare('SELECT device_id FROM video_wall_devices WHERE wall_id = ?').all(wall.id);
+                    for (const m of members) {
+                      if (m.device_id !== device_id) {
+                        deviceNs.to(m.device_id).emit('device:playlist-update', buildPlaylistPayload(m.device_id));
+                      }
+                    }
+                  }
+                }
+              }
+            } catch (e) { console.error('Wall leader reclaim failed:', e.message); }
+          }
+
           // Check subscription/trial status before sending playlist
           const access = checkDeviceAccess(device_id);
           if (!access.allowed) {
@@ -377,7 +472,7 @@ module.exports = function setupDeviceSocket(io) {
     // Play event logging (proof-of-play)
     socket.on('device:play-event', (data) => {
       if (!requireDeviceAuth()) return;
-      const { device_id, event, content_id, content_name, zone_id, completed } = data;
+      const { device_id, event, content_id, content_name, zone_id, completed, duration_sec } = data;
       if (device_id !== currentDeviceId) return;
       try {
         if (event === 'play_start') {
@@ -385,6 +480,15 @@ module.exports = function setupDeviceSocket(io) {
             INSERT INTO play_logs (device_id, content_id, zone_id, content_name, started_at, trigger_type)
             VALUES (?, ?, ?, ?, strftime('%s','now'), 'playlist')
           `).run(device_id, content_id || null, zone_id || null, content_name || 'Unknown');
+          // Forward to dashboard so it can render a per-device progress bar.
+          // Server-side timestamp avoids clock-skew between player and dashboard.
+          dashboardNs.emit('dashboard:playback-progress', {
+            device_id,
+            content_id: content_id || null,
+            content_name: content_name || null,
+            duration_sec: typeof duration_sec === 'number' && duration_sec > 0 ? duration_sec : null,
+            started_at: Date.now(),
+          });
         } else if (event === 'play_end') {
           db.prepare(`
             UPDATE play_logs SET ended_at = strftime('%s','now'),
@@ -401,16 +505,44 @@ module.exports = function setupDeviceSocket(io) {
       }
     });
 
-    // Video wall sync relay
+    // Video wall sync relay. Sender must be a member of the wall it claims —
+    // otherwise an authenticated device could inject sync packets into a wall
+    // it doesn't belong to (jitter/DoS that wall's playback). Exclusion uses
+    // currentDeviceId, never the client-supplied data.device_id.
     socket.on('wall:sync', (data) => {
       if (!requireDeviceAuth()) return;
-      // Relay to all devices in the same wall
+      if (!data?.wall_id) return;
+      const isMember = db.prepare(
+        'SELECT 1 FROM video_wall_devices WHERE wall_id = ? AND device_id = ?'
+      ).get(data.wall_id, currentDeviceId);
+      if (!isMember) return;
       const wallDevices = db.prepare(
         'SELECT device_id FROM video_wall_devices WHERE wall_id = ? AND device_id != ?'
-      ).all(data.wall_id, data.device_id);
+      ).all(data.wall_id, currentDeviceId);
+      // Stamp device_id with the authenticated id so followers can trust it.
+      const payload = { ...data, device_id: currentDeviceId };
       for (const wd of wallDevices) {
-        deviceNs.to(wd.device_id).emit('wall:sync', data);
+        deviceNs.to(wd.device_id).emit('wall:sync', payload);
       }
+    });
+
+    // A follower asks for an immediate position update from the leader.
+    // Used on (re)connect so the follower doesn't drift for ~1s waiting on
+    // the next periodic wall:sync tick. Server forwards only to the leader,
+    // and only when the requester is actually a member of the named wall.
+    socket.on('wall:sync-request', (data) => {
+      if (!requireDeviceAuth()) return;
+      if (!data?.wall_id) return;
+      const isMember = db.prepare(
+        'SELECT 1 FROM video_wall_devices WHERE wall_id = ? AND device_id = ?'
+      ).get(data.wall_id, currentDeviceId);
+      if (!isMember) return;
+      const wall = db.prepare('SELECT leader_device_id FROM video_walls WHERE id = ?').get(data.wall_id);
+      if (!wall?.leader_device_id || wall.leader_device_id === currentDeviceId) return;
+      deviceNs.to(wall.leader_device_id).emit('wall:sync-request', {
+        wall_id: data.wall_id,
+        requested_by: currentDeviceId,
+      });
     });
 
     socket.on('disconnect', () => {
@@ -430,6 +562,30 @@ module.exports = function setupDeviceSocket(io) {
         heartbeat.removeConnection(currentDeviceId);
         logDeviceStatus(currentDeviceId, 'offline');
         dashboardNs.emit('dashboard:device-status', { device_id: currentDeviceId, status: 'offline' });
+
+        // If this device was leading a wall, reassign leadership to the next
+        // online member so playback stays driven. Without this the wall freezes
+        // when the leader drops.
+        try {
+          const wall = db.prepare('SELECT id FROM video_walls WHERE leader_device_id = ?').get(currentDeviceId);
+          if (wall) {
+            const candidates = db.prepare(`
+              SELECT vwd.device_id FROM video_wall_devices vwd
+              JOIN devices d ON d.id = vwd.device_id
+              WHERE vwd.wall_id = ? AND d.status = 'online' AND vwd.device_id != ?
+              ORDER BY vwd.grid_row, vwd.grid_col LIMIT 1
+            `).all(wall.id, currentDeviceId);
+            const newLeader = candidates[0]?.device_id || null;
+            db.prepare('UPDATE video_walls SET leader_device_id = ? WHERE id = ?').run(newLeader, wall.id);
+            // Notify the new leader (and refresh peers' is_leader flags).
+            const members = db.prepare('SELECT device_id FROM video_wall_devices WHERE wall_id = ?').all(wall.id);
+            for (const m of members) {
+              if (m.device_id !== currentDeviceId) {
+                deviceNs.to(m.device_id).emit('device:playlist-update', buildPlaylistPayload(m.device_id));
+              }
+            }
+          }
+        } catch (e) { console.error('Wall leader reassign failed:', e.message); }
 
         // Save last screenshot to disk as offline snapshot
         const lastB64 = lastScreenshots[currentDeviceId];

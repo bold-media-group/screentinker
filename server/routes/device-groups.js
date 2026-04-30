@@ -107,11 +107,14 @@ router.get('/:id/devices', requireGroupOwnership, (req, res) => {
   res.json(devices);
 });
 
-// Add device to group
+// Add device to group. If the group has a playlist set (via the assign-playlist
+// dropdown on the dashboard), the new device inherits it — both for drag-drop
+// onto the group section and for the Manage modal's checkboxes, which both
+// hit this endpoint. Without this, joining a group never auto-assigned the
+// group's playlist, leaving the new device on whatever it had before.
 router.post('/:id/devices', requireGroupOwnership, (req, res) => {
   const { device_id } = req.body;
   if (!device_id) return res.status(400).json({ error: 'device_id required' });
-  // Verify device belongs to the user (admin/superadmin bypass)
   const device = db.prepare('SELECT user_id FROM devices WHERE id = ?').get(device_id);
   if (!device) return res.status(404).json({ error: 'Device not found' });
   if (!['admin','superadmin'].includes(req.user.role) && device.user_id && device.user_id !== req.user.id) {
@@ -119,15 +122,43 @@ router.post('/:id/devices', requireGroupOwnership, (req, res) => {
   }
   try {
     db.prepare('INSERT OR IGNORE INTO device_group_members (device_id, group_id) VALUES (?, ?)').run(device_id, req.params.id);
-    res.status(201).json({ success: true });
+
+    // Sync device's playlist to the group's: a defined playlist is inherited,
+    // a group with no playlist clears the device's. The user's mental model
+    // is "joining a group means using its playlist (or none)" — staying on a
+    // stale playlist after joining a no-playlist group was the bug we just hit.
+    const group = db.prepare('SELECT playlist_id FROM device_groups WHERE id = ?').get(req.params.id);
+    const newPlaylist = group?.playlist_id || null;
+    db.prepare('UPDATE devices SET playlist_id = ? WHERE id = ?').run(newPlaylist, device_id);
+    pushPlaylistToDevice(req, device_id);
+    res.status(201).json({ success: true, playlist_id: newPlaylist });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
 });
 
-// Remove device from group
+// Remove device from group. Sync the device's playlist to whatever its
+// current group membership implies — symmetric with the join sync above.
+// - No remaining groups → clear playlist (Ungrouped).
+// - Remaining group with a playlist → adopt that playlist.
+// - Remaining group(s) but none have a playlist → clear playlist.
+// Without this, a device dragged out of a group keeps stale playlist state
+// from the group it just left.
 router.delete('/:id/devices/:deviceId', requireGroupOwnership, (req, res) => {
-  db.prepare('DELETE FROM device_group_members WHERE device_id = ? AND group_id = ?').run(req.params.deviceId, req.params.id);
+  const deviceId = req.params.deviceId;
+  db.prepare('DELETE FROM device_group_members WHERE device_id = ? AND group_id = ?').run(deviceId, req.params.id);
+
+  const remaining = db.prepare(`
+    SELECT g.playlist_id FROM device_groups g
+    JOIN device_group_members dgm ON g.id = dgm.group_id
+    WHERE dgm.device_id = ?
+    ORDER BY g.playlist_id IS NULL, g.name ASC
+    LIMIT 1
+  `).get(deviceId);
+  const newPlaylist = remaining?.playlist_id || null;
+  db.prepare('UPDATE devices SET playlist_id = ? WHERE id = ?').run(newPlaylist, deviceId);
+  pushPlaylistToDevice(req, deviceId);
+
   res.json({ success: true });
 });
 
@@ -183,7 +214,8 @@ router.post('/:id/assign-content', requireGroupOwnership, (req, res) => {
   res.json({ success: true, devices_updated: members.length });
 });
 
-// Assign an existing playlist to all devices in a group
+// Assign an existing playlist to all devices in a group, and persist the
+// choice on the group itself so future joiners inherit it (see POST /:id/devices).
 router.post('/:id/assign-playlist', requireGroupOwnership, (req, res) => {
   const { playlist_id } = req.body;
   if (!playlist_id) return res.status(400).json({ error: 'playlist_id required' });
@@ -195,6 +227,7 @@ router.post('/:id/assign-playlist', requireGroupOwnership, (req, res) => {
 
   const stmt = db.prepare('UPDATE devices SET playlist_id = ? WHERE id = ?');
   const transaction = db.transaction(() => {
+    db.prepare('UPDATE device_groups SET playlist_id = ? WHERE id = ?').run(playlist_id, req.params.id);
     for (const m of members) stmt.run(playlist_id, m.device_id);
   });
   transaction();

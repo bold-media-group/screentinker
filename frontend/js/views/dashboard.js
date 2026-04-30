@@ -26,6 +26,14 @@ const CMD_LABEL_KEY = {
 let statusHandler = null;
 let screenshotHandler = null;
 let refreshInterval = null;
+let playbackHandler = null;
+let progressTickInterval = null;
+let wallChangedHandler = null;
+// device_id -> { content_name, duration_sec, started_at }
+const playbackByDevice = new Map();
+// Multi-select state for the "Create Video Wall" gesture. Holds device_ids
+// the user has ticked via checkboxes on the dashboard cards.
+const selectedDeviceIds = new Set();
 
 function formatTimeAgo(timestamp) {
   if (!timestamp) return t('common.never');
@@ -42,14 +50,44 @@ function formatBytes(mb) {
   return `${mb} MB`;
 }
 
+function renderProgressFor(deviceId) {
+  const state = playbackByDevice.get(deviceId);
+  document.querySelectorAll(`#progress-${CSS.escape(deviceId)}`).forEach(el => {
+    if (!state) { el.style.display = 'none'; return; }
+    const elapsed = Math.max(0, (Date.now() - state.started_at) / 1000);
+    const name = state.content_name || '';
+    const fill = el.querySelector('.device-card-progress-fill');
+    const nameEl = el.querySelector('.dcp-name');
+    const timeEl = el.querySelector('.dcp-time');
+    if (state.duration_sec && state.duration_sec > 0) {
+      const remaining = Math.max(0, Math.ceil(state.duration_sec - elapsed));
+      const pct = Math.min(100, (elapsed / state.duration_sec) * 100);
+      fill.style.width = pct + '%';
+      if (nameEl) nameEl.textContent = name;
+      if (timeEl) timeEl.textContent = remaining + 's';
+    } else {
+      // Unknown duration (e.g. video plays to end) — show indeterminate state
+      fill.style.width = '100%';
+      fill.classList.add('indeterminate');
+      if (nameEl) nameEl.textContent = name;
+      if (timeEl) timeEl.textContent = '';
+    }
+    el.style.display = 'block';
+  });
+}
+
 function renderDeviceCard(device) {
   const token = localStorage.getItem('token');
   const screenshotUrl = device.screenshot_path
     ? `/api/devices/${device.id}/screenshot?t=${device.screenshot_at || ''}&token=${token}`
     : null;
 
+  const checked = selectedDeviceIds.has(device.id);
   return `
-    <div class="device-card" draggable="true" data-device-id="${device.id}" data-device-name="${esc(device.name)}" onclick="window.location.hash='/device/${device.id}'">
+    <div class="device-card${checked ? ' selected' : ''}" draggable="true" data-device-id="${device.id}" data-device-name="${esc(device.name)}" onclick="window.location.hash='/device/${device.id}'">
+      <label class="device-card-select" title="Select for wall" onclick="event.stopPropagation()">
+        <input type="checkbox" class="device-select-cb" data-device-id="${device.id}"${checked ? ' checked' : ''}>
+      </label>
       <div class="device-card-preview" id="preview-${device.id}">
         ${screenshotUrl
           ? `<img src="${screenshotUrl}" alt="Screenshot" loading="lazy">`
@@ -70,6 +108,10 @@ function renderDeviceCard(device) {
         <div style="position:absolute;bottom:8px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.85);color:#f59e0b;padding:4px 12px;border-radius:6px;font-size:13px;font-weight:600;letter-spacing:2px;font-family:monospace">
           ${device.pairing_code}
         </div>` : ''}
+        <div class="device-card-progress" id="progress-${device.id}" style="display:none">
+          <div class="device-card-progress-label"><span class="dcp-name"></span><span class="dcp-time"></span></div>
+          <div class="device-card-progress-track"><div class="device-card-progress-fill"></div></div>
+        </div>
       </div>
       <div class="device-card-body">
         <div class="device-card-name">${esc(device.name)}</div>
@@ -109,6 +151,37 @@ function renderDeviceCard(device) {
             </svg>
             ${formatBytes(device.storage_free_mb)} free
           </div>` : ''}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderWallCard(wall) {
+  // Compose a tiny grid preview using the wall's actual cols×rows. Each cell
+  // is filled (assigned) or hollow (empty slot).
+  const cells = [];
+  for (let r = 0; r < wall.grid_rows; r++) {
+    for (let c = 0; c < wall.grid_cols; c++) {
+      const dev = (wall.devices || []).find(d => d.grid_col === c && d.grid_row === r);
+      cells.push(`<div class="wall-card-cell${dev ? ' filled' : ''}" title="${dev ? esc(dev.device_name) : '[' + c + ',' + r + ']'}"></div>`);
+    }
+  }
+  const onlineCount = (wall.devices || []).filter(d => d.device_status === 'online').length;
+  return `
+    <div class="device-card wall-card" data-wall-id="${wall.id}" onclick="window.location.hash='#/wall/${wall.id}'">
+      <div class="device-card-preview wall-card-preview">
+        <div class="wall-card-grid" style="grid-template-columns:repeat(${wall.grid_cols},1fr);grid-template-rows:repeat(${wall.grid_rows},1fr)">${cells.join('')}</div>
+        <div class="device-card-status">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="12" y1="3" x2="12" y2="21"/></svg>
+          <span>${wall.grid_cols}×${wall.grid_rows} wall</span>
+        </div>
+      </div>
+      <div class="device-card-body">
+        <div class="device-card-name">${esc(wall.name)}</div>
+        <div class="device-card-meta">
+          <div class="meta-item">${(wall.devices || []).length} ${(wall.devices || []).length === 1 ? 'tile' : 'tiles'}</div>
+          <div class="meta-item" style="color:${onlineCount === (wall.devices || []).length ? 'var(--success)' : 'var(--text-muted)'}">${onlineCount} online</div>
         </div>
       </div>
     </div>
@@ -177,6 +250,16 @@ export function render(container) {
         </button>
       </div>
     </div>
+    <div id="selectionBar" style="display:none;align-items:center;gap:10px;padding:8px 12px;margin-bottom:12px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px">
+      <span id="selectionCount" style="font-weight:500;font-size:13px"></span>
+      <button class="btn btn-primary btn-sm" id="createWallBtn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px">
+          <rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="12" y1="3" x2="12" y2="21"/>
+        </svg>
+        Create Video Wall
+      </button>
+      <button class="btn btn-sm" id="clearSelectionBtn">Clear</button>
+    </div>
     <div id="dashStats" class="dash-stats-row" style="display:flex;gap:12px;margin-bottom:16px"></div>
     <div style="display:flex;gap:12px;margin-bottom:16px;align-items:center">
       <input type="text" id="deviceSearch" class="input" placeholder="${t('dashboard.search')}" style="max-width:300px">
@@ -243,6 +326,28 @@ export function render(container) {
     } catch (e) { showToast(e.message, 'error'); }
   });
 
+  // Multi-select: a checkbox on each device card adds to selectedDeviceIds.
+  // The selection bar shows when 1+ are selected; "Create Video Wall" is the
+  // primary action — it creates the wall, removes devices from any group,
+  // assigns them, and navigates to the editor.
+  container.addEventListener('change', (ev) => {
+    const cb = ev.target.closest?.('.device-select-cb');
+    if (!cb) return;
+    const id = cb.dataset.deviceId;
+    if (cb.checked) selectedDeviceIds.add(id); else selectedDeviceIds.delete(id);
+    cb.closest('.device-card')?.classList.toggle('selected', cb.checked);
+    refreshSelectionBar();
+  });
+
+  document.getElementById('clearSelectionBtn').addEventListener('click', () => {
+    selectedDeviceIds.clear();
+    document.querySelectorAll('.device-select-cb').forEach(cb => { cb.checked = false; });
+    document.querySelectorAll('.device-card.selected').forEach(c => c.classList.remove('selected'));
+    refreshSelectionBar();
+  });
+
+  document.getElementById('createWallBtn').addEventListener('click', () => createWallFromSelection());
+
   // Load everything
   loadDashboard();
 
@@ -271,10 +376,28 @@ export function render(container) {
   const deviceAddedHandler = () => loadDashboard();
   const deviceRemovedHandler = () => loadDashboard();
 
+  playbackHandler = (data) => {
+    if (!data?.device_id) return;
+    playbackByDevice.set(data.device_id, {
+      content_name: data.content_name || '',
+      duration_sec: data.duration_sec || null,
+      started_at: data.started_at || Date.now(),
+    });
+    renderProgressFor(data.device_id);
+  };
+
+  wallChangedHandler = () => loadDashboard();
+
   on('device-status', statusHandler);
   on('screenshot-ready', screenshotHandler);
   on('device-added', deviceAddedHandler);
   on('device-removed', deviceRemovedHandler);
+  on('playback-progress', playbackHandler);
+  on('wall-changed', wallChangedHandler);
+
+  progressTickInterval = setInterval(() => {
+    for (const id of playbackByDevice.keys()) renderProgressFor(id);
+  }, 1000);
 
   // Request fresh screenshots on load
   setTimeout(() => {
@@ -290,12 +413,66 @@ export function render(container) {
   }, 30000);
 }
 
+function refreshSelectionBar() {
+  const bar = document.getElementById('selectionBar');
+  const count = document.getElementById('selectionCount');
+  if (!bar || !count) return;
+  const n = selectedDeviceIds.size;
+  if (n === 0) { bar.style.display = 'none'; return; }
+  bar.style.display = 'flex';
+  count.textContent = `${n} display${n === 1 ? '' : 's'} selected`;
+  // Need at least 2 to make a wall
+  document.getElementById('createWallBtn').disabled = n < 2;
+}
+
+// Pick a sensible default grid for n devices: prefer near-square layouts,
+// breaking ties toward more columns (more common physical wall layout).
+function defaultGridForCount(n) {
+  if (n <= 1) return { cols: 1, rows: 1 };
+  if (n === 2) return { cols: 2, rows: 1 };
+  if (n === 3) return { cols: 3, rows: 1 };
+  if (n === 4) return { cols: 2, rows: 2 };
+  if (n === 6) return { cols: 3, rows: 2 };
+  if (n === 8) return { cols: 4, rows: 2 };
+  if (n === 9) return { cols: 3, rows: 3 };
+  // Generic fallback — square-ish, columns >= rows
+  const cols = Math.ceil(Math.sqrt(n));
+  const rows = Math.ceil(n / cols);
+  return { cols, rows };
+}
+
+async function createWallFromSelection() {
+  const ids = [...selectedDeviceIds];
+  if (ids.length < 2) { showToast('Select at least 2 displays', 'error'); return; }
+  const name = prompt('Name this video wall:', `Wall ${new Date().toLocaleString()}`);
+  if (!name) return;
+  const { cols, rows } = defaultGridForCount(ids.length);
+  try {
+    const wall = await api.createWall({ name, grid_cols: cols, grid_rows: rows });
+    // Pack selected devices into row-major order. The user can reposition in
+    // the editor; this just gives every selection a sensible starting tile.
+    const placement = ids.slice(0, cols * rows).map((id, i) => ({
+      device_id: id,
+      grid_col: i % cols,
+      grid_row: Math.floor(i / cols),
+    }));
+    await api.setWallDevices(wall.id, placement);
+    selectedDeviceIds.clear();
+    showToast('Video wall created', 'success');
+    window.location.hash = `#/wall/${wall.id}`;
+  } catch (e) {
+    showToast(e.message, 'error');
+  }
+}
+
 async function loadDashboard() {
   const main = document.getElementById('groupedDevices');
   if (!main) return;
 
   try {
-    const [rawDevices, groups, playlists] = await Promise.all([api.getDevices(), api.getGroups(), api.getPlaylists()]);
+    const [rawDevices, groups, playlists, walls] = await Promise.all([
+      api.getDevices(), api.getGroups(), api.getPlaylists(), api.getWalls(),
+    ]);
 
     // Deduplicate devices by id — a stale reconnect race can briefly cause the same
     // device to appear twice in the list. Last-write-wins keeps the freshest state.
@@ -345,12 +522,19 @@ async function loadDashboard() {
       return;
     }
 
+    // Devices that belong to a wall are owned by that wall — they don't appear
+    // as their own cards anywhere on the dashboard. The wall's card stands in.
+    const walledDeviceIds = new Set();
+    for (const w of (walls || [])) for (const d of (w.devices || [])) walledDeviceIds.add(d.device_id);
+    const dashboardDevices = devices.filter(d => !walledDeviceIds.has(d.id));
+
     // Fetch group memberships
     const groupsWithDevices = await Promise.all(groups.map(async g => {
       const members = await api.getGroupDevices(g.id);
       const memberIds = new Set(members.map(m => m.id));
       // Use full device data from the main devices list (has telemetry/screenshots)
-      const fullDevices = devices.filter(d => memberIds.has(d.id));
+      // and exclude any wall members.
+      const fullDevices = dashboardDevices.filter(d => memberIds.has(d.id));
       return { ...g, devices: fullDevices, memberIds };
     }));
 
@@ -364,9 +548,23 @@ async function loadDashboard() {
         return true;
       });
     }
-    const ungrouped = devices.filter(d => !renderedIds.has(d.id));
+    const ungrouped = dashboardDevices.filter(d => !renderedIds.has(d.id));
 
     let html = '';
+
+    // Walls render before groups: they're a higher-level construct (multiple
+    // physical screens acting as one logical display).
+    if ((walls || []).length > 0) {
+      html += `
+        <div class="wall-section" style="margin-bottom:24px">
+          <div style="display:flex;align-items:center;margin-bottom:10px;padding:8px 12px;background:var(--bg-secondary);border-radius:8px;border-left:4px solid #8b5cf6">
+            <strong style="font-size:15px">Video Walls</strong>
+            <span style="color:var(--text-muted);font-size:12px;margin-left:10px">${walls.length} wall${walls.length === 1 ? '' : 's'}</span>
+          </div>
+          <div class="device-grid">${walls.map(renderWallCard).join('')}</div>
+        </div>
+      `;
+    }
 
     // Render each group with its devices
     for (const g of groupsWithDevices) {
@@ -392,7 +590,14 @@ async function loadDashboard() {
     }
 
     main.innerHTML = html;
-    attachGroupHandlers(groupsWithDevices, devices);
+    attachGroupHandlers(groupsWithDevices, dashboardDevices);
+
+    // Drop any selections for devices that have since been absorbed into a
+    // wall, and update the toolbar.
+    for (const id of [...selectedDeviceIds]) {
+      if (walledDeviceIds.has(id)) selectedDeviceIds.delete(id);
+    }
+    refreshSelectionBar();
 
   } catch (err) {
     main.innerHTML = `<div class="empty-state"><h3>${t('dashboard.failed_to_load')}</h3><p>${esc(err.message)}</p></div>`;
@@ -626,10 +831,17 @@ function attachGroupHandlers(groupsWithDevices, allDevices) {
 export function cleanup() {
   if (statusHandler) off('device-status', statusHandler);
   if (screenshotHandler) off('screenshot-ready', screenshotHandler);
+  if (playbackHandler) off('playback-progress', playbackHandler);
+  if (wallChangedHandler) off('wall-changed', wallChangedHandler);
   off('device-added', () => {});
   off('device-removed', () => {});
   if (refreshInterval) clearInterval(refreshInterval);
+  if (progressTickInterval) clearInterval(progressTickInterval);
   statusHandler = null;
   screenshotHandler = null;
+  playbackHandler = null;
+  wallChangedHandler = null;
   refreshInterval = null;
+  progressTickInterval = null;
+  playbackByDevice.clear();
 }
