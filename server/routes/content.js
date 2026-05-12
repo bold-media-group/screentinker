@@ -16,9 +16,17 @@ const { accessContext } = require('../lib/tenancy');
 // bypassing sanitizeBody. Apply the same HTML-escape here so a filename like
 // `"><img src=x onerror=alert(1)>.jpg` is stored as `&quot;&gt;&lt;img...` and
 // renders as text in every UI sink. Umlauts, spaces, dots, and other unicode are
-// preserved — sanitizeString only touches `& < > " '`.
+// preserved - sanitizeString only touches `& < > " '`.
+//
+// .normalize('NFC') first: macOS clients send NFD-decomposed filenames (an
+// umlaut like "u" + combining diaeresis U+0308 instead of the precomposed
+// "u-umlaut" U+00FC). Linux + most renderers expect NFC; without this, names
+// like "Begrussungsscreens.jpg" arrive with the combining char floating and
+// display as mojibake. Single-point fix - every user-facing filename storage
+// site (POST /, POST /remote, POST /embed, PUT /:id rename) flows through
+// safeFilename, so normalizing here covers all paths.
 function safeFilename(name) {
-  return sanitizeString(name || '');
+  return sanitizeString((name || '').normalize('NFC'));
 }
 
 // SSRF gate for remote_url. Returns null if valid, else { status, error }.
