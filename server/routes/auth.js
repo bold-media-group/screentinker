@@ -56,8 +56,15 @@ function logFailedLogin(email, ip, reason) {
 
 function logSuccessfulLogin(userId, email, ip) {
   try {
-    db.prepare('INSERT INTO activity_log (user_id, action, details, ip_address) VALUES (?, ?, ?, ?)')
-      .run(userId, 'auth:login_success', email, ip);
+    // Phase 2.2 writer-leak fix: stamp the user's oldest workspace so this
+    // login event is queryable in tenant-scoped activity views. Multi-workspace
+    // users still land on one row; the activity dashboard already shows
+    // per-user context separately from per-workspace context.
+    const ws = db.prepare(
+      'SELECT workspace_id FROM workspace_members WHERE user_id = ? ORDER BY joined_at ASC LIMIT 1'
+    ).get(userId);
+    db.prepare('INSERT INTO activity_log (user_id, action, details, ip_address, workspace_id) VALUES (?, ?, ?, ?, ?)')
+      .run(userId, 'auth:login_success', email, ip, ws?.workspace_id || null);
     db.prepare("UPDATE users SET last_login = strftime('%s','now') WHERE id = ?").run(userId);
   } catch {}
 }

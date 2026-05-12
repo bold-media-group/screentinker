@@ -27,11 +27,21 @@ function getClientIp(req) {
   return req.ip || null;
 }
 
-function logActivity(userId, action, details = null, deviceId = null, ipAddress = null) {
+// Phase 2.2 writer-leak fix: activity_log rows now stamp workspace_id so
+// tenant-scoped queries don't miss new events. Callers pass the workspace
+// when known; the middleware below sources it from resolveTenancy. When
+// workspaceId is null but a device_id is provided, fall back to the device's
+// workspace - matches the backfill rule for consistency.
+function logActivity(userId, action, details = null, deviceId = null, ipAddress = null, workspaceId = null) {
   try {
+    let ws = workspaceId || null;
+    if (!ws && deviceId) {
+      const d = db.prepare('SELECT workspace_id FROM devices WHERE id = ?').get(deviceId);
+      ws = d?.workspace_id || null;
+    }
     db.prepare(
-      'INSERT INTO activity_log (user_id, device_id, action, details, ip_address) VALUES (?, ?, ?, ?, ?)'
-    ).run(userId || null, deviceId || null, action, details || null, ipAddress || null);
+      'INSERT INTO activity_log (user_id, device_id, action, details, ip_address, workspace_id) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(userId || null, deviceId || null, action, details || null, ipAddress || null, ws);
   } catch (e) {
     console.error('Activity log error:', e.message);
   }
@@ -67,7 +77,7 @@ function activityLogger(req, res, next) {
       const userId = req.user?.id;
       const deviceId = req.params?.id || req.params?.deviceId || req.body?.device_id;
       const details = summarizeAction(req);
-      logActivity(userId, action, details, deviceId, getClientIp(req));
+      logActivity(userId, action, details, deviceId, getClientIp(req), req.workspaceId || null);
     }
     return originalJson(data);
   };

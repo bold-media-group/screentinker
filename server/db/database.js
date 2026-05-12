@@ -370,6 +370,51 @@ function migrateFolderWorkspaceIds() {
 
 migrateFolderWorkspaceIds();
 
+const PHASE_2_2_ACTIVITY_STOP_ID = 'phase_2_2_activity_log_stop_bleeding';
+
+// One-time backfill of activity_log rows that were written between the
+// Phase 1 schema migration and the writer-leak fix in this commit. Strategy:
+//   * Rows with device_id: derive workspace_id from devices.workspace_id
+//     (the activity is about a specific device, so this is unambiguous).
+//   * Rows with no device_id but a user_id: derive from the user's oldest
+//     workspace_members row (pre-flight confirmed 0 affected users have
+//     more than one workspace, so the choice is unambiguous).
+// Rows with user_id IS NULL (auth:login_failed and similar pre-tenancy
+// system events) are left alone - they have no tenant context.
+function backfillActivityLogWorkspace() {
+  const already = db.prepare('SELECT 1 FROM schema_migrations WHERE id = ?').get(PHASE_2_2_ACTIVITY_STOP_ID);
+  if (already) return;
+
+  const viaDevice = db.prepare(`
+    UPDATE activity_log SET workspace_id = (
+      SELECT workspace_id FROM devices WHERE devices.id = activity_log.device_id
+    )
+    WHERE workspace_id IS NULL AND device_id IS NOT NULL
+      AND EXISTS (SELECT 1 FROM devices WHERE devices.id = activity_log.device_id AND devices.workspace_id IS NOT NULL)
+  `);
+
+  const viaMembers = db.prepare(`
+    UPDATE activity_log SET workspace_id = (
+      SELECT wm.workspace_id FROM workspace_members wm
+      WHERE wm.user_id = activity_log.user_id
+      ORDER BY wm.joined_at ASC LIMIT 1
+    )
+    WHERE workspace_id IS NULL AND user_id IS NOT NULL AND device_id IS NULL
+      AND EXISTS (SELECT 1 FROM workspace_members wm WHERE wm.user_id = activity_log.user_id)
+  `);
+
+  const tx = db.transaction(() => {
+    const d = viaDevice.run().changes;
+    const m = viaMembers.run().changes;
+    db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(PHASE_2_2_ACTIVITY_STOP_ID);
+    return { d, m };
+  });
+  const { d, m } = tx();
+  if (d + m > 0) console.log(`activity_log backfill: ${d} via device.workspace_id, ${m} via workspace_members lookup`);
+}
+
+backfillActivityLogWorkspace();
+
 // Prune old telemetry (keep last 24h worth at 15s intervals = ~5760, cap at 6000)
 function pruneTelemetry(deviceId) {
   db.prepare(`

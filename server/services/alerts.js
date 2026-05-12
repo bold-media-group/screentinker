@@ -17,7 +17,7 @@ function checkOfflineDevices(io) {
   const threshold = 300; // 5 minutes offline
 
   const offlineDevices = db.prepare(`
-    SELECT d.id, d.name, d.user_id, d.last_heartbeat, d.status,
+    SELECT d.id, d.name, d.user_id, d.workspace_id, d.last_heartbeat, d.status,
            u.email as owner_email, u.name as owner_name, u.email_alerts
     FROM devices d
     LEFT JOIN users u ON d.user_id = u.id
@@ -42,11 +42,12 @@ function checkOfflineDevices(io) {
       });
       offlineNotified.set(device.id, now);
 
-      // Log activity
+      // Log activity. Phase 2.2 writer-leak fix: stamp workspace_id from the
+      // device so the row is tenant-queryable.
       try {
         db.prepare(
-          'INSERT INTO activity_log (user_id, device_id, action, details) VALUES (?, ?, ?, ?)'
-        ).run(device.user_id, device.id, 'alert:device_offline', `${device.name} offline for ${offlineMinutes}m`);
+          'INSERT INTO activity_log (user_id, device_id, action, details, workspace_id) VALUES (?, ?, ?, ?, ?)'
+        ).run(device.user_id, device.id, 'alert:device_offline', `${device.name} offline for ${offlineMinutes}m`, device.workspace_id || null);
       } catch {}
     }
   }
