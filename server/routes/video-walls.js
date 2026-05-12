@@ -2,50 +2,44 @@ const express = require('express');
 const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const { db } = require('../db/database');
-const { PLATFORM_ROLES } = require('../middleware/auth');
+// Phase 2.2l: workspace-aware access. Drops the previous listVisibleWalls /
+// userCanAccessWall helpers - the admin/team_members branches there were
+// dead code after the Phase 2.1 role rename (no users carry role='admin'
+// anymore; team_members is a vestigial table from the pre-workspace model).
+const { accessContext } = require('../lib/tenancy');
 
-// Visibility model (matches widgets/users):
-//   superadmin: all walls
-//   admin:      own + walls owned by members of teams this admin owns
-//   user:       own only
-function listVisibleWalls(user) {
-  if (PLATFORM_ROLES.includes(user.role)) {
-    return db.prepare('SELECT * FROM video_walls ORDER BY created_at DESC').all();
+// Load a wall + access context. Returns the wall row or null after sending
+// 403/404. requireWrite=true also denies workspace_viewer.
+function loadWallAccess(req, res, requireWrite) {
+  const wall = db.prepare('SELECT * FROM video_walls WHERE id = ?').get(req.params.id);
+  if (!wall) { res.status(404).json({ error: 'Wall not found' }); return null; }
+  if (!wall.workspace_id) { res.status(403).json({ error: 'Wall not assigned to a workspace' }); return null; }
+  const ws = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(wall.workspace_id);
+  const ctx = ws && accessContext(req.user.id, req.user.role, ws);
+  if (!ctx) { res.status(403).json({ error: 'Access denied' }); return null; }
+  if (requireWrite && !ctx.actingAs && ctx.workspaceRole === 'workspace_viewer') {
+    res.status(403).json({ error: 'Read-only access' }); return null;
   }
-  if (user.role === 'admin') {
-    return db.prepare(`
-      SELECT DISTINCT w.* FROM video_walls w
-      LEFT JOIN team_members tm_target ON w.user_id = tm_target.user_id
-      LEFT JOIN team_members tm_admin
-             ON tm_admin.team_id = tm_target.team_id
-            AND tm_admin.user_id = ?
-            AND tm_admin.role = 'owner'
-      WHERE w.user_id = ?
-         OR tm_admin.team_id IS NOT NULL
-      ORDER BY w.created_at DESC
-    `).all(user.id, user.id);
-  }
-  return db.prepare('SELECT * FROM video_walls WHERE user_id = ? ORDER BY created_at DESC').all(user.id);
+  req.wall = wall;
+  req.wallCtx = ctx;
+  return wall;
 }
 
-function userCanAccessWall(user, wall) {
-  if (PLATFORM_ROLES.includes(user.role)) return true;
-  if (wall.user_id === user.id) return true;
-  if (user.role === 'admin') {
-    const ownsTeamWithOwner = db.prepare(`
-      SELECT 1 FROM team_members tm_target
-      JOIN team_members tm_admin ON tm_admin.team_id = tm_target.team_id
-      WHERE tm_target.user_id = ? AND tm_admin.user_id = ? AND tm_admin.role = 'owner'
-      LIMIT 1
-    `).get(wall.user_id, user.id);
-    if (ownsTeamWithOwner) return true;
-  }
-  return false;
+function requireWallRead(req, res, next) {
+  if (!loadWallAccess(req, res, false)) return;
+  next();
 }
 
-// List walls (with attached devices)
+function requireWallWrite(req, res, next) {
+  if (!loadWallAccess(req, res, true)) return;
+  next();
+}
+
+// List walls (with attached devices). Phase 2.2l: scoped to caller's
+// current workspace.
 router.get('/', (req, res) => {
-  const walls = listVisibleWalls(req.user);
+  if (!req.workspaceId) return res.json([]);
+  const walls = db.prepare('SELECT * FROM video_walls WHERE workspace_id = ? ORDER BY created_at DESC').all(req.workspaceId);
 
   const devStmt = db.prepare(`
     SELECT vwd.*, d.name as device_name, d.status as device_status
@@ -58,15 +52,6 @@ router.get('/', (req, res) => {
 
   res.json(walls);
 });
-
-function checkWallAccess(req, res) {
-  const wall = db.prepare('SELECT * FROM video_walls WHERE id = ?').get(req.params.id);
-  if (!wall) { res.status(404).json({ error: 'Wall not found' }); return null; }
-  if (!userCanAccessWall(req.user, wall)) {
-    res.status(403).json({ error: 'Access denied' }); return null;
-  }
-  return wall;
-}
 
 // Notify dashboard clients to re-fetch walls/devices. Re-fetches re-apply
 // per-user visibility filtering, so a broadcast is safe.
@@ -105,22 +90,38 @@ function pushToWallMembers(req, wallId) {
 }
 
 // Get wall with devices
-router.get('/:id', (req, res) => {
-  const wall = checkWallAccess(req, res);
-  if (!wall) return;
-  res.json(loadWallWithDevices(wall.id));
+router.get('/:id', requireWallRead, (req, res) => {
+  res.json(loadWallWithDevices(req.wall.id));
 });
 
-// Create wall
+// Create wall. Phase 2.2l: stamps workspace_id; closes pre-existing leak
+// where playlist_id was accepted with NO cross-tenant check (caller could
+// embed a foreign workspace's playlist into a wall they create).
 router.post('/', (req, res) => {
+  if (!req.workspaceId) return res.status(400).json({ error: 'No active workspace' });
+  const ws = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(req.workspaceId);
+  const ctx = ws && accessContext(req.user.id, req.user.role, ws);
+  if (!ctx) return res.status(403).json({ error: 'Access denied' });
+  if (!ctx.actingAs && ctx.workspaceRole === 'workspace_viewer') {
+    return res.status(403).json({ error: 'Read-only access' });
+  }
+
   const { name, grid_cols, grid_rows, bezel_h_mm, bezel_v_mm, playlist_id } = req.body;
   if (!name) return res.status(400).json({ error: 'name required' });
 
+  if (playlist_id) {
+    const pl = db.prepare('SELECT workspace_id FROM playlists WHERE id = ?').get(playlist_id);
+    if (!pl) return res.status(404).json({ error: 'Playlist not found' });
+    if (pl.workspace_id !== req.workspaceId) {
+      return res.status(403).json({ error: 'Playlist is not in this workspace' });
+    }
+  }
+
   const id = uuidv4();
   db.prepare(`
-    INSERT INTO video_walls (id, user_id, name, grid_cols, grid_rows, bezel_h_mm, bezel_v_mm, playlist_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, req.user.id, name, grid_cols || 2, grid_rows || 1,
+    INSERT INTO video_walls (id, user_id, workspace_id, name, grid_cols, grid_rows, bezel_h_mm, bezel_v_mm, playlist_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, req.user.id, req.workspaceId, name, grid_cols || 2, grid_rows || 1,
     bezel_h_mm || 0, bezel_v_mm || 0, playlist_id || null);
 
   const wall = loadWallWithDevices(id);
@@ -128,10 +129,33 @@ router.post('/', (req, res) => {
   res.status(201).json(wall);
 });
 
-// Update wall (name, grid, bezels, playlist, leader, sync_mode)
-router.put('/:id', (req, res) => {
-  const wall = checkWallAccess(req, res);
-  if (!wall) return;
+// Update wall (name, grid, bezels, playlist, leader, sync_mode). Phase 2.2l:
+// closes pre-existing leaks where playlist_id / content_id / leader_device_id
+// were accepted without any cross-tenant check.
+router.put('/:id', requireWallWrite, (req, res) => {
+  const wall = req.wall;
+
+  if (req.body.playlist_id) {
+    const pl = db.prepare('SELECT workspace_id FROM playlists WHERE id = ?').get(req.body.playlist_id);
+    if (!pl) return res.status(404).json({ error: 'Playlist not found' });
+    if (pl.workspace_id !== wall.workspace_id) {
+      return res.status(403).json({ error: 'Playlist is not in this workspace' });
+    }
+  }
+  if (req.body.content_id) {
+    const c = db.prepare('SELECT workspace_id FROM content WHERE id = ?').get(req.body.content_id);
+    if (!c) return res.status(404).json({ error: 'Content not found' });
+    if (c.workspace_id && c.workspace_id !== wall.workspace_id) {
+      return res.status(403).json({ error: 'Content is not in this workspace' });
+    }
+  }
+  if (req.body.leader_device_id) {
+    const d = db.prepare('SELECT workspace_id FROM devices WHERE id = ?').get(req.body.leader_device_id);
+    if (!d) return res.status(404).json({ error: 'Leader device not found' });
+    if (d.workspace_id !== wall.workspace_id) {
+      return res.status(403).json({ error: 'Leader device is not in this workspace' });
+    }
+  }
 
   const fields = ['name', 'grid_cols', 'grid_rows', 'bezel_h_mm', 'bezel_v_mm',
     'screen_w_mm', 'screen_h_mm', 'sync_mode', 'leader_device_id', 'content_id', 'playlist_id',
@@ -163,10 +187,7 @@ router.put('/:id', (req, res) => {
 
 // Delete wall — clear playlists + wall_id on every former member (matches
 // group-dissolve semantics: leaving the wall returns devices to ungrouped).
-router.delete('/:id', (req, res) => {
-  const wall = checkWallAccess(req, res);
-  if (!wall) return;
-
+router.delete('/:id', requireWallWrite, (req, res) => {
   const members = db.prepare('SELECT device_id FROM video_wall_devices WHERE wall_id = ?').all(req.params.id);
   const tx = db.transaction(() => {
     db.prepare("UPDATE devices SET wall_id = NULL, playlist_id = NULL WHERE wall_id = ?").run(req.params.id);
@@ -185,35 +206,21 @@ router.delete('/:id', (req, res) => {
 // Set device grid positions. Replaces the entire member set.
 // Devices removed lose their playlist (returned to ungrouped); devices added
 // inherit the wall's playlist.
-router.put('/:id/devices', (req, res) => {
+// Phase 2.2l: closes pre-existing leak. Old per-device check ran through
+// team_members (legacy table) and role==='admin' (dead since Phase 2.1) -
+// effectively only the device.user_id direct-ownership branch was active,
+// missing the workspace dimension. Now: every device must be in the wall's
+// workspace.
+router.put('/:id/devices', requireWallWrite, (req, res) => {
   const { devices } = req.body;
   if (!Array.isArray(devices)) return res.status(400).json({ error: 'devices array required' });
 
-  const wall = checkWallAccess(req, res);
-  if (!wall) return;
-
-  // Verify caller owns (or has team access to) every device they're adding.
-  // Without this a user could attach another tenant's devices to their own
-  // wall and silently take over the playlist + wall_id on those rows.
-  // Mirrors the per-device check in device-groups.js.
-  if (!PLATFORM_ROLES.includes(req.user.role)) {
-    const isAdmin = req.user.role === 'admin';
-    for (const d of devices) {
-      const dev = db.prepare('SELECT user_id, team_id FROM devices WHERE id = ?').get(d.device_id);
-      if (!dev) return res.status(404).json({ error: `Device ${d.device_id} not found` });
-      if (dev.user_id === req.user.id) continue;
-      if (isAdmin && dev.user_id) {
-        // Admin may attach team members' devices: dev's owner must be in a team this admin owns
-        const ownsTeamWithOwner = db.prepare(`
-          SELECT 1 FROM team_members tm_target
-          JOIN team_members tm_admin ON tm_admin.team_id = tm_target.team_id
-          WHERE tm_target.user_id = ? AND tm_admin.user_id = ? AND tm_admin.role = 'owner'
-          LIMIT 1
-        `).get(dev.user_id, req.user.id);
-        if (ownsTeamWithOwner) continue;
-      }
-      // Non-admin: must own the device directly
-      return res.status(403).json({ error: `Access denied to device ${d.device_id}` });
+  const wall = req.wall;
+  for (const d of devices) {
+    const dev = db.prepare('SELECT workspace_id FROM devices WHERE id = ?').get(d.device_id);
+    if (!dev) return res.status(404).json({ error: `Device ${d.device_id} not found` });
+    if (dev.workspace_id !== wall.workspace_id) {
+      return res.status(403).json({ error: `Device ${d.device_id} is not in this workspace` });
     }
   }
 
@@ -274,20 +281,27 @@ router.put('/:id/devices', (req, res) => {
   res.json(loadWallWithDevices(req.params.id));
 });
 
-// Set wall content (legacy single-video path — kept for back-compat)
-router.put('/:id/content', (req, res) => {
-  const wall = checkWallAccess(req, res);
-  if (!wall) return;
+// Set wall content (legacy single-video path — kept for back-compat).
+// Phase 2.2l: closes pre-existing leak where content_id was accepted with
+// NO cross-tenant check.
+router.put('/:id/content', requireWallWrite, (req, res) => {
+  const wall = req.wall;
   const { content_id } = req.body;
+  if (content_id) {
+    const c = db.prepare('SELECT workspace_id FROM content WHERE id = ?').get(content_id);
+    if (!c) return res.status(404).json({ error: 'Content not found' });
+    if (c.workspace_id && c.workspace_id !== wall.workspace_id) {
+      return res.status(403).json({ error: 'Content is not in this workspace' });
+    }
+  }
   db.prepare("UPDATE video_walls SET content_id = ?, updated_at = strftime('%s','now') WHERE id = ?")
     .run(content_id || null, req.params.id);
   res.json({ success: true });
 });
 
 // Get wall config for a specific device (legacy fetch path)
-router.get('/:id/device-config/:deviceId', (req, res) => {
-  const wall = checkWallAccess(req, res);
-  if (!wall) return;
+router.get('/:id/device-config/:deviceId', requireWallRead, (req, res) => {
+  const wall = req.wall;
 
   const position = db.prepare('SELECT * FROM video_wall_devices WHERE wall_id = ? AND device_id = ?')
     .get(req.params.id, req.params.deviceId);
