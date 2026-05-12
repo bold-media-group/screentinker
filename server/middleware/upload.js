@@ -41,9 +41,12 @@ const fileFilter = (req, file, cb) => {
   }
 };
 
-// `defParamCharset: 'utf8'` makes busboy decode multipart filename headers as UTF-8.
-// Default is latin1, which mangles umlauts and other non-ASCII characters
-// (e.g. "Größe.jpg" arrives as "GrÃ¶ÃŸe.jpg" and gets stored that way).
+// `defParamCharset: 'utf8'` only takes effect for RFC 5987 encoded
+// `filename*=utf-8''...` params. Most real clients (browsers, curl, programmatic
+// HTTP) send the plain `filename="..."` form, where busboy still reads the bytes
+// as latin1 regardless of this option. The actual UTF-8 recovery happens in the
+// storage.filename callback above via Buffer.from(name,'latin1').toString('utf8').
+// Kept here as defense-in-depth for the rare RFC 5987 case.
 const upload = multer({
   storage,
   fileFilter,
