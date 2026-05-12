@@ -4,7 +4,9 @@ const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const { db } = require('../db/database');
 const config = require('../config');
-const { ELEVATED_ROLES } = require('../middleware/auth');
+// Phase 2.2k: workspace-aware access. requirePlaylistOwnership is replaced
+// by read/write helpers gated on the playlist's workspace_id.
+const { accessContext } = require('../lib/tenancy');
 
 // Re-probe video duration with ffprobe if content.duration_sec is missing
 async function probeAndUpdateDuration(content) {
@@ -34,11 +36,30 @@ async function probeAndUpdateDuration(content) {
   return null;
 }
 
-// Verify playlist belongs to the authenticated user
-function requirePlaylistOwnership(req, res, next) {
-  const playlist = db.prepare('SELECT * FROM playlists WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
-  if (!playlist) return res.status(404).json({ error: 'playlist not found' });
+// Phase 2.2k: workspace-aware playlist access. Returns the playlist row (with
+// req.playlistCtx populated) or sends 403/404. requireWrite=false for reads.
+function loadPlaylistAccess(req, res, requireWrite) {
+  const playlist = db.prepare('SELECT * FROM playlists WHERE id = ?').get(req.params.id);
+  if (!playlist) { res.status(404).json({ error: 'playlist not found' }); return null; }
+  if (!playlist.workspace_id) { res.status(403).json({ error: 'Playlist not assigned to a workspace' }); return null; }
+  const ws = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(playlist.workspace_id);
+  const ctx = ws && accessContext(req.user.id, req.user.role, ws);
+  if (!ctx) { res.status(403).json({ error: 'Access denied' }); return null; }
+  if (requireWrite && !ctx.actingAs && ctx.workspaceRole === 'workspace_viewer') {
+    res.status(403).json({ error: 'Read-only access' }); return null;
+  }
   req.playlist = playlist;
+  req.playlistCtx = ctx;
+  return playlist;
+}
+
+function requirePlaylistRead(req, res, next) {
+  if (!loadPlaylistAccess(req, res, false)) return;
+  next();
+}
+
+function requirePlaylistWrite(req, res, next) {
+  if (!loadPlaylistAccess(req, res, true)) return;
   next();
 }
 
@@ -75,34 +96,45 @@ function pushToDevices(playlistId, req) {
   } catch (e) { /* silent */ }
 }
 
-// List playlists (status is already in p.*)
+// Phase 2.2k: list scoped to caller's current workspace. No platform_admin
+// bypass - cross-workspace view comes from switch-workspace, matching the
+// precedent established across all other migrated routes.
 router.get('/', (req, res) => {
+  if (!req.workspaceId) return res.json([]);
   const playlists = db.prepare(`
     SELECT p.*, COUNT(DISTINCT pi.id) as item_count, COUNT(DISTINCT d.id) as display_count
     FROM playlists p
     LEFT JOIN playlist_items pi ON p.id = pi.playlist_id
     LEFT JOIN devices d ON d.playlist_id = p.id
-    WHERE p.user_id = ?
+    WHERE p.workspace_id = ?
     GROUP BY p.id
     ORDER BY p.name ASC
-  `).all(req.user.id);
+  `).all(req.workspaceId);
   res.json(playlists);
 });
 
-// Create playlist
+// Phase 2.2k: create stamps workspace_id from req.workspaceId. Viewer-deny
+// gate so workspace_viewers cannot create playlists in their workspace.
 router.post('/', (req, res) => {
+  if (!req.workspaceId) return res.status(400).json({ error: 'No active workspace' });
+  const ws = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(req.workspaceId);
+  const ctx = ws && accessContext(req.user.id, req.user.role, ws);
+  if (!ctx) return res.status(403).json({ error: 'Access denied' });
+  if (!ctx.actingAs && ctx.workspaceRole === 'workspace_viewer') {
+    return res.status(403).json({ error: 'Read-only access' });
+  }
   const { name, description } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: 'name required' });
   const id = uuidv4();
-  db.prepare('INSERT INTO playlists (id, user_id, name, description) VALUES (?, ?, ?, ?)')
-    .run(id, req.user.id, name.trim(), (description || '').trim());
+  db.prepare('INSERT INTO playlists (id, user_id, workspace_id, name, description) VALUES (?, ?, ?, ?, ?)')
+    .run(id, req.user.id, req.workspaceId, name.trim(), (description || '').trim());
   res.status(201).json(db.prepare(`
     SELECT p.*, 0 as item_count, 0 as display_count FROM playlists p WHERE p.id = ?
   `).get(id));
 });
 
 // Get single playlist with items
-router.get('/:id', requirePlaylistOwnership, (req, res) => {
+router.get('/:id', requirePlaylistRead, (req, res) => {
   const items = db.prepare(`
     SELECT pi.*,
            COALESCE(c.filename, w.name) as filename,
@@ -120,7 +152,7 @@ router.get('/:id', requirePlaylistOwnership, (req, res) => {
 });
 
 // Update playlist
-router.put('/:id', requirePlaylistOwnership, (req, res) => {
+router.put('/:id', requirePlaylistWrite, (req, res) => {
   const { name, description } = req.body;
   const updates = [];
   const values = [];
@@ -142,7 +174,7 @@ router.put('/:id', requirePlaylistOwnership, (req, res) => {
 });
 
 // Publish playlist — snapshot current items and push to devices
-router.post('/:id/publish', requirePlaylistOwnership, (req, res) => {
+router.post('/:id/publish', requirePlaylistWrite, (req, res) => {
   const items = buildSnapshotItems(req.params.id);
   db.prepare("UPDATE playlists SET status = 'published', published_snapshot = ?, updated_at = strftime('%s','now') WHERE id = ?")
     .run(JSON.stringify(items), req.params.id);
@@ -151,7 +183,7 @@ router.post('/:id/publish', requirePlaylistOwnership, (req, res) => {
 });
 
 // Discard draft — revert playlist_items to match published_snapshot
-router.post('/:id/discard', requirePlaylistOwnership, (req, res) => {
+router.post('/:id/discard', requirePlaylistWrite, (req, res) => {
   const playlist = req.playlist;
   if (!playlist.published_snapshot) {
     return res.status(400).json({ error: 'No published version to revert to' });
@@ -201,7 +233,7 @@ router.post('/:id/discard', requirePlaylistOwnership, (req, res) => {
 });
 
 // Delete playlist
-router.delete('/:id', requirePlaylistOwnership, (req, res) => {
+router.delete('/:id', requirePlaylistWrite, (req, res) => {
   db.prepare('DELETE FROM playlists WHERE id = ?').run(req.params.id);
   res.json({ success: true });
 });
@@ -209,7 +241,7 @@ router.delete('/:id', requirePlaylistOwnership, (req, res) => {
 // --- Playlist Items ---
 
 // List items
-router.get('/:id/items', requirePlaylistOwnership, (req, res) => {
+router.get('/:id/items', requirePlaylistRead, (req, res) => {
   const items = db.prepare(`
     SELECT pi.*,
            COALESCE(c.filename, w.name) as filename,
@@ -225,8 +257,15 @@ router.get('/:id/items', requirePlaylistOwnership, (req, res) => {
   res.json(items);
 });
 
-// Add item
-router.post('/:id/items', requirePlaylistOwnership, async (req, res) => {
+// Phase 2.2k: add item closes 2 pre-existing cross-tenant leaks:
+//   1. Content gate: today checks content.user_id == caller. A workspace_admin
+//      who owns content in another workspace could push it into a playlist
+//      in this workspace. Now: content must be in playlist's workspace (or
+//      be a platform-template, workspace_id IS NULL).
+//   2. Widget gate: today checks ONLY existence - any user could attach any
+//      widget UUID to a playlist they could reach. Now: widget must be in
+//      playlist's workspace (or be a platform-template).
+router.post('/:id/items', requirePlaylistWrite, async (req, res) => {
   try {
     const { content_id, widget_id, sort_order } = req.body;
     let { duration_sec } = req.body;
@@ -236,23 +275,24 @@ router.post('/:id/items', requirePlaylistOwnership, async (req, res) => {
       return res.status(400).json({ error: 'duration_sec must be a positive integer' });
     }
 
-    // Validate content ownership; use content's native duration as default for videos
     if (content_id) {
-      const content = db.prepare('SELECT id, user_id, duration_sec, mime_type, filepath FROM content WHERE id = ?').get(content_id);
+      const content = db.prepare('SELECT id, workspace_id, duration_sec, mime_type, filepath FROM content WHERE id = ?').get(content_id);
       if (!content) return res.status(404).json({ error: 'Content not found' });
-      if (!ELEVATED_ROLES.includes(req.user.role) && content.user_id && content.user_id !== req.user.id) {
-        return res.status(403).json({ error: 'Content not owned by you' });
+      if (content.workspace_id && content.workspace_id !== req.playlist.workspace_id) {
+        return res.status(403).json({ error: 'Content is not in this playlist\'s workspace' });
       }
       if (duration_sec === undefined || duration_sec === null) {
-        // Use stored duration, or re-probe if missing (backfills content table too)
         const contentDur = await probeAndUpdateDuration(content);
         if (contentDur) duration_sec = Math.ceil(contentDur);
       }
     }
     if (duration_sec === undefined || duration_sec === null) duration_sec = 10;
     if (widget_id) {
-      const widget = db.prepare('SELECT id FROM widgets WHERE id = ?').get(widget_id);
+      const widget = db.prepare('SELECT id, workspace_id FROM widgets WHERE id = ?').get(widget_id);
       if (!widget) return res.status(404).json({ error: 'Widget not found' });
+      if (widget.workspace_id && widget.workspace_id !== req.playlist.workspace_id) {
+        return res.status(403).json({ error: 'Widget is not in this playlist\'s workspace' });
+      }
     }
 
     // Auto-increment sort_order if not specified
@@ -291,7 +331,7 @@ router.post('/:id/items', requirePlaylistOwnership, async (req, res) => {
 });
 
 // Update item
-router.put('/:id/items/:itemId', requirePlaylistOwnership, (req, res) => {
+router.put('/:id/items/:itemId', requirePlaylistWrite, (req, res) => {
   const item = db.prepare('SELECT * FROM playlist_items WHERE id = ? AND playlist_id = ?')
     .get(req.params.itemId, req.params.id);
   if (!item) return res.status(404).json({ error: 'item not found' });
@@ -331,7 +371,7 @@ router.put('/:id/items/:itemId', requirePlaylistOwnership, (req, res) => {
 });
 
 // Delete item
-router.delete('/:id/items/:itemId', requirePlaylistOwnership, (req, res) => {
+router.delete('/:id/items/:itemId', requirePlaylistWrite, (req, res) => {
   const item = db.prepare('SELECT * FROM playlist_items WHERE id = ? AND playlist_id = ?')
     .get(req.params.itemId, req.params.id);
   if (!item) return res.status(404).json({ error: 'item not found' });
@@ -342,7 +382,7 @@ router.delete('/:id/items/:itemId', requirePlaylistOwnership, (req, res) => {
 });
 
 // Reorder items
-router.post('/:id/items/reorder', requirePlaylistOwnership, (req, res) => {
+router.post('/:id/items/reorder', requirePlaylistWrite, (req, res) => {
   const { order } = req.body;
   if (!Array.isArray(order)) return res.status(400).json({ error: 'order must be an array of item IDs' });
 
@@ -371,15 +411,18 @@ router.post('/:id/items/reorder', requirePlaylistOwnership, (req, res) => {
   res.json(items);
 });
 
-// Assign playlist to a device
-router.post('/:id/assign', requirePlaylistOwnership, (req, res) => {
+// Assign playlist to a device. Phase 2.2k: closes a pre-existing cross-tenant
+// leak. Today checks device.user_id only; a caller with reach into a foreign
+// workspace could assign their own playlist to a device in that workspace
+// (or vice versa). Now: device must be in the playlist's workspace.
+router.post('/:id/assign', requirePlaylistWrite, (req, res) => {
   const { device_id } = req.body;
   if (!device_id) return res.status(400).json({ error: 'device_id required' });
 
-  const device = db.prepare('SELECT id, user_id FROM devices WHERE id = ?').get(device_id);
+  const device = db.prepare('SELECT id, workspace_id FROM devices WHERE id = ?').get(device_id);
   if (!device) return res.status(404).json({ error: 'Device not found' });
-  if (!ELEVATED_ROLES.includes(req.user.role) && device.user_id !== req.user.id) {
-    return res.status(403).json({ error: 'Device not owned by you' });
+  if (device.workspace_id !== req.playlist.workspace_id) {
+    return res.status(403).json({ error: 'Device is not in this playlist\'s workspace' });
   }
 
   db.prepare('UPDATE devices SET playlist_id = ? WHERE id = ?').run(req.params.id, device_id);

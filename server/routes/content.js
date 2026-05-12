@@ -399,9 +399,12 @@ router.delete('/:id', (req, res) => {
   // Validate UUID format to prevent LIKE wildcard injection
   const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (!UUID_RE.test(req.params.id)) return res.status(400).json({ error: 'Invalid content ID format' });
+  // Phase 2.2k: scope snapshot scrubbing by content.workspace_id (was content.user_id).
+  // Playlists referencing this content live in the same workspace; user_id-keying missed
+  // cross-user playlists in the same workspace once playlists became workspace-scoped.
   const snapshotPlaylists = db.prepare(
-    "SELECT id, published_snapshot FROM playlists WHERE user_id = ? AND published_snapshot LIKE ?"
-  ).all(content.user_id, `%${req.params.id}%`);
+    "SELECT id, published_snapshot FROM playlists WHERE workspace_id = ? AND published_snapshot LIKE ?"
+  ).all(content.workspace_id, `%${req.params.id}%`);
   for (const pl of snapshotPlaylists) {
     try {
       const items = JSON.parse(pl.published_snapshot);
