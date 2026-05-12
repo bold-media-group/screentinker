@@ -9,6 +9,8 @@ const config = require('../config');
 const { checkStorageLimit, checkRemoteUrl } = require('../middleware/subscription');
 const { sanitizeString } = require('../middleware/sanitize');
 const { PLATFORM_ROLES, ELEVATED_ROLES } = require('../middleware/auth');
+// Phase 2.2b: workspace-aware access. Mirrors the pattern from devices.js.
+const { accessContext } = require('../lib/tenancy');
 
 // Multer captures file.originalname directly from the multipart filename header,
 // bypassing sanitizeBody. Apply the same HTML-escape here so a filename like
@@ -40,14 +42,17 @@ function validateRemoteUrl(url) {
   return null;
 }
 
-// List content for current user (admins see all).
+// List content in the caller's current workspace, plus any platform-template
+// rows (workspace_id IS NULL) that are shared with all workspaces.
+// Phase 2.2b: workspace-scoped. Cross-workspace visibility comes from
+// switch-workspace, not a special list filter.
 // folder_id filter: omit for everything; "root" or "" for root-level only; <uuid> for that folder.
 router.get('/', (req, res) => {
-  const isAdmin = PLATFORM_ROLES.includes(req.user.role);
+  if (!req.workspaceId) return res.json([]);
   const folder = req.query.folder;
   const folderId = req.query.folder_id;
-  let sql = `SELECT * FROM content ${isAdmin ? 'WHERE 1=1' : 'WHERE (user_id = ? OR user_id IS NULL)'}`;
-  const params = isAdmin ? [] : [req.user.id];
+  let sql = 'SELECT * FROM content WHERE (workspace_id = ? OR workspace_id IS NULL)';
+  const params = [req.workspaceId];
   if (folder) { sql += ' AND folder = ?'; params.push(folder); }
   if (folderId !== undefined) {
     if (folderId === 'root' || folderId === '') {
@@ -63,18 +68,19 @@ router.get('/', (req, res) => {
   res.json(content);
 });
 
-// Get folders list
+// Get folders list for the caller's current workspace.
 router.get('/folders', (req, res) => {
-  const isAdmin = PLATFORM_ROLES.includes(req.user.role);
+  if (!req.workspaceId) return res.json([]);
   const folders = db.prepare(
-    `SELECT folder, COUNT(*) as count FROM content WHERE folder IS NOT NULL ${isAdmin ? '' : 'AND (user_id = ? OR user_id IS NULL)'} GROUP BY folder ORDER BY folder`
-  ).all(...(isAdmin ? [] : [req.user.id]));
+    'SELECT folder, COUNT(*) as count FROM content WHERE folder IS NOT NULL AND (workspace_id = ? OR workspace_id IS NULL) GROUP BY folder ORDER BY folder'
+  ).all(req.workspaceId);
   res.json(folders);
 });
 
 // Upload content
 router.post('/', checkStorageLimit, upload.single('file'), async (req, res) => {
   try {
+    if (!req.workspaceId) return res.status(403).json({ error: 'No workspace context. Switch to a workspace before uploading.' });
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
     const id = uuidv4();
@@ -126,9 +132,9 @@ router.post('/', checkStorageLimit, upload.single('file'), async (req, res) => {
     }
 
     db.prepare(`
-      INSERT INTO content (id, user_id, filename, filepath, mime_type, file_size, duration_sec, thumbnail_path, width, height)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, req.user.id, safeFilename(req.file.originalname), filepath, req.file.mimetype, req.file.size, durationSec, thumbnailPath, width, height);
+      INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, duration_sec, thumbnail_path, width, height)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, req.user.id, req.workspaceId, safeFilename(req.file.originalname), filepath, req.file.mimetype, req.file.size, durationSec, thumbnailPath, width, height);
 
     const content = db.prepare('SELECT * FROM content WHERE id = ?').get(id);
     res.status(201).json(content);
@@ -141,6 +147,7 @@ router.post('/', checkStorageLimit, upload.single('file'), async (req, res) => {
 // Add remote URL content
 router.post('/remote', checkRemoteUrl, (req, res) => {
   try {
+    if (!req.workspaceId) return res.status(403).json({ error: 'No workspace context. Switch to a workspace before adding remote content.' });
     const { url, name, mime_type } = req.body;
     if (!url) return res.status(400).json({ error: 'url is required' });
     const urlErr = validateRemoteUrl(url);
@@ -151,9 +158,9 @@ router.post('/remote', checkRemoteUrl, (req, res) => {
     const mimeType = mime_type || (url.match(/\.(mp4|webm|mkv|avi|mov)/i) ? 'video/mp4' : 'image/jpeg');
 
     db.prepare(`
-      INSERT INTO content (id, user_id, filename, filepath, mime_type, file_size, remote_url)
-      VALUES (?, ?, ?, '', ?, 0, ?)
-    `).run(id, req.user.id, safeFilename(filename), mimeType, url);
+      INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, remote_url)
+      VALUES (?, ?, ?, ?, '', ?, 0, ?)
+    `).run(id, req.user.id, req.workspaceId, safeFilename(filename), mimeType, url);
 
     const content = db.prepare('SELECT * FROM content WHERE id = ?').get(id);
     res.status(201).json(content);
@@ -166,6 +173,7 @@ router.post('/remote', checkRemoteUrl, (req, res) => {
 // Add YouTube content (available to all plans - no storage used)
 router.post('/youtube', async (req, res) => {
   try {
+    if (!req.workspaceId) return res.status(403).json({ error: 'No workspace context. Switch to a workspace before adding YouTube content.' });
     const { url, name } = req.body;
     if (!url) return res.status(400).json({ error: 'url is required' });
 
@@ -191,9 +199,9 @@ router.post('/youtube', async (req, res) => {
     const thumbnailUrl = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
 
     db.prepare(`
-      INSERT INTO content (id, user_id, filename, filepath, mime_type, file_size, remote_url, thumbnail_path)
-      VALUES (?, ?, ?, '', 'video/youtube', 0, ?, ?)
-    `).run(id, req.user.id, safeFilename(filename), embedUrl, thumbnailUrl);
+      INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, remote_url, thumbnail_path)
+      VALUES (?, ?, ?, ?, '', 'video/youtube', 0, ?, ?)
+    `).run(id, req.user.id, req.workspaceId, safeFilename(filename), embedUrl, thumbnailUrl);
 
     const content = db.prepare('SELECT * FROM content WHERE id = ?').get(id);
     res.status(201).json(content);
@@ -215,26 +223,50 @@ function extractYoutubeId(url) {
   return null;
 }
 
-// Helper: check content ownership
-function checkContentAccess(req, res) {
+// Phase 2.2b: workspace-aware access. Mirrors the device check pattern.
+// Platform-template content (workspace_id IS NULL) is readable by anyone
+// and writable only by platform_admin.
+function checkContentRead(req, res) {
   const content = db.prepare('SELECT * FROM content WHERE id = ?').get(req.params.id);
   if (!content) { res.status(404).json({ error: 'Content not found' }); return null; }
-  if (!ELEVATED_ROLES.includes(req.user.role) && content.user_id && content.user_id !== req.user.id) {
-    res.status(403).json({ error: 'Access denied' }); return null;
+  // Platform-template row: readable by anyone authenticated.
+  if (!content.workspace_id) return content;
+  const ws = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(content.workspace_id);
+  const ctx = ws && accessContext(req.user.id, req.user.role, ws);
+  if (!ctx) { res.status(403).json({ error: 'Access denied' }); return null; }
+  return content;
+}
+
+function checkContentWrite(req, res) {
+  const content = db.prepare('SELECT * FROM content WHERE id = ?').get(req.params.id);
+  if (!content) { res.status(404).json({ error: 'Content not found' }); return null; }
+  // Platform-template row: only platform_admin may write.
+  if (!content.workspace_id) {
+    if (!PLATFORM_ROLES.includes(req.user.role)) {
+      res.status(403).json({ error: 'Platform admin required to modify shared content' }); return null;
+    }
+    return content;
+  }
+  const ws = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(content.workspace_id);
+  const ctx = ws && accessContext(req.user.id, req.user.role, ws);
+  if (!ctx) { res.status(403).json({ error: 'Access denied' }); return null; }
+  // Workspace_viewer is read-only; acting-as (platform_admin or org owner/admin) and editor/admin pass.
+  if (!ctx.actingAs && ctx.workspaceRole === 'workspace_viewer') {
+    res.status(403).json({ error: 'Read-only access' }); return null;
   }
   return content;
 }
 
 // Get content metadata
 router.get('/:id', (req, res) => {
-  const content = checkContentAccess(req, res);
+  const content = checkContentRead(req, res);
   if (!content) return;
   res.json(content);
 });
 
 // Update content metadata
 router.put('/:id', (req, res) => {
-  const content = checkContentAccess(req, res);
+  const content = checkContentWrite(req, res);
   if (!content) return;
 
   const { filename, mime_type, remote_url, folder, folder_id } = req.body;
@@ -277,7 +309,7 @@ router.put('/:id', (req, res) => {
 
 // Replace content file
 router.put('/:id/replace', upload.single('file'), async (req, res) => {
-  const content = checkContentAccess(req, res);
+  const content = checkContentWrite(req, res);
   if (!content) return;
   if (!req.file) return res.status(400).json({ error: 'No file provided' });
 
@@ -318,7 +350,7 @@ router.put('/:id/replace', upload.single('file'), async (req, res) => {
 
 // Serve content file
 router.get('/:id/file', (req, res) => {
-  const content = checkContentAccess(req, res);
+  const content = checkContentRead(req, res);
   if (!content) return;
   if (!content.filepath) return res.status(404).json({ error: 'No file (remote URL content)' });
   // Prevent path traversal
@@ -329,7 +361,7 @@ router.get('/:id/file', (req, res) => {
 
 // Serve thumbnail
 router.get('/:id/thumbnail', (req, res) => {
-  const content = checkContentAccess(req, res);
+  const content = checkContentRead(req, res);
   if (!content) return;
   if (!content.thumbnail_path) return res.status(404).json({ error: 'Thumbnail not found' });
   const safePath = path.resolve(config.contentDir, path.basename(content.thumbnail_path));
@@ -339,7 +371,7 @@ router.get('/:id/thumbnail', (req, res) => {
 
 // Delete content
 router.delete('/:id', (req, res) => {
-  const content = checkContentAccess(req, res);
+  const content = checkContentWrite(req, res);
   if (!content) return;
 
   // Delete file from disk (skip for remote URL content)

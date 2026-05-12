@@ -179,11 +179,13 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
   if (!authHeader?.startsWith('Bearer ')) return res.status(401).json({ error: 'Token required' });
 
   let userId;
+  let workspaceId;
   try {
     const jwt = require('jsonwebtoken');
     const jwtConfig = require('../config');
     const decoded = jwt.verify(authHeader.split(' ')[1], jwtConfig.jwtSecret);
     userId = decoded.id;
+    workspaceId = decoded.current_workspace_id || null;
     if (!userId) return res.status(401).json({ error: 'Invalid token' });
   } catch {
     return res.status(401).json({ error: 'Invalid token' });
@@ -191,6 +193,19 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
 
   const user = db.prepare('SELECT id, role FROM users WHERE id = ?').get(userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
+
+  // Phase 2.2b: imports stamp workspace_id on devices and content so the
+  // rows are visible to the workspace-filtered list endpoints. Fall back to
+  // the importer's first accessible workspace if the JWT didn't carry one.
+  if (!workspaceId) {
+    const w = db.prepare(`
+      SELECT w.id FROM workspaces w
+      JOIN workspace_members wm ON wm.workspace_id = w.id
+      WHERE wm.user_id = ? ORDER BY wm.joined_at ASC LIMIT 1
+    `).get(userId);
+    workspaceId = w?.id || null;
+  }
+  if (!workspaceId) return res.status(403).json({ error: 'No workspace context for import. Switch to a workspace first.' });
 
   let data;
   let extractedFiles = {}; // Map of old content ID -> { filepath, thumbnail }
@@ -262,7 +277,7 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
       const newId = uuid.v4();
       idMap.devices[d.id] = newId;
       const pairingCode = String(Math.floor(100000 + Math.random() * 900000));
-      db.prepare(`INSERT INTO devices (id, user_id, name, pairing_code, status, screen_width, screen_height, created_at) VALUES (?, ?, ?, ?, 'provisioning', ?, ?, ?)`).run(newId, userId, d.name, pairingCode, d.screen_width || null, d.screen_height || null, d.created_at || Math.floor(Date.now() / 1000));
+      db.prepare(`INSERT INTO devices (id, user_id, workspace_id, name, pairing_code, status, screen_width, screen_height, created_at) VALUES (?, ?, ?, ?, ?, 'provisioning', ?, ?, ?)`).run(newId, userId, workspaceId, d.name, pairingCode, d.screen_width || null, d.screen_height || null, d.created_at || Math.floor(Date.now() / 1000));
       stats.devices++;
     }
 
@@ -299,7 +314,7 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
         }
       }
 
-      db.prepare(`INSERT INTO content (id, user_id, filename, filepath, mime_type, file_size, duration_sec, remote_url, thumbnail_path, width, height, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(newId, userId, c.filename, newFilepath, c.mime_type, c.file_size || 0, c.duration_sec || null, c.remote_url || null, newThumbnail, c.width || null, c.height || null, c.created_at || Math.floor(Date.now() / 1000));
+      db.prepare(`INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, duration_sec, remote_url, thumbnail_path, width, height, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(newId, userId, workspaceId, c.filename, newFilepath, c.mime_type, c.file_size || 0, c.duration_sec || null, c.remote_url || null, newThumbnail, c.width || null, c.height || null, c.created_at || Math.floor(Date.now() / 1000));
       stats.content++;
     }
 
