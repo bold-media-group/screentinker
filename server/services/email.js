@@ -138,6 +138,7 @@ async function sendEmail({ to, subject, text, html }) {
   try {
     const token = await getAccessToken();
     await postSendMail(token, buildSendMailPayload(to, subject, text, html));
+    console.log(`[EMAIL] sent to ${to}: ${subject}`);
     return { sent: true };
   } catch (e) {
     console.error(`[EMAIL] Graph send failed for ${to}: ${e.message}`);
