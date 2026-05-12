@@ -121,15 +121,42 @@ Let users sign in with Microsoft/Azure AD.
 | `MICROSOFT_CLIENT_ID` | Your Azure AD application client ID |
 | `MICROSOFT_TENANT_ID` | Tenant ID (`common` for multi-tenant) |
 
-#### Email Alerts
+#### Email Alerts (Microsoft Graph)
 
-Send email notifications when devices go offline.
+Send email notifications when devices go offline. Backed by Microsoft Graph Mail.Send via the client-credentials flow.
 
 | Variable | Description |
 |----------|-------------|
-| `EMAIL_WEBHOOK_URL` | POST endpoint that sends emails. Receives JSON: `{ to, subject, body }` |
+| `GRAPH_TENANT_ID` | Microsoft Azure AD tenant ID |
+| `GRAPH_CLIENT_ID` | Azure AD app registration client ID |
+| `GRAPH_CLIENT_SECRET` | Azure AD app registration client secret |
+| `GRAPH_SENDER_EMAIL` | Mailbox to send from (must be a valid mailbox or alias in the tenant) |
+| `GRAPH_SENDER_NAME` | Display name shown in the email `From` field (defaults to `ScreenTinker`) |
 
-You can point this at any email sending service (SendGrid, Mailgun, a simple SMTP relay, etc.) via a small webhook adapter.
+**Azure AD app setup:**
+
+1. Register a new app in Azure AD (single-tenant)
+2. Under **API permissions**, add an **Application** permission: Microsoft Graph → `Mail.Send`
+3. Click **Grant admin consent** for the tenant
+4. Under **Certificates & secrets**, generate a new **Client secret** and capture the value (it is only shown once)
+5. Capture the **Directory (tenant) ID** and **Application (client) ID** from the Overview page
+6. Set the five env vars above in your deployment (systemd unit, `.env` file, etc.)
+
+**Local dev fallback:** if any of `GRAPH_TENANT_ID`, `GRAPH_CLIENT_ID`, `GRAPH_CLIENT_SECRET`, or `GRAPH_SENDER_EMAIL` is unset, `sendEmail()` short-circuits and logs `[EMAIL] not configured - would send to ...` to stdout instead of calling Graph. The app keeps running normally; only delivery is suppressed. This means a minimal local-dev install with no M365 access works fine — email-triggering features (device-offline alerts, future invite emails) just won't deliver anything externally.
+
+**Dev safety allow-list:**
+
+| Variable | Description |
+|----------|-------------|
+| `GRAPH_DEV_RESTRICT_TO` | Comma-separated allow-list of recipient emails. When set, sends to addresses **not** in the list are suppressed (logged but never posted to Graph). |
+
+Use this in local dev when running against a fresh production database clone to prevent accidental emails to real users. Leave it **unset in production** so emails flow to everyone normally.
+
+**Alert spam protections** (also live, no configuration needed):
+- **2-hour dedup window** per (alert-type, target-id) pair — the same device won't trigger repeated alerts within two hours
+- **24-hour long-offline cutoff** — devices that have been offline for more than 24 hours stop generating alerts (the user already knows or the device is abandoned; further alerts are noise)
+- **Sequential send pattern** through the offline-alert backlog — avoids Graph's per-app concurrent-send throttling (HTTP 429 `ApplicationThrottled`)
+- **Per-user opt-out** via the `email_alerts` toggle in Settings → Account; respects user preference before any Graph call
 
 ### Production Deployment
 
