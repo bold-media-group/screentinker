@@ -323,7 +323,7 @@ router.post('/import', importUpload.single('file'), async (req, res) => {
       const newId = uuid.v4();
       idMap.widgets[w.id] = newId;
       const config = typeof w.config === 'string' ? w.config : JSON.stringify(w.config || {});
-      db.prepare(`INSERT INTO widgets (id, user_id, widget_type, name, config, created_at) VALUES (?, ?, ?, ?, ?, ?)`).run(newId, userId, w.widget_type, w.name, config, w.created_at || Math.floor(Date.now() / 1000));
+      db.prepare(`INSERT INTO widgets (id, user_id, workspace_id, widget_type, name, config, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(newId, userId, workspaceId, w.widget_type, w.name, config, w.created_at || Math.floor(Date.now() / 1000));
       stats.widgets++;
     }
 

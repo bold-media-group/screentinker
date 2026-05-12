@@ -273,11 +273,12 @@ app.get('/api/content/:id/file', (req, res) => {
   if (!content) return res.status(404).json({ error: 'Content not found' });
   if (!content.filepath) return res.status(404).json({ error: 'No file (remote URL content)' });
   const inPlaylist = db.prepare('SELECT id FROM playlist_items WHERE content_id = ? LIMIT 1').get(req.params.id);
-  // Scope widget lookup to content owner's widgets only — prevents a user from unlocking
-  // another user's content by creating their own widget that references the UUID.
+  // Scope widget lookup to widgets in the content's workspace — prevents a user
+  // in another workspace from unlocking this content by creating a widget that
+  // references the UUID. Phase 2.2d: keyed off content.workspace_id (was user_id).
   // Perf note: LIKE scan on widgets.config is O(n) per request. Fine at current scale
   // (<100 widgets); revisit with a content_widget_refs join table if this grows.
-  const inWidget = inPlaylist ? null : db.prepare('SELECT id FROM widgets WHERE user_id = ? AND config LIKE ? LIMIT 1').get(content.user_id, `%/api/content/${req.params.id}/%`);
+  const inWidget = inPlaylist ? null : db.prepare('SELECT id FROM widgets WHERE workspace_id = ? AND config LIKE ? LIMIT 1').get(content.workspace_id, `%/api/content/${req.params.id}/%`);
   if (!inPlaylist && !inWidget) return res.status(403).json({ error: 'Content not assigned to any playlist or widget' });
   const safePath = path.resolve(config.contentDir, path.basename(content.filepath));
   if (!safePath.startsWith(path.resolve(config.contentDir))) return res.status(403).json({ error: 'Invalid path' });
