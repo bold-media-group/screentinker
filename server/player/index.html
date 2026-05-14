@@ -364,6 +364,26 @@
     }
 
     // ==================== Boot ====================
+
+    // Function used by connect button and auto-connect
+    let autoContinueTimer;
+    function connectBtnFunc() {
+        if (autoContinueTimer) {
+          clearInterval(autoContinueTimer);
+          autoContinueTimer = null;
+          document.getElementById('connectBtn').textContent = _t('connect');
+        }
+        unlockAudio();
+        const url = document.getElementById('serverUrl').value.trim().replace(/\/$/, '');
+        if (!url) return;
+        config.serverUrl = url;
+        saveConfig(config);
+        document.getElementById('connectBtn').disabled = true;
+        document.getElementById('setupSpinner').style.display = 'block';
+        document.getElementById('setupStatus').textContent = 'Connecting...';
+        connect(url);
+      };
+
     // Auto-detect server URL from origin since player is served from the same server
     if (!config.serverUrl) {
       config.serverUrl = window.location.origin;
@@ -411,6 +431,31 @@
           }
         }, 5000);
       }
+    } else {
+      // Auto-Continue after 5s if not configured. If user interacts with form (typing in the box), stop the timer.
+      
+      let countdown = 5;
+      const connectBtn = document.getElementById('connectBtn');
+
+      connectBtn.textContent = `${_t('connect')} (${countdown})`;
+
+      autoContinueTimer = setInterval(() => {
+        countdown--;
+        if (countdown > 0) {
+          connectBtn.textContent = `${_t('connect')} (${countdown})`;
+        } else {
+          clearInterval(autoContinueTimer);
+          connectBtn.textContent = _t('connect');
+          connectBtnFunc()
+        }
+      }, 1000);
+
+      document.getElementById('serverUrl').addEventListener('input', () => {
+        if (countdown > 0) {
+          clearInterval(autoContinueTimer);
+          connectBtn.textContent = _t('connect');
+        }
+      });
     }
 
     // ==================== Setup UI ====================
@@ -445,17 +490,7 @@
       } catch (e) { console.warn('YT unmute failed:', e); }
     }
 
-    document.getElementById('connectBtn').onclick = () => {
-      unlockAudio();
-      const url = document.getElementById('serverUrl').value.trim().replace(/\/$/, '');
-      if (!url) return;
-      config.serverUrl = url;
-      saveConfig(config);
-      document.getElementById('connectBtn').disabled = true;
-      document.getElementById('setupSpinner').style.display = 'block';
-      document.getElementById('setupStatus').textContent = 'Connecting...';
-      connect(url);
-    };
+    document.getElementById('connectBtn').onclick = connectBtnFunc;
 
     // ==================== Socket Connection ====================
     function connect(serverUrl) {
