@@ -369,6 +369,9 @@ export default {
   'device.toast.launch_sent': 'Launch command sent',
   'device.toast.update_triggered': 'Update check triggered',
   'device.toast.remote_started': 'Remote session started',
+  'device.toast.command_queued': '{cmd} — device offline, will deliver on reconnect',
+  'device.toast.command_undeliverable': '{cmd} — device offline and queue unavailable',
+  'device.toast.command_no_ack': '{cmd} — no server response',
 
   // Settings
   'settings.title': 'Settings',

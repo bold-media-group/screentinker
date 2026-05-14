@@ -705,14 +705,26 @@ async function setupActions(device) {
     }, 3000);
   });
 
+  // Send a command and surface the three-state ack as a toast.
+  // - delivered: device received it (green/success)
+  // - queued: device is offline, will deliver on reconnect (amber/warning)
+  // - no_ack / fallback: server didn't respond or queue unavailable (red/error)
+  function sendWithFeedback(type, cmdLabel, successKey) {
+    sendCommand(device.id, type, {}, (ack) => {
+      if (ack?.delivered) showToast(t(successKey), 'success');
+      else if (ack?.queued) showToast(t('device.toast.command_queued', { cmd: cmdLabel }), 'warning');
+      else if (ack?.reason === 'no_ack') showToast(t('device.toast.command_no_ack', { cmd: cmdLabel }), 'error');
+      else showToast(t('device.toast.command_undeliverable', { cmd: cmdLabel }), 'error');
+    });
+  }
+
   // Reboot (double-click to confirm)
   const rebootBtn = document.getElementById('rebootBtn');
   let rebootConfirming = false;
   let rebootTimeout = null;
   rebootBtn?.addEventListener('click', () => {
     if (rebootConfirming) {
-      sendCommand(device.id, 'reboot', {});
-      showToast(t('device.toast.reboot_sent'), 'info');
+      sendWithFeedback('reboot', 'Reboot', 'device.toast.reboot_sent');
       rebootConfirming = false;
       rebootBtn.textContent = t('device.ctl.reboot_device');
       return;
@@ -732,8 +744,7 @@ async function setupActions(device) {
   let shutdownTimeout = null;
   shutdownBtn?.addEventListener('click', () => {
     if (shutdownConfirming) {
-      sendCommand(device.id, 'shutdown', {});
-      showToast(t('device.toast.shutdown_sent'), 'info');
+      sendWithFeedback('shutdown', 'Shutdown', 'device.toast.shutdown_sent');
       shutdownConfirming = false;
       shutdownBtn.textContent = t('device.ctl.shutdown');
       return;
@@ -753,26 +764,22 @@ async function setupActions(device) {
 
   // Screen Off
   document.getElementById('screenOffBtn')?.addEventListener('click', () => {
-    sendCommand(device.id, 'screen_off', {});
-    showToast(t('device.toast.screen_off_sent'), 'info');
+    sendWithFeedback('screen_off', 'Screen off', 'device.toast.screen_off_sent');
   });
 
   // Screen On
   document.getElementById('screenOnBtn')?.addEventListener('click', () => {
-    sendCommand(device.id, 'screen_on', {});
-    showToast(t('device.toast.screen_on_sent'), 'info');
+    sendWithFeedback('screen_on', 'Screen on', 'device.toast.screen_on_sent');
   });
 
   // Launch Player
   document.getElementById('launchAppBtn')?.addEventListener('click', () => {
-    sendCommand(device.id, 'launch', {});
-    showToast(t('device.toast.launch_sent'), 'info');
+    sendWithFeedback('launch', 'Launch', 'device.toast.launch_sent');
   });
 
   // Force Update
   document.getElementById('forceUpdateBtn')?.addEventListener('click', () => {
-    sendCommand(device.id, 'update', {});
-    showToast(t('device.toast.update_triggered'), 'info');
+    sendWithFeedback('update', 'Update', 'device.toast.update_triggered');
   });
 }
 

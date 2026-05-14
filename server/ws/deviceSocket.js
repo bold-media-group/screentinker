@@ -5,6 +5,19 @@ const fs = require('fs');
 const { db, pruneTelemetry, pruneScreenshots } = require('../db/database');
 const config = require('../config');
 const heartbeat = require('../services/heartbeat');
+const commandQueue = require('../lib/command-queue');
+
+// Debounce window for marking a device offline on socket disconnect. Brief
+// flap (Wi-Fi blip, Engine.IO ping miss, server-side eviction-then-reconnect)
+// shouldn't toggle the dashboard. If a fresh register lands within this
+// window, the pending offline transition is cancelled. Per-device timer is
+// stored here; cleared by the register handlers and by stale-disconnect
+// guards. In-memory only - the heartbeat checker is the safety net for
+// server-restart-during-grace-window edge cases (any 'online' rows whose
+// last_heartbeat is older than heartbeatTimeout get marked offline by the
+// next checker sweep within heartbeatInterval).
+const pendingOfflines = new Map();
+const OFFLINE_DEBOUNCE_MS = 5000;
 const { getUserPlan, getUserDeviceCount } = require('../middleware/subscription');
 // Phase 2.3: deviceRoom() resolves a device_id to its workspace room so
 // dashboardNs.emit can be scoped instead of broadcast platform-wide.
@@ -242,6 +255,11 @@ module.exports = function setupDeviceSocket(io) {
                 db.prepare('UPDATE devices SET device_token = ? WHERE id = ?').run(newToken, existing.device_id);
                 console.log(`Fingerprint match: linking reinstalled app to existing device ${existing.device_id} (new token issued)`);
                 authenticated = true;
+                // Cancel any pending offline timer - device is back in the grace window
+                if (pendingOfflines.has(existing.device_id)) {
+                  clearTimeout(pendingOfflines.get(existing.device_id));
+                  pendingOfflines.delete(existing.device_id);
+                }
                 evictPriorSocket(existing.device_id, socket.id);
                 db.prepare("UPDATE devices SET status = 'online', last_heartbeat = strftime('%s','now'), ip_address = ?, updated_at = strftime('%s','now') WHERE id = ?")
                   .run(getClientIp(socket), existing.device_id);
@@ -255,6 +273,8 @@ module.exports = function setupDeviceSocket(io) {
                 socket.join(existing.device_id);
                 logDeviceStatus(existing.device_id, 'online');
                 emitToDeviceWorkspace(dashboardNs, existing.device_id, 'dashboard:device-status', { device_id: existing.device_id, status: 'online' });
+                // Flush any commands/playlist-updates queued while this device was offline.
+                commandQueue.flushQueue(deviceNs, existing.device_id, buildPlaylistPayload);
                 // Send playlist
                 const access = checkDeviceAccess(existing.device_id);
                 if (!access.allowed) {
@@ -287,6 +307,11 @@ module.exports = function setupDeviceSocket(io) {
 
           currentDeviceId = device_id;
           authenticated = true;
+          // Cancel any pending offline timer - device is back in the grace window
+          if (pendingOfflines.has(device_id)) {
+            clearTimeout(pendingOfflines.get(device_id));
+            pendingOfflines.delete(device_id);
+          }
           evictPriorSocket(device_id, socket.id);
           db.prepare("UPDATE devices SET status = 'online', last_heartbeat = strftime('%s','now'), ip_address = ?, updated_at = strftime('%s','now') WHERE id = ?")
             .run(getClientIp(socket), device_id);
@@ -307,6 +332,8 @@ module.exports = function setupDeviceSocket(io) {
           socket.join(device_id);
           socket.emit('device:registered', { device_id, device_token: tokenToSend, status: 'online' });
           logDeviceStatus(device_id, 'online');
+          // Flush any commands/playlist-updates queued while this device was offline.
+          commandQueue.flushQueue(deviceNs, device_id, buildPlaylistPayload);
 
           // If this device is part of a wall, re-evaluate leadership.
           // Preferred leader = online member with smallest (canvas_x +
@@ -333,7 +360,7 @@ module.exports = function setupDeviceSocket(io) {
                     const members = db.prepare('SELECT device_id FROM video_wall_devices WHERE wall_id = ?').all(wall.id);
                     for (const m of members) {
                       if (m.device_id !== device_id) {
-                        deviceNs.to(m.device_id).emit('device:playlist-update', buildPlaylistPayload(m.device_id));
+                        commandQueue.queueOrEmitPlaylistUpdate(deviceNs, m.device_id, buildPlaylistPayload);
                       }
                     }
                   }
@@ -560,68 +587,82 @@ module.exports = function setupDeviceSocket(io) {
     });
 
     socket.on('disconnect', () => {
-      if (currentDeviceId) {
-        // If a newer socket has already taken over this device_id, this is a stale
-        // disconnect from a replaced socket — skip the offline transition so we don't
-        // flip an actively-connected device offline or clobber the new heartbeat entry.
-        const activeConn = heartbeat.getConnection(currentDeviceId);
-        if (activeConn && activeConn.socketId !== socket.id) {
-          console.log(`Stale disconnect for ${currentDeviceId} (socket ${socket.id}); active is ${activeConn.socketId}, skipping offline`);
-          return;
-        }
+      if (!currentDeviceId) return;
 
-        console.log(`Device disconnected: ${currentDeviceId}`);
-        db.prepare("UPDATE devices SET status = 'offline', updated_at = strftime('%s','now') WHERE id = ?")
-          .run(currentDeviceId);
-        heartbeat.removeConnection(currentDeviceId);
-        logDeviceStatus(currentDeviceId, 'offline');
-        emitToDeviceWorkspace(dashboardNs, currentDeviceId, 'dashboard:device-status', { device_id: currentDeviceId, status: 'offline' });
+      // Stale-disconnect guard: a newer socket already took over this device_id
+      // via eviction. Skip the offline transition entirely - don't even start a
+      // debounce timer.
+      const activeConn = heartbeat.getConnection(currentDeviceId);
+      if (activeConn && activeConn.socketId !== socket.id) {
+        console.log(`Stale disconnect for ${currentDeviceId} (socket ${socket.id}); active is ${activeConn.socketId}, skipping offline`);
+        return;
+      }
+
+      const deviceId = currentDeviceId;
+      const closingSocketId = socket.id;
+      console.log(`Device disconnected: ${deviceId} (offline transition deferred ${OFFLINE_DEBOUNCE_MS}ms)`);
+
+      // Defensive: clear any existing timer for this device. Shouldn't happen
+      // (register would have cleared it), but if two disconnects fire in
+      // sequence we want the second to refresh the window, not double up.
+      if (pendingOfflines.has(deviceId)) clearTimeout(pendingOfflines.get(deviceId));
+
+      pendingOfflines.set(deviceId, setTimeout(() => {
+        pendingOfflines.delete(deviceId);
+        // Re-check at fire time: did a DIFFERENT socket reclaim during the
+        // grace window? If activeConn exists but it's still our (now-closed)
+        // socket's entry, the entry is just stale - heartbeat.removeConnection
+        // hasn't run yet because we defer it inside this same block. Only
+        // abort if a genuinely different socket has registered.
+        const activeNow = heartbeat.getConnection(deviceId);
+        if (activeNow && activeNow.socketId !== closingSocketId) return;
+
+        db.prepare("UPDATE devices SET status = 'offline', updated_at = strftime('%s','now') WHERE id = ?").run(deviceId);
+        heartbeat.removeConnection(deviceId);
+        logDeviceStatus(deviceId, 'offline');
+        emitToDeviceWorkspace(dashboardNs, deviceId, 'dashboard:device-status', { device_id: deviceId, status: 'offline' });
 
         // If this device was leading a wall, reassign leadership to the next
-        // online member so playback stays driven. Without this the wall freezes
-        // when the leader drops.
+        // online member so playback stays driven.
         try {
-          const wall = db.prepare('SELECT id FROM video_walls WHERE leader_device_id = ?').get(currentDeviceId);
+          const wall = db.prepare('SELECT id FROM video_walls WHERE leader_device_id = ?').get(deviceId);
           if (wall) {
             const candidates = db.prepare(`
               SELECT vwd.device_id FROM video_wall_devices vwd
               JOIN devices d ON d.id = vwd.device_id
               WHERE vwd.wall_id = ? AND d.status = 'online' AND vwd.device_id != ?
               ORDER BY vwd.grid_row, vwd.grid_col LIMIT 1
-            `).all(wall.id, currentDeviceId);
+            `).all(wall.id, deviceId);
             const newLeader = candidates[0]?.device_id || null;
             db.prepare('UPDATE video_walls SET leader_device_id = ? WHERE id = ?').run(newLeader, wall.id);
-            // Notify the new leader (and refresh peers' is_leader flags).
             const members = db.prepare('SELECT device_id FROM video_wall_devices WHERE wall_id = ?').all(wall.id);
             for (const m of members) {
-              if (m.device_id !== currentDeviceId) {
-                deviceNs.to(m.device_id).emit('device:playlist-update', buildPlaylistPayload(m.device_id));
+              if (m.device_id !== deviceId) {
+                commandQueue.queueOrEmitPlaylistUpdate(deviceNs, m.device_id, buildPlaylistPayload);
               }
             }
           }
         } catch (e) { console.error('Wall leader reassign failed:', e.message); }
 
         // Save last screenshot to disk as offline snapshot
-        const lastB64 = lastScreenshots[currentDeviceId];
+        const lastB64 = lastScreenshots[deviceId];
         if (lastB64) {
           try {
-            const filename = `${currentDeviceId}_latest.jpg`;
+            const filename = `${deviceId}_latest.jpg`;
             const buffer = Buffer.from(lastB64, 'base64');
             fs.writeFileSync(path.join(config.screenshotsDir, filename), buffer);
-            // Upsert screenshot record
-            const existing = db.prepare('SELECT id FROM screenshots WHERE device_id = ?').get(currentDeviceId);
+            const existing = db.prepare('SELECT id FROM screenshots WHERE device_id = ?').get(deviceId);
             if (existing) {
-              db.prepare('UPDATE screenshots SET filepath = ?, captured_at = strftime(\'%s\',\'now\') WHERE device_id = ?')
-                .run(filename, currentDeviceId);
+              db.prepare('UPDATE screenshots SET filepath = ?, captured_at = strftime(\'%s\',\'now\') WHERE device_id = ?').run(filename, deviceId);
             } else {
-              db.prepare('INSERT INTO screenshots (device_id, filepath) VALUES (?, ?)').run(currentDeviceId, filename);
+              db.prepare('INSERT INTO screenshots (device_id, filepath) VALUES (?, ?)').run(deviceId, filename);
             }
           } catch (e) {
             console.error('Failed to save offline screenshot:', e.message);
           }
-          delete lastScreenshots[currentDeviceId];
+          delete lastScreenshots[deviceId];
         }
-      }
+      }, OFFLINE_DEBOUNCE_MS));
     });
   });
 

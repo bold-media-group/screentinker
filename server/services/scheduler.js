@@ -106,8 +106,8 @@ function parseSimpleRRule(rrule) {
 function pushPlaylistToDevice(deviceId, deviceNs) {
   // Use the single-source buildPlaylistPayload from deviceSocket
   const { buildPlaylistPayload } = require('../ws/deviceSocket');
-  const payload = buildPlaylistPayload(deviceId);
-  deviceNs.to(deviceId).emit('device:playlist-update', payload);
+  const commandQueue = require('../lib/command-queue');
+  commandQueue.queueOrEmitPlaylistUpdate(deviceNs, deviceId, buildPlaylistPayload);
 }
 
 module.exports = { startScheduler, pushPlaylistToDevice };

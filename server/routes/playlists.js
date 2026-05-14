@@ -89,9 +89,11 @@ function pushToDevices(playlistId, req) {
     const io = req.app.get('io');
     if (!io) return;
     const { buildPlaylistPayload } = require('../ws/deviceSocket');
+    const commandQueue = require('../lib/command-queue');
+    const deviceNs = io.of('/device');
     const devices = db.prepare('SELECT id FROM devices WHERE playlist_id = ?').all(playlistId);
     for (const d of devices) {
-      io.of('/device').to(d.id).emit('device:playlist-update', buildPlaylistPayload(d.id));
+      commandQueue.queueOrEmitPlaylistUpdate(deviceNs, d.id, buildPlaylistPayload);
     }
   } catch (e) { /* silent */ }
 }
@@ -449,7 +451,8 @@ router.post('/:id/assign', requirePlaylistWrite, (req, res) => {
     const io = req.app.get('io');
     if (io) {
       const { buildPlaylistPayload } = require('../ws/deviceSocket');
-      io.of('/device').to(device_id).emit('device:playlist-update', buildPlaylistPayload(device_id));
+      const commandQueue = require('../lib/command-queue');
+      commandQueue.queueOrEmitPlaylistUpdate(io.of('/device'), device_id, buildPlaylistPayload);
     }
   } catch (e) { /* silent */ }
 

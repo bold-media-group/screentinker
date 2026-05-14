@@ -81,7 +81,8 @@ function pushWallPayloadToDevice(req, deviceId) {
     const io = req.app.get('io');
     if (!io) return;
     const { buildPlaylistPayload } = require('../ws/deviceSocket');
-    io.of('/device').to(deviceId).emit('device:playlist-update', buildPlaylistPayload(deviceId));
+    const commandQueue = require('../lib/command-queue');
+    commandQueue.queueOrEmitPlaylistUpdate(io.of('/device'), deviceId, buildPlaylistPayload);
   } catch (e) { /* silent */ }
 }
 

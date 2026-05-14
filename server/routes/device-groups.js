@@ -217,8 +217,8 @@ function pushPlaylistToDevice(req, deviceId) {
     const io = req.app.get('io');
     if (!io) return;
     const { buildPlaylistPayload } = require('../ws/deviceSocket');
-    const deviceNs = io.of('/device');
-    deviceNs.to(deviceId).emit('device:playlist-update', buildPlaylistPayload(deviceId));
+    const commandQueue = require('../lib/command-queue');
+    commandQueue.queueOrEmitPlaylistUpdate(io.of('/device'), deviceId, buildPlaylistPayload);
   } catch (e) { /* silent */ }
 }
 

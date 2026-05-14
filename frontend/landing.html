@@ -85,6 +85,24 @@
     .platform-item .icon { font-size:40px; margin-bottom:8px; }
     .platform-item .name { font-size:13px; color:var(--muted); }
 
+    /* Modal (mirrors frontend/css/main.css conventions so screenshots look
+       consistent across landing and dashboard; copied inline since
+       landing.html doesn't import main.css). */
+    .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.6); display:flex; align-items:center; justify-content:center; z-index:1000; padding:16px; }
+    .modal { background:var(--card); border:1px solid var(--border); border-radius:12px; width:100%; max-width:560px; max-height:90vh; overflow-y:auto; }
+    .modal-header { padding:20px 24px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; }
+    .modal-header h3 { font-size:18px; margin:0; }
+    .modal-close { background:none; border:none; color:var(--muted); font-size:24px; cursor:pointer; padding:0; line-height:1; }
+    .modal-body { padding:20px 24px; }
+    .modal-description { color:var(--muted); font-size:14px; margin-bottom:16px; }
+    .modal-footer { padding:16px 24px; border-top:1px solid var(--border); display:flex; gap:12px; justify-content:flex-end; }
+    .modal-body label { display:block; margin-bottom:12px; font-size:13px; color:var(--text); }
+    .modal-body input, .modal-body select, .modal-body textarea { width:100%; margin-top:4px; padding:8px 10px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; font-size:14px; font-family:inherit; box-sizing:border-box; }
+    .modal-body input:focus, .modal-body select:focus, .modal-body textarea:focus { outline:none; border-color:var(--accent); }
+    .modal-body textarea { resize:vertical; }
+    .contact-status-success { color:#10b981; font-size:13px; }
+    .contact-status-error { color:#f87171; font-size:13px; }
+
     /* Pricing */
     .pricing { max-width:1200px; margin:0 auto; padding:80px 24px; }
     .pricing h2 { text-align:center; font-size:36px; margin-bottom:12px; }
@@ -376,6 +394,56 @@
     </div>
   </div>
 
+  <!-- Enterprise contact form modal. Opened by the Enterprise / Custom card's
+       Contact Us button. Submits to POST /api/contact/enterprise which sends
+       the inquiry via Microsoft Graph to dan@bytetinker.net. -->
+  <div class="modal-overlay" id="contactModal" style="display:none">
+    <div class="modal" role="dialog" aria-labelledby="contactModalTitle" aria-modal="true">
+      <div class="modal-header">
+        <h3 id="contactModalTitle">Enterprise Inquiry</h3>
+        <button type="button" class="modal-close" onclick="closeContactModal()" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-description">Tell us about your deployment and we'll get back to you within one business day.</p>
+        <form id="contactForm" novalidate>
+          <label>Name *<input name="name" type="text" required autocomplete="name" maxlength="200"></label>
+          <label>Email *<input name="email" type="email" required autocomplete="email" maxlength="200"></label>
+          <label>Company / organization *<input name="company" type="text" required autocomplete="organization" maxlength="200"></label>
+          <label>Estimated number of screens *<input name="screens" type="number" min="1" max="100000" required></label>
+          <label>Multi-tenant? *
+            <select name="multi_tenant" required>
+              <option value="">Select one</option>
+              <option value="single">Single organization</option>
+              <option value="multi">Multiple organizations / managing screens for multiple clients</option>
+            </select>
+          </label>
+          <label>Hosting preference *
+            <select name="hosting" required>
+              <option value="">Select one</option>
+              <option value="hosted">Hosted for me</option>
+              <option value="self">Self-host</option>
+              <option value="unsure">Not sure yet</option>
+            </select>
+          </label>
+          <label>Message<textarea name="message" rows="4" maxlength="5000"></textarea></label>
+          <!-- Honeypot: hidden from real users (off-screen + aria-hidden +
+               tabindex=-1), bots fill anything they see. If this comes back
+               populated, the server returns success but drops the submission.
+               Field name 'fax_number' is plausible enough to fool mid-tier
+               bots that explicitly skip the obvious 'website' name. -->
+          <div style="position:absolute;left:-9999px" aria-hidden="true">
+            <label>Fax number<input name="fax_number" type="text" tabindex="-1" autocomplete="off"></label>
+          </div>
+          <div id="contactFormStatus" style="min-height:20px;margin-top:8px"></div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline" onclick="closeContactModal()">Cancel</button>
+        <button type="button" class="btn btn-primary" id="contactSubmitBtn" onclick="submitContactForm()">Send</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Structured Data for Google -->
   <script type="application/ld+json">
   {
@@ -495,10 +563,18 @@
   </script>
 
   <script>
-    // Load pricing from API
+    // Load pricing from API. The 'enterprise' plan is filtered out of the
+    // public render because its DB row has price=0 / max=-1 (renders as
+    // "Free" + "Unlimited") which would undercut the actual Free tier and
+    // confuse visitors. The row itself stays in the DB - it's actively used
+    // for self-hosted first-user assignment and white-label gating - we just
+    // replace it on the public marketing page with a hardcoded Contact Us
+    // card. Other consumers of /api/subscription/plans (billing.js,
+    // settings.js, admin.js) get the full list as before.
     fetch('/api/subscription/plans').then(r => r.json()).then(plans => {
       const grid = document.getElementById('pricingGrid');
-      grid.innerHTML = plans.filter(p => p.active).map((p, i) => `
+      const publicPlans = plans.filter(p => p.active && p.name !== 'enterprise');
+      const planCardsHtml = publicPlans.map((p, i) => `
         <div class="price-card ${i === 2 ? 'featured' : ''}">
           <h3>${p.display_name}</h3>
           <div class="price">${p.price_monthly > 0 ? '$' + p.price_monthly : 'Free'}<span>${p.price_monthly > 0 ? '/mo' : ''}</span></div>
@@ -513,6 +589,25 @@
           <a href="/app#/login" class="btn ${i === 0 ? 'btn-outline' : 'btn-primary'}" style="width:100%;justify-content:center">${p.price_monthly > 0 ? 'Start Trial' : 'Get Started'}</a>
         </div>
       `).join('');
+      // Hardcoded Enterprise / Custom card. Uses .price class for vertical
+      // alignment with the other cards (same baseline for the feature list);
+      // empty .yearly spacer matches the Free card's structure.
+      const enterpriseCardHtml = `
+        <div class="price-card">
+          <h3>Enterprise / Custom</h3>
+          <div class="price">Let's talk</div>
+          <div class="yearly">&nbsp;</div>
+          <ul>
+            <li>Everything in Business</li>
+            <li>Multi-tenant / multiple organizations</li>
+            <li>Volume device pricing</li>
+            <li>Custom hosting options</li>
+            <li>Priority support</li>
+          </ul>
+          <button type="button" class="btn btn-primary" style="width:100%;justify-content:center" onclick="openContactModal()">Contact Us</button>
+        </div>
+      `;
+      grid.innerHTML = planCardsHtml + enterpriseCardHtml;
     });
 
     // Smooth scroll for anchor links
@@ -522,6 +617,73 @@
         const target = document.querySelector(a.getAttribute('href'));
         if (target) { e.preventDefault(); target.scrollIntoView({ behavior: 'smooth' }); }
       });
+    });
+
+    // Contact modal: open/close, submit, validation. Functions are attached
+    // to window so the inline onclick handlers on the Contact Us button (in
+    // the dynamically-rendered pricing card) can find them.
+    window.openContactModal = function() {
+      document.getElementById('contactModal').style.display = 'flex';
+      setTimeout(() => document.querySelector('#contactForm input[name="name"]')?.focus(), 50);
+    };
+    window.closeContactModal = function() {
+      document.getElementById('contactModal').style.display = 'none';
+      const status = document.getElementById('contactFormStatus');
+      status.className = '';
+      status.textContent = '';
+    };
+    window.submitContactForm = async function() {
+      const form = document.getElementById('contactForm');
+      const status = document.getElementById('contactFormStatus');
+      const btn = document.getElementById('contactSubmitBtn');
+      status.className = '';
+      status.textContent = '';
+      const data = Object.fromEntries(new FormData(form).entries());
+      const required = ['name', 'email', 'company', 'screens', 'multi_tenant', 'hosting'];
+      for (const f of required) {
+        if (!data[f] || String(data[f]).trim() === '') {
+          status.className = 'contact-status-error';
+          status.textContent = 'Please fill all required fields.';
+          return;
+        }
+      }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email)) {
+        status.className = 'contact-status-error';
+        status.textContent = 'Please enter a valid email address.';
+        return;
+      }
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/contact/enterprise', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data),
+        });
+        if (res.ok) {
+          status.className = 'contact-status-success';
+          status.textContent = "Thanks! We'll be in touch within one business day.";
+          form.reset();
+          setTimeout(() => window.closeContactModal(), 3000);
+        } else {
+          const err = await res.json().catch(() => ({}));
+          status.className = 'contact-status-error';
+          status.textContent = err.error || "Sorry, something went wrong. Try emailing dan@bytetinker.net directly.";
+        }
+      } catch (e) {
+        status.className = 'contact-status-error';
+        status.textContent = "Network error. Try emailing dan@bytetinker.net directly.";
+      } finally {
+        btn.disabled = false;
+      }
+    };
+    // Close on background click + Escape
+    document.getElementById('contactModal').addEventListener('click', e => {
+      if (e.target.id === 'contactModal') window.closeContactModal();
+    });
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && document.getElementById('contactModal').style.display === 'flex') {
+        window.closeContactModal();
+      }
     });
   </script>
 </body>

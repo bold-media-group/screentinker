@@ -432,8 +432,10 @@ router.delete('/:id', (req, res) => {
     const io = req.app.get('io');
     if (io) {
       const { buildPlaylistPayload } = require('../ws/deviceSocket');
+      const commandQueue = require('../lib/command-queue');
+      const deviceNs = io.of('/device');
       for (const d of affectedDevices) {
-        io.of('/device').to(d.device_id).emit('device:playlist-update', buildPlaylistPayload(d.device_id));
+        commandQueue.queueOrEmitPlaylistUpdate(deviceNs, d.device_id, buildPlaylistPayload);
       }
     }
   } catch (e) { /* silent */ }

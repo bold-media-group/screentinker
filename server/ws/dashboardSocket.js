@@ -92,11 +92,30 @@ module.exports = function setupDashboardSocket(io) {
       console.log(`Remote session stopped for device ${device_id}`);
     });
 
-    socket.on('dashboard:device-command', (data) => {
+    socket.on('dashboard:device-command', (data, ack) => {
       const { device_id, type, payload } = data;
-      if (!canActOnDevice(socket, device_id, 'write')) return;
-      deviceNs.to(device_id).emit('device:command', { type, payload });
-      console.log(`Command sent to device ${device_id}: ${type}`);
+      if (!canActOnDevice(socket, device_id, 'write')) {
+        if (typeof ack === 'function') ack({ delivered: false, reason: 'forbidden' });
+        return;
+      }
+      const room = deviceNs.adapter.rooms.get(device_id);
+      if (room && room.size > 0) {
+        deviceNs.to(device_id).emit('device:command', { type, payload });
+        console.log(`Command delivered to device ${device_id}: ${type}`);
+        if (typeof ack === 'function') ack({ delivered: true });
+        return;
+      }
+      // Device offline at emit time. Try to queue (lazy require so reverting
+      // the queue commit doesn't break this commit - MODULE_NOT_FOUND on the
+      // first try gets cached by Node's module loader, giving consistent
+      // queued=false behavior on every subsequent call).
+      let queued = false;
+      try {
+        const queue = require('../lib/command-queue');
+        queued = queue.queueCommand(device_id, type, payload);
+      } catch (e) { /* command-queue module absent; fall through to lost */ }
+      console.log(`Command for offline device ${device_id}: ${type} (queued=${queued})`);
+      if (typeof ack === 'function') ack({ delivered: false, queued, reason: 'offline' });
     });
 
     socket.on('disconnect', () => {

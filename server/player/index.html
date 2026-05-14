@@ -496,6 +496,14 @@
         reconnectionDelay: 2000,
         reconnectionDelayMax: 10000,
         timeout: 20000,
+        // Prefer WebSocket but allow polling fallback. Socket.IO default is
+        // polling-first with an upgrade dance that's fragile on TV WebKits
+        // (LG webOS especially). Reversing the order opens a WebSocket directly;
+        // if that fails (rare - blocked by firewall), it falls back to polling
+        // on the same connect attempt. Tradeoff: WS-blocked networks add a few
+        // seconds to first connect while WS times out. Worth it for the common
+        // case where WS is fine but the upgrade dance was hanging the device.
+        transports: ['websocket', 'polling'],
       });
 
       socket.on('connect', () => {

@@ -43,7 +43,9 @@ const io = new Server(server, {
     origin: (origin, cb) => corsOriginCheck(origin, cb),
     credentials: true,
   },
-  maxHttpBufferSize: 10 * 1024 * 1024 // 10MB for screenshot uploads
+  maxHttpBufferSize: 10 * 1024 * 1024, // 10MB for screenshot uploads
+  pingInterval: config.pingInterval,
+  pingTimeout: config.pingTimeout,
 });
 
 // Middleware
@@ -231,6 +233,11 @@ app.use('/api/content', rateLimit(60000, 30)); // 30 content operations per minu
 
 // Subscription routes (mixed auth)
 app.use('/api/subscription', require('./routes/subscription'));
+
+// Public contact form (enterprise inquiries from landing page). Rate limited
+// to 5 submissions per minute per IP; honeypot enforced inside the route.
+app.use('/api/contact', rateLimit(60000, 5));
+app.use('/api/contact', require('./routes/contact'));
 
 // Stripe billing routes (checkout, portal)
 app.use('/api/stripe', stripeRouter);
@@ -433,6 +440,10 @@ app.set('io', io);
 // Start heartbeat checker
 const { startHeartbeatChecker } = require('./services/heartbeat');
 startHeartbeatChecker(io);
+
+// Start command-queue sweep (prunes expired entries for offline devices)
+const commandQueue = require('./lib/command-queue');
+commandQueue.startSweep();
 
 // Start scheduler
 const { startScheduler } = require('./services/scheduler');
