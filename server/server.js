@@ -179,7 +179,38 @@ app.use(express.static(config.frontendDir, { index: false, etag: true, lastModif
   }
 }}));
 
-// Serve web player at /player (same no-cache for JS/HTML)
+// Player HTML: dynamic route. Injects a small inline window.__playerConfig
+// script before the debug-overlay.js tag so the client knows whether to send
+// telemetry to /api/player-debug. The PLAYER_DEBUG_REPORTING env var defaults
+// to on - set to "off" to suppress all player-side telemetry POSTs (the
+// server-side endpoint defends in depth, but the kill switch saves network
+// traffic on the device too). Other player assets (JS, sw.js, etc) are still
+// served by the static middleware below; only index.html is dynamic.
+app.get(['/player', '/player/', '/player/index.html'], (req, res) => {
+  const playerHtmlPath = path.join(__dirname, 'player', 'index.html');
+  fs.readFile(playerHtmlPath, 'utf8', (err, html) => {
+    if (err) return res.status(500).type('text/plain').send('player HTML unavailable');
+    const reportingEnabled = String(process.env.PLAYER_DEBUG_REPORTING || 'on').toLowerCase() !== 'off';
+    const inject =
+      '  <script>window.__playerConfig = window.__playerConfig || {}; ' +
+      'window.__playerConfig.debugReporting = ' + JSON.stringify(reportingEnabled) + ';</script>\n';
+    // Inject right before the debug-overlay.js script tag. If for any reason
+    // the tag isn't present (e.g. file edited out), fall back to injecting
+    // before </head> so the flag still lands.
+    let modified;
+    if (html.indexOf('<script src="/player/debug-overlay.js"') >= 0) {
+      modified = html.replace('<script src="/player/debug-overlay.js"', inject + '  <script src="/player/debug-overlay.js"');
+    } else {
+      modified = html.replace('</head>', inject + '</head>');
+    }
+    res.type('html').setHeader('Cache-Control', 'no-cache');
+    res.send(modified);
+  });
+});
+
+// Serve web player at /player (same no-cache for JS/HTML). The index.html
+// route above intercepts the HTML requests; everything else still falls
+// through to this static handler (debug-overlay.js, sw.js, manifest, etc).
 app.use('/player', express.static(path.join(__dirname, 'player'), { etag: true, lastModified: true, setHeaders: (res, filePath) => {
   if (filePath.endsWith('.js') || filePath.endsWith('.css') || filePath.endsWith('.html')) {
     res.setHeader('Cache-Control', 'no-cache');
@@ -238,6 +269,12 @@ app.use('/api/subscription', require('./routes/subscription'));
 // to 5 submissions per minute per IP; honeypot enforced inside the route.
 app.use('/api/contact', rateLimit(60000, 5));
 app.use('/api/contact', require('./routes/contact'));
+
+// Public player debug-log sink. Smart TVs and other embedded browsers
+// without devtools POST captured errors here. Rate limited to 10 req/min
+// per IP+path. Body is JSON (express.json() is global at line 140).
+app.use('/api/player-debug', rateLimit(60000, 10));
+app.use('/api/player-debug', require('./routes/player-debug'));
 
 // Stripe billing routes (checkout, portal)
 app.use('/api/stripe', stripeRouter);
@@ -374,6 +411,7 @@ function updateFrontendHash() {
     // Include player files in hash so web players detect code updates
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'index.html'))); } catch {}
     try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'sw.js'))); } catch {}
+    try { files.push(fs.readFileSync(path.join(__dirname, 'player', 'debug-overlay.js'))); } catch {}
     frontendHash = crypto.createHash('md5').update(Buffer.concat(files.map(f => Buffer.from(f)))).digest('hex').slice(0, 8);
   } catch { frontendHash = Date.now().toString(36); }
 }

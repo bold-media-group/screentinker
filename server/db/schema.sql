@@ -436,6 +436,33 @@ CREATE TABLE IF NOT EXISTS device_status_log (
     timestamp       INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
 
+-- ===================== PLAYER DEBUG LOGS =====================
+-- Smart TVs (Tizen, WebOS, Fire TV, etc.) have no accessible devtools. The
+-- player captures errors into window.__debugLog client-side and POSTs them
+-- to /api/player-debug. This table stores those reports. Submitter is
+-- unauthenticated by design - the player may not have paired yet when an
+-- error fires. device_id is nullable for unpaired players.
+--
+-- Capped at 10,000 rows with FIFO eviction on insert (route-side, no sweep).
+-- error_fingerprint is a client-computed hash of (error message + first stack
+-- frame) - indexed so a future "top N unique errors this week" query is fast
+-- without a schema change.
+
+CREATE TABLE IF NOT EXISTS player_debug_logs (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id         TEXT,
+    ip                TEXT,
+    user_agent        TEXT,
+    url               TEXT,
+    error_fingerprint TEXT,
+    error_data        TEXT,
+    context           TEXT,
+    created_at        INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_player_debug_fingerprint ON player_debug_logs(error_fingerprint);
+CREATE INDEX IF NOT EXISTS idx_player_debug_created_at ON player_debug_logs(created_at);
+
 -- ===================== SCHEMA MIGRATIONS =====================
 
 CREATE TABLE IF NOT EXISTS schema_migrations (

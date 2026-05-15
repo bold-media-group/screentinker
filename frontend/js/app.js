@@ -16,6 +16,7 @@ import * as onboarding from './views/onboarding.js';
 import * as help from './views/help.js';
 import * as teams from './views/teams.js';
 import * as admin from './views/admin.js';
+import * as adminPlayerDebug from './views/admin-player-debug.js';
 import * as designer from './views/designer.js';
 import * as playlists from './views/playlists.js';
 import { applyBranding } from './branding.js';
@@ -213,6 +214,10 @@ function route() {
   } else if (hash === '#/help' || hash.startsWith('#/help')) {
     currentView = help;
     help.render(app);
+  } else if (hash.startsWith('#/admin/player-debug')) {
+    // Match prefix so query params (?page=2&ua=Tizen) route correctly.
+    currentView = adminPlayerDebug;
+    adminPlayerDebug.render(app);
   } else if (hash === '#/admin') {
     currentView = admin;
     admin.render(app);

@@ -3,6 +3,119 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <!--
+    Player debug error trap. MUST stay first inside <head> after the two
+    mandatory <meta> tags (charset must come first per HTML spec). Runs
+    before any other script so we capture errors even from parse-time
+    failures in scripts that come after. Vanilla ES5 syntax (var, function,
+    no arrow/const/template) so it loads on ancient WebKit forks (Tizen 4,
+    older WebOS, Fire TV stick Gen 1, embedded signage browsers). Wrapped
+    in defensive try/catch so this script can never be the reason the
+    player won't boot.
+  -->
+  <script>
+  (function () {
+    try {
+      if (!window.__debugLog) window.__debugLog = [];
+      var MAX_LOG = 200;
+      var INIT_T = (function () { try { return Date.now(); } catch (e) { return new Date().getTime(); } })();
+
+      function nowMs() {
+        try { return Date.now(); } catch (e) { return new Date().getTime(); }
+      }
+
+      function pushLog(entry) {
+        try {
+          entry.t = nowMs();
+          window.__debugLog.push(entry);
+          if (window.__debugLog.length > MAX_LOG) {
+            window.__debugLog.splice(0, window.__debugLog.length - MAX_LOG);
+          }
+        } catch (e) { /* we are the safety net; do not crash */ }
+      }
+      window.__debugLog_push = pushLog; // shared pusher for debug-overlay.js
+
+      pushLog({
+        type: 'init',
+        ua: (navigator && navigator.userAgent) || '',
+        url: location.href,
+        sw: typeof screen !== 'undefined' ? screen.width : null,
+        sh: typeof screen !== 'undefined' ? screen.height : null
+      });
+
+      // Uncaught script errors. Capture phase so we also see errors from
+      // <img>/<script>/<link> resource failures (ev.target.src on those).
+      window.addEventListener('error', function (ev) {
+        try {
+          var src = ev.filename || (ev.target && ev.target.src) || '';
+          pushLog({
+            type: 'error',
+            message: ev.message || (ev.error && String(ev.error)) || 'error',
+            source: src,
+            line: ev.lineno || 0,
+            col: ev.colno || 0,
+            stack: (ev.error && ev.error.stack) || ''
+          });
+        } catch (e) {}
+      }, true);
+
+      window.addEventListener('unhandledrejection', function (ev) {
+        try {
+          var reason = ev.reason;
+          pushLog({
+            type: 'rejection',
+            message: (reason && reason.message) || String(reason || 'rejection'),
+            stack: (reason && reason.stack) || ''
+          });
+        } catch (e) {}
+      });
+
+      // Wrap console methods. Original behavior preserved so devtools still
+      // sees the real call; we additionally append a sanitized text record.
+      var methods = ['log', 'warn', 'error'];
+      for (var i = 0; i < methods.length; i++) {
+        (function (m) {
+          var orig = console[m];
+          console[m] = function () {
+            try {
+              var args = Array.prototype.slice.call(arguments);
+              var msg = '';
+              for (var j = 0; j < args.length; j++) {
+                var part;
+                try {
+                  part = typeof args[j] === 'string' ? args[j] : JSON.stringify(args[j]);
+                } catch (e) {
+                  part = String(args[j]);
+                }
+                msg += (j > 0 ? ' ' : '') + part;
+              }
+              if (msg.length > 1000) msg = msg.slice(0, 1000) + '...[trunc]';
+              pushLog({ type: 'console.' + m, message: msg });
+            } catch (e) {}
+            try { return orig.apply(console, arguments); } catch (e) {}
+          };
+        })(methods[i]);
+      }
+
+      // Page-load timing relative to this script's execution.
+      try {
+        document.addEventListener('DOMContentLoaded', function () {
+          pushLog({ type: 'timing', event: 'DOMContentLoaded', sinceInit: nowMs() - INIT_T });
+        });
+        window.addEventListener('load', function () {
+          pushLog({ type: 'timing', event: 'load', sinceInit: nowMs() - INIT_T });
+        });
+      } catch (e) {}
+    } catch (outerErr) {
+      // If even init failed, the player must still boot. Do nothing.
+    }
+  })();
+  </script>
+  <!-- Debug overlay module (section 2). Defers so HTML parse doesn't block
+       on the fetch. Auto-activation check fires after DOMContentLoaded;
+       few-ms delay vs the inline trap is fine since errors before this
+       loads are already captured in __debugLog by the inline trap above. -->
+  <script src="/player/debug-overlay.js" defer></script>
   <title>ScreenTinker Player</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
