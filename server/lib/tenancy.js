@@ -142,10 +142,9 @@ function resolveTenancy(req, res, next) {
 //   - direct workspace_members rows
 //   - any workspace in an org where they are org_owner / org_admin
 //   - platform_admin / superadmin: every workspace in the system
-// Used by socket.io rooms (Phase 2.3) to scope outbound broadcasts. Also a
-// candidate to broaden /me's accessible_workspaces query - currently /me only
-// returns direct workspace_members for non-admins, missing the org-admin
-// path. Future cleanup tracked in the handoff doc.
+// Used by socket.io rooms (Phase 2.3) to scope outbound broadcasts. /me's
+// accessible_workspaces query mirrors this access logic but selects full rows
+// rather than reusing this helper (different shape needs).
 function accessibleWorkspaceIds(userId, role) {
   if (!userId) return [];
   if (role === 'platform_admin' || role === 'superadmin') {
