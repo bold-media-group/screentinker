@@ -516,4 +516,64 @@ router.get('/config', (req, res) => {
   });
 });
 
+// Accept a workspace invite. Mounted here (under /api/auth) rather than in
+// routes/workspaces.js because the invite id is the only thing the caller
+// has - they don't necessarily know which workspace it targets yet, so
+// /api/workspaces/:id/... wouldn't fit. requireAuth gates access; the
+// invite's email is matched against the authenticated user's email
+// case-insensitively, so a logged-in account can only accept invites
+// addressed to its own email.
+router.post('/accept-invite/:inviteId', requireAuth, (req, res) => {
+  const invite = db.prepare('SELECT * FROM workspace_invites WHERE id = ?').get(req.params.inviteId);
+  if (!invite) return res.status(404).json({ error: 'Invite not found' });
+
+  const now = Math.floor(Date.now() / 1000);
+  if (invite.expires_at <= now) {
+    db.prepare('DELETE FROM workspace_invites WHERE id = ?').run(invite.id);
+    return res.status(410).json({ error: 'Invite has expired' });
+  }
+
+  if (String(invite.email).toLowerCase() !== String(req.user.email).toLowerCase()) {
+    return res.status(403).json({ error: 'This invite is for a different email address' });
+  }
+
+  const ws = db.prepare('SELECT id, name, organization_id FROM workspaces WHERE id = ?').get(invite.workspace_id);
+  if (!ws) {
+    // Workspace was deleted between invite creation and accept. Clean up.
+    db.prepare('DELETE FROM workspace_invites WHERE id = ?').run(invite.id);
+    return res.status(410).json({ error: 'Workspace no longer exists' });
+  }
+
+  const org = db.prepare('SELECT name FROM organizations WHERE id = ?').get(ws.organization_id);
+
+  // Idempotent: if the user already has a workspace_members row, return
+  // success without changing the role (don't silently demote/upgrade), and
+  // still consume the invite. The invitee's intent ("I want access") is
+  // already satisfied either way.
+  const existing = db.prepare('SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+    .get(ws.id, req.user.id);
+
+  const txn = db.transaction(() => {
+    if (!existing) {
+      db.prepare(`
+        INSERT INTO workspace_members (workspace_id, user_id, role, invited_by)
+        VALUES (?, ?, ?, ?)
+      `).run(ws.id, req.user.id, invite.role, invite.invited_by);
+    }
+    db.prepare('DELETE FROM workspace_invites WHERE id = ?').run(invite.id);
+  });
+  txn();
+
+  // Stamp workspaceId so activityLogger captures tenant attribution.
+  req.workspaceId = ws.id;
+
+  res.json({
+    workspace_id: ws.id,
+    workspace_name: ws.name,
+    organization_name: org?.name || null,
+    role: existing ? existing.role : invite.role,
+    already_member: !!existing,
+  });
+});
+
 module.exports = router;

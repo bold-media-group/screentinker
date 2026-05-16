@@ -1,16 +1,36 @@
 const express = require('express');
 const router = express.Router();
+const crypto = require('crypto');
 const { db } = require('../db/database');
-const { canAdminWorkspace } = require('../lib/permissions');
+const { canAdminWorkspace, canAccessWorkspace } = require('../lib/permissions');
+const { sendEmail } = require('../services/email');
 
 // Workspace management routes. Operates on a target workspace specified by
 // URL param, NOT the caller's currently active workspace - so this router
-// does NOT use resolveTenancy. Permission is gated via canAdminWorkspace()
-// which evaluates against the target workspace, not req.workspaceRole.
+// does NOT use resolveTenancy. Permission is gated via canAdminWorkspace() /
+// canAccessWorkspace() which evaluate against the target workspace, not
+// req.workspaceRole.
 
 const NAME_MAX = 80;
 const SLUG_MAX = 60;
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const WORKSPACE_ROLES = ['workspace_admin', 'workspace_editor', 'workspace_viewer'];
+
+// Operational policy - env-configurable with conservative defaults. Restart
+// required to take effect. The guarded parseInt rejects garbage strings
+// (e.g. INVITE_RATE_LIMIT_PER_HOUR=fifty) so an operator typo surfaces as
+// "default fired" rather than silently sticking. Future cleanup: DB-backed
+// platform_settings + admin UI for runtime tuning; env vars become fallback
+// defaults when that lands. See handoff doc.
+const INVITE_RATE_LIMIT_PER_HOUR = (() => {
+  const parsed = parseInt(process.env.INVITE_RATE_LIMIT_PER_HOUR, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 50;
+})();
+const INVITE_EXPIRY_DAYS = (() => {
+  const parsed = parseInt(process.env.INVITE_EXPIRY_DAYS, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 7;
+})();
 
 // Rename a workspace. MVP scope: name + slug only. Permission: platform_admin,
 // org_owner/admin of the parent org, or workspace_admin of the target ws.
@@ -72,6 +92,258 @@ router.patch('/:id', (req, res) => {
 
   const updated = db.prepare('SELECT id, name, slug, organization_id FROM workspaces WHERE id = ?').get(req.params.id);
   res.json(updated);
+});
+
+// ==================== Members / invites ====================
+
+// Load workspace by req.params.id and verify caller has the required level
+// of access. Returns the workspace row on success. On failure, sends the
+// appropriate response and returns null - caller bails on null. Also stamps
+// req.workspaceId so the activityLogger middleware captures the right
+// tenant attribution (mirrors the rename pattern).
+function loadWorkspace(req, res, requireAdmin) {
+  const ws = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(req.params.id);
+  if (!ws) {
+    res.status(404).json({ error: 'Workspace not found' });
+    return null;
+  }
+  const allowed = requireAdmin
+    ? canAdminWorkspace(db, req.user, ws)
+    : canAccessWorkspace(db, req.user, ws);
+  if (!allowed) {
+    res.status(403).json({ error: requireAdmin ? 'Admin access required' : 'Workspace access required' });
+    return null;
+  }
+  req.workspaceId = ws.id;
+  return ws;
+}
+
+function countWorkspaceAdmins(workspaceId) {
+  return db.prepare(
+    "SELECT COUNT(*) AS c FROM workspace_members WHERE workspace_id = ? AND role = 'workspace_admin'"
+  ).get(workspaceId).c;
+}
+
+// Members listing: direct workspace_members + the org_owner/admin users who
+// reach this workspace via org-level access.
+//
+// Response shape contract: entries with via_org=true are READ-ONLY from the
+// workspace context. They cannot have their role changed or be removed via
+// these endpoints because they aren't managed via workspace_members - their
+// access lives in organization_members. UI must render them with reduced
+// affordances (no role select, no remove button). The role field on a
+// via_org entry reflects their ORG role (org_owner / org_admin), not a
+// workspace role - it's display-only.
+function listMembers(workspaceId, organizationId) {
+  const direct = db.prepare(`
+    SELECT u.id AS user_id, u.email, u.name, wm.role, wm.joined_at
+    FROM workspace_members wm
+    JOIN users u ON u.id = wm.user_id
+    WHERE wm.workspace_id = ?
+    ORDER BY wm.joined_at ASC
+  `).all(workspaceId);
+  const directIds = new Set(direct.map(r => r.user_id));
+
+  const viaOrg = db.prepare(`
+    SELECT u.id AS user_id, u.email, u.name, om.role, om.joined_at
+    FROM organization_members om
+    JOIN users u ON u.id = om.user_id
+    WHERE om.organization_id = ? AND om.role IN ('org_owner', 'org_admin')
+  `).all(organizationId);
+
+  const out = direct.map(r => ({ ...r, via_org: false }));
+  for (const r of viaOrg) {
+    if (directIds.has(r.user_id)) continue;
+    out.push({ ...r, via_org: true });
+  }
+  return out;
+}
+
+function buildInviteEmail({ workspaceName, organizationName, inviterName, role, acceptUrl }) {
+  const subject = `You've been invited to ${workspaceName} on ScreenTinker`;
+  const roleLabel = role.replace(/^workspace_/, '');
+  const text = [
+    `${inviterName || 'A ScreenTinker user'} invited you to join ${workspaceName}`
+      + (organizationName ? ` (${organizationName})` : '') + ` as ${roleLabel}.`,
+    '',
+    `To accept, sign in to ScreenTinker and open:`,
+    acceptUrl,
+    '',
+    `This invite expires in ${INVITE_EXPIRY_DAYS} days.`,
+  ].join('\n');
+  return { subject, text };
+}
+
+// GET /:id/members - any member (or org-level/platform admin) of the workspace
+router.get('/:id/members', (req, res) => {
+  const ws = loadWorkspace(req, res, false);
+  if (!ws) return;
+  res.json(listMembers(ws.id, ws.organization_id));
+});
+
+// GET /:id/invites - admin only. Pending (non-expired) rows.
+router.get('/:id/invites', (req, res) => {
+  const ws = loadWorkspace(req, res, true);
+  if (!ws) return;
+  const invites = db.prepare(`
+    SELECT i.id, i.email, i.role, i.expires_at, i.created_at,
+           inv.email AS invited_by_email
+    FROM workspace_invites i
+    LEFT JOIN users inv ON inv.id = i.invited_by
+    WHERE i.workspace_id = ? AND i.expires_at > strftime('%s','now')
+    ORDER BY i.created_at DESC
+  `).all(ws.id);
+  res.json(invites);
+});
+
+// POST /:id/invites - admin only. Rate-limited (per-user, per-workspace,
+// hour window). Idempotent against in-flight duplicate invites via a
+// transaction-bounded collision check (workspace_invites has no UNIQUE
+// constraint on (workspace_id, email), so the txn is what prevents the
+// TOCTOU race between two simultaneous POSTs).
+router.post('/:id/invites', async (req, res) => {
+  const ws = loadWorkspace(req, res, true);
+  if (!ws) return;
+
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const role = String(req.body?.role || '').trim();
+  if (!email || !EMAIL_RE.test(email)) {
+    return res.status(400).json({ error: 'Valid email required' });
+  }
+  if (!WORKSPACE_ROLES.includes(role)) {
+    return res.status(400).json({ error: 'Role must be workspace_admin, workspace_editor, or workspace_viewer' });
+  }
+
+  // Block invite to existing direct member of this workspace. (Org-level
+  // members are not "members" of this specific workspace via workspace_members,
+  // so they're allowed to also be invited as direct members if desired.)
+  const existingMember = db.prepare(`
+    SELECT 1 FROM workspace_members wm
+    JOIN users u ON u.id = wm.user_id
+    WHERE wm.workspace_id = ? AND lower(u.email) = ?
+  `).get(ws.id, email);
+  if (existingMember) {
+    return res.status(400).json({ error: 'User is already a member of this workspace' });
+  }
+
+  // Rate limit: per-(inviter, workspace), hour window, counts rows actually
+  // created. Generic 429 message - don't echo the configured limit value
+  // (info leak about deployment policy).
+  const recentCount = db.prepare(`
+    SELECT COUNT(*) AS c FROM workspace_invites
+    WHERE invited_by = ? AND workspace_id = ?
+      AND created_at > strftime('%s','now') - 3600
+  `).get(req.user.id, ws.id).c;
+  if (recentCount >= INVITE_RATE_LIMIT_PER_HOUR) {
+    return res.status(429).json({ error: 'Invite rate limit reached - try again later' });
+  }
+
+  // Transaction-bounded collision-check-then-insert. Closes the race where
+  // two simultaneous POSTs both pass the SELECT and both INSERT.
+  const inviteId = crypto.randomUUID();
+  const expiresAt = Math.floor(Date.now() / 1000) + (INVITE_EXPIRY_DAYS * 86400);
+  const txn = db.transaction(() => {
+    const dupe = db.prepare(`
+      SELECT id FROM workspace_invites
+      WHERE workspace_id = ? AND lower(email) = ? AND expires_at > strftime('%s','now')
+    `).get(ws.id, email);
+    if (dupe) return { collision: true };
+    db.prepare(`
+      INSERT INTO workspace_invites (id, workspace_id, email, role, invited_by, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(inviteId, ws.id, email, role, req.user.id, expiresAt);
+    return { collision: false };
+  });
+  const txnResult = txn();
+  if (txnResult.collision) {
+    return res.status(409).json({ error: 'An invite for this email is already pending' });
+  }
+
+  // Build accept URL. PUBLIC_URL env var (when set) pins the public-facing
+  // origin regardless of how the request arrived - recommended in prod so
+  // invites triggered from non-browser sources (curl, future API automation)
+  // always carry the canonical origin. Falls back to request-derived for
+  // local dev and when PUBLIC_URL isn't set; with trust proxy on, req.protocol
+  // + req.get('host') reflect Cloudflare-forwarded X-Forwarded-Proto + Host.
+  const publicBase = process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`;
+  const acceptUrl = `${publicBase}/#/accept-invite/${inviteId}`;
+  const org = db.prepare('SELECT name FROM organizations WHERE id = ?').get(ws.organization_id);
+  const { subject, text } = buildInviteEmail({
+    workspaceName: ws.name,
+    organizationName: org?.name || '',
+    inviterName: req.user.name || req.user.email,
+    role,
+    acceptUrl,
+  });
+
+  const sendResult = await sendEmail({ to: email, subject, text });
+
+  // Rollback rule: only graph_error (real send attempted, Graph rejected)
+  // deletes the row. not_configured and dev_restricted are intentional
+  // non-sends - keep the row, count against the rate limit, allow local
+  // accept-invite testing to proceed.
+  if (sendResult.reason === 'graph_error') {
+    db.prepare('DELETE FROM workspace_invites WHERE id = ?').run(inviteId);
+    return res.status(502).json({ error: 'Email send failed - invite not created' });
+  }
+
+  res.status(201).json({ id: inviteId, email, role, expires_at: expiresAt });
+});
+
+// DELETE /:id/invites/:inviteId - admin only. Cancels a pending invite.
+router.delete('/:id/invites/:inviteId', (req, res) => {
+  const ws = loadWorkspace(req, res, true);
+  if (!ws) return;
+  const invite = db.prepare('SELECT id FROM workspace_invites WHERE id = ? AND workspace_id = ?')
+    .get(req.params.inviteId, ws.id);
+  if (!invite) return res.status(404).json({ error: 'Invite not found' });
+  db.prepare('DELETE FROM workspace_invites WHERE id = ?').run(invite.id);
+  res.json({ success: true });
+});
+
+// PUT /:id/members/:userId - admin only. Change role.
+router.put('/:id/members/:userId', (req, res) => {
+  const ws = loadWorkspace(req, res, true);
+  if (!ws) return;
+  const newRole = String(req.body?.role || '').trim();
+  if (!WORKSPACE_ROLES.includes(newRole)) {
+    return res.status(400).json({ error: 'Role must be workspace_admin, workspace_editor, or workspace_viewer' });
+  }
+  const member = db.prepare('SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+    .get(ws.id, req.params.userId);
+  if (!member) return res.status(404).json({ error: 'Member not found' });
+  if (member.role === 'workspace_admin' && newRole !== 'workspace_admin') {
+    if (countWorkspaceAdmins(ws.id) <= 1) {
+      return res.status(409).json({ error: 'Cannot demote the last admin' });
+    }
+  }
+  db.prepare('UPDATE workspace_members SET role = ? WHERE workspace_id = ? AND user_id = ?')
+    .run(newRole, ws.id, req.params.userId);
+  res.json({ user_id: req.params.userId, role: newRole });
+});
+
+// DELETE /:id/members/:userId - admin only. Removes the workspace_members
+// row. Blocks (a) removing the parent-org's org_owner via the workspace path,
+// since their access comes from org_members anyway, and (b) removing the
+// last workspace_admin which would leave the workspace headless.
+router.delete('/:id/members/:userId', (req, res) => {
+  const ws = loadWorkspace(req, res, true);
+  if (!ws) return;
+  const member = db.prepare('SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+    .get(ws.id, req.params.userId);
+  if (!member) return res.status(404).json({ error: 'Member not found' });
+  const orgOwner = db.prepare(
+    "SELECT 1 FROM organization_members WHERE organization_id = ? AND user_id = ? AND role = 'org_owner'"
+  ).get(ws.organization_id, req.params.userId);
+  if (orgOwner) {
+    return res.status(403).json({ error: 'Cannot remove the organization owner' });
+  }
+  if (member.role === 'workspace_admin' && countWorkspaceAdmins(ws.id) <= 1) {
+    return res.status(409).json({ error: 'Cannot remove the last admin' });
+  }
+  db.prepare('DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+    .run(ws.id, req.params.userId);
+  res.json({ success: true });
 });
 
 module.exports = router;

@@ -54,6 +54,11 @@ function startHeartbeatChecker(io) {
       DELETE FROM team_invites WHERE expires_at < strftime('%s','now')
     `).run();
 
+    // Cleanup: expired workspace invites
+    db.prepare(`
+      DELETE FROM workspace_invites WHERE expires_at < strftime('%s','now')
+    `).run();
+
   }, config.heartbeatInterval);
 }
 

@@ -109,9 +109,24 @@ function canAdminWorkspace(db, user, workspace) {
   return wm && wm.role === 'workspace_admin';
 }
 
+// Read-access companion to canAdminWorkspace. Same (user, workspace) shape but
+// accepts any workspace_members role (admin/editor/viewer) in addition to the
+// org / platform paths. Used by GET endpoints on a URL-param target workspace
+// where resolveTenancy is not on the request (e.g. /api/workspaces/:id/members).
+function canAccessWorkspace(db, user, workspace) {
+  if (!user || !workspace) return false;
+  if (user.role === 'platform_admin' || user.role === 'superadmin') return true;
+  const om = db.prepare('SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ?')
+    .get(workspace.organization_id, user.id);
+  if (om && (om.role === 'org_owner' || om.role === 'org_admin')) return true;
+  const wm = db.prepare('SELECT 1 FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+    .get(workspace.id, user.id);
+  return !!wm;
+}
+
 module.exports = {
   // boolean predicates
-  canRead, canWrite, canAdmin, canAdminWorkspace, isOrgAdmin, isOrgOwner,
+  canRead, canWrite, canAdmin, canAdminWorkspace, canAccessWorkspace, isOrgAdmin, isOrgOwner,
   // express middleware
   requireWorkspace,
   requireWorkspaceRead,
