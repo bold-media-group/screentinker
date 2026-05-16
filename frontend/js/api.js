@@ -159,6 +159,10 @@ export const api = {
   switchWorkspace: (workspaceId) => request('/auth/switch-workspace', { method: 'POST', body: JSON.stringify({ workspace_id: workspaceId }) }),
   renameWorkspace: (id, data) => request(`/workspaces/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
 
+  // Workspace members + invites (slice 2A read-only; mutation helpers land in 2B)
+  getWorkspaceMembers: (id) => request(`/workspaces/${id}/members`),
+  getWorkspaceInvites: (id) => request(`/workspaces/${id}/invites`),
+
   // Admin - Users
   getUsers: () => request('/auth/users'),
   deleteUser: (id) => request(`/auth/users/${id}`, { method: 'DELETE' }),

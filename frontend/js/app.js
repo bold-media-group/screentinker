@@ -19,6 +19,7 @@ import * as admin from './views/admin.js';
 import * as adminPlayerDebug from './views/admin-player-debug.js';
 import * as designer from './views/designer.js';
 import * as playlists from './views/playlists.js';
+import * as workspaceMembers from './views/workspace-members.js';
 import { applyBranding } from './branding.js';
 import { t } from './i18n.js';
 import { isPlatformAdmin } from './utils.js';
@@ -211,6 +212,10 @@ function route() {
   } else if (hash === '#/teams' || hash.startsWith('#/team/')) {
     currentView = teams;
     teams.render(app);
+  } else if (hash.startsWith('#/workspace/') && hash.includes('/members')) {
+    const wsId = hash.split('#/workspace/')[1].split('/')[0];
+    currentView = workspaceMembers;
+    workspaceMembers.render(app, wsId);
   } else if (hash === '#/help' || hash.startsWith('#/help')) {
     currentView = help;
     help.render(app);

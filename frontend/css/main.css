@@ -106,6 +106,62 @@ body {
 }
 .workspace-switcher-item:hover .workspace-switcher-pencil { visibility: visible; }
 .workspace-switcher-pencil:hover { color: var(--accent); background: var(--bg-input); }
+/* Members icon - same shape as the pencil; navigates to #/workspace/:id/members. */
+.workspace-switcher-members {
+  flex-shrink: 0; visibility: hidden;
+  background: none; border: none; padding: 4px;
+  color: var(--text-muted); cursor: pointer;
+  border-radius: 4px; transition: all var(--transition);
+}
+.workspace-switcher-item:hover .workspace-switcher-members { visibility: visible; }
+.workspace-switcher-members:hover { color: var(--accent); background: var(--bg-input); }
+
+/* Workspace members page (Phase 2 user-mgmt, slice 2A read-only). Three
+   sections render via JS: direct members, via_org access, pending invites.
+   Row layout mirrors the sidebar user card's avatar pattern for visual
+   continuity. via_org rows are opacity-reduced and invite rows use the
+   input-bg shade so the three states are distinguishable at a glance. */
+.members-list { display: flex; flex-direction: column; gap: 4px; }
+.member-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px; border: 1px solid var(--border);
+  border-radius: var(--radius); background: var(--bg-card);
+}
+.member-row--via-org { opacity: 0.75; }
+.member-row--invited { background: var(--bg-input); }
+.member-avatar {
+  flex-shrink: 0;
+  width: 32px; height: 32px; border-radius: 50%;
+  background: var(--accent); color: white;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 600;
+}
+.member-avatar--muted { background: var(--text-muted); }
+.member-meta { flex: 1; min-width: 0; }
+.member-name {
+  font-size: 13px; font-weight: 500; color: var(--text-primary);
+  display: flex; align-items: center; gap: 8px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.member-email {
+  font-size: 11px; color: var(--text-muted); margin-top: 1px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.member-role {
+  flex-shrink: 0; font-size: 12px; color: var(--text-secondary);
+  padding: 4px 8px; background: var(--bg-input);
+  border-radius: 4px; min-width: 60px; text-align: center;
+}
+.member-detail {
+  flex-shrink: 0; font-size: 11px; color: var(--text-muted);
+  min-width: 110px; text-align: right;
+}
+.member-via-org { font-style: italic; }
+.member-badge {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+  padding: 2px 6px; background: var(--bg-input); color: var(--text-muted);
+  border-radius: 3px; font-weight: 600;
+}
 
 .nav-links {
   flex: 1;
