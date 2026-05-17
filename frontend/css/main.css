@@ -163,6 +163,30 @@ body {
   border-radius: 3px; font-weight: 600;
 }
 
+/* Slice 2B - mutation affordances. .member-actions is the cell that holds
+   per-row admin buttons (remove on direct-member rows, cancel on invited
+   rows). via_org rows omit the cell entirely. The role select replaces the
+   .member-role div for admins on direct-member rows. */
+.member-role-select {
+  flex-shrink: 0; font-size: 12px;
+  background: var(--bg-input); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 4px 8px; min-width: 90px; cursor: pointer;
+}
+.member-role-select:hover { border-color: var(--accent); }
+.member-actions {
+  flex-shrink: 0; display: flex; align-items: center; gap: 4px;
+  margin-left: 4px;
+}
+.member-action-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: none; border: none; padding: 6px;
+  color: var(--text-muted); cursor: pointer;
+  border-radius: 4px; transition: all var(--transition);
+}
+.member-action-btn:hover { background: var(--bg-input); }
+.member-action-btn--danger:hover { color: var(--danger); }
+
 .nav-links {
   flex: 1;
   padding: 12px 8px;

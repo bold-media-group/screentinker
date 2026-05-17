@@ -1143,6 +1143,45 @@ export default {
   'members.load_error': 'Failed to load members: {error}',
   'members.workspace_not_found': 'Workspace not found or no access.',
 
+  // Mutation UI (Slice 2B): invite modal, action buttons, confirms, error
+  // toasts, success toasts. Grouped under five sub-namespaces for clarity.
+
+  // Modal — invite form
+  'members.modal.invite_title': 'Invite to {workspace}',
+  'members.modal.email_label': 'Email',
+  'members.modal.email_placeholder': 'user@example.com',
+  'members.modal.role_label': 'Role',
+  'members.modal.cancel': 'Cancel',
+  'members.modal.send': 'Send invite',
+  'members.modal.sending': 'Sending...',
+
+  // Buttons — page header + per-row action affordances (titles double as
+  // ARIA labels for the icon-only buttons).
+  'members.button.invite': 'Invite member',
+  'members.button.remove': 'Remove member',
+  'members.button.cancel_invite': 'Cancel invite',
+
+  // Native confirm() text for destructive actions.
+  'members.confirm.remove_member': 'Remove {name} from this workspace?',
+  'members.confirm.cancel_invite': 'Cancel invite for {email}?',
+
+  // Errors mapped from server response text by mapMutationError().
+  'members.error.rate_limit': 'Invite rate limit reached. Try again later.',
+  'members.error.invite_exists': 'An invite for that email is already pending.',
+  'members.error.last_admin_demote': 'Cannot change role - this user is the only admin.',
+  'members.error.last_admin_remove': 'Cannot remove the last admin.',
+  'members.error.already_member': 'That user is already a member of this workspace.',
+  'members.error.invalid_email': 'Please enter a valid email address.',
+  'members.error.org_owner_remove': 'Cannot remove the organization owner.',
+  'members.error.email_send_failed': 'Email send failed. Try again.',
+  'members.error.mutation_generic': 'Action failed: {error}',
+
+  // Success toasts fired post-mutation.
+  'members.success.invite_sent': 'Invite sent to {email}',
+  'members.success.invite_cancelled': 'Invite cancelled',
+  'members.success.role_changed': 'Role updated',
+  'members.success.member_removed': '{name} removed',
+
   // Accept-invite flow (Slice 2C). Toasts that fire post-accept on the
   // dashboard. Error variants share one helper in app.js's mapAcceptError().
   'accept.success': "You've joined {name}",

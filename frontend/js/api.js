@@ -159,9 +159,17 @@ export const api = {
   switchWorkspace: (workspaceId) => request('/auth/switch-workspace', { method: 'POST', body: JSON.stringify({ workspace_id: workspaceId }) }),
   renameWorkspace: (id, data) => request(`/workspaces/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
 
-  // Workspace members + invites (slice 2A read-only; mutation helpers land in 2B)
+  // Workspace members + invites (slice 2A read-only)
   getWorkspaceMembers: (id) => request(`/workspaces/${id}/members`),
   getWorkspaceInvites: (id) => request(`/workspaces/${id}/invites`),
+
+  // Workspace member/invite mutations (slice 2B). All admin-only server-side
+  // (canAdminWorkspace gate). Server returns translated English error messages
+  // mapped to i18n keys via mapMutationError() in workspace-members.js.
+  inviteWorkspaceMember: (workspaceId, data) => request(`/workspaces/${workspaceId}/invites`, { method: 'POST', body: JSON.stringify(data) }),
+  cancelWorkspaceInvite: (workspaceId, inviteId) => request(`/workspaces/${workspaceId}/invites/${inviteId}`, { method: 'DELETE' }),
+  updateWorkspaceMemberRole: (workspaceId, userId, role) => request(`/workspaces/${workspaceId}/members/${userId}`, { method: 'PUT', body: JSON.stringify({ role }) }),
+  removeWorkspaceMember: (workspaceId, userId) => request(`/workspaces/${workspaceId}/members/${userId}`, { method: 'DELETE' }),
 
   // Slice 2C - accept a workspace invite by id (post-auth flow)
   acceptInvite: (inviteId) => request(`/auth/accept-invite/${inviteId}`, { method: 'POST' }),
