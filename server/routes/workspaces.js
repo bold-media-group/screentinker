@@ -259,16 +259,18 @@ router.post('/:id/invites', async (req, res) => {
     return res.status(409).json({ error: 'An invite for this email is already pending' });
   }
 
-  // Build accept URL. PUBLIC_URL env var (when set) pins the public-facing
+  // Build accept URL. APP_URL env var (when set) pins the public-facing
   // origin regardless of how the request arrived - recommended in prod so
   // invites triggered from non-browser sources (curl, future API automation)
-  // always carry the canonical origin. Falls back to request-derived for
-  // local dev and when PUBLIC_URL isn't set; with trust proxy on, req.protocol
-  // + req.get('host') reflect Cloudflare-forwarded X-Forwarded-Proto + Host.
-  // Path is /app#/accept-invite/<id> - the SPA lives at /app, so a bare
-  // /#/accept-invite/<id> would land on the marketing landing page in dev
-  // (and rely on the DISABLE_HOMEPAGE redirect in prod). /app is explicit.
-  const publicBase = process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`;
+  // always carry the canonical origin. Same env var the rest of the codebase
+  // uses for Stripe callbacks (see README env-var table). Falls back to
+  // request-derived for local dev and when APP_URL isn't set; with trust
+  // proxy on, req.protocol + req.get('host') reflect Cloudflare-forwarded
+  // X-Forwarded-Proto + Host. Path is /app#/accept-invite/<id> - the SPA
+  // lives at /app, so a bare /#/accept-invite/<id> would land on the
+  // marketing landing page in dev (and rely on the DISABLE_HOMEPAGE
+  // redirect in prod). /app is explicit.
+  const publicBase = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
   const acceptUrl = `${publicBase}/app#/accept-invite/${inviteId}`;
   const org = db.prepare('SELECT name FROM organizations WHERE id = ?').get(ws.organization_id);
   const { subject, text } = buildInviteEmail({

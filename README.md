@@ -111,7 +111,7 @@ Schema migrations run automatically on first boot — no manual migration comman
 | `SELF_HOSTED` | First user gets all features unlocked | `false` |
 | `DISABLE_REGISTRATION` | Block new account creation (including OAuth auto-signup). First-user setup on an empty DB is still allowed. | `false` |
 | `DISABLE_HOMEPAGE` | Redirect `/` to `/app` instead of serving the marketing landing page. For internal-only self-hosted deployments. | `false` |
-| `APP_URL` | Your public URL (used for Stripe callbacks) | _(none)_ |
+| `APP_URL` | Your public URL (used for Stripe callbacks and invite-accept URLs in emailed invites) | _(none)_ |
 | `JWT_SECRET` | JWT signing key (auto-generated if not set) | _(auto)_ |
 | `SSL_CERT` | Path to SSL certificate | `server/certs/cert.pem` |
 | `SSL_KEY` | Path to SSL private key | `server/certs/key.pem` |
