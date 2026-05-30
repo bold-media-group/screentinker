@@ -40,6 +40,8 @@ Thumbs.db
 # Environment
 .env
 .env.*
+# ...but DO track the documented template (placeholders only, no secrets)
+!.env.example
 
 # Local-only marketing assets
 video/
