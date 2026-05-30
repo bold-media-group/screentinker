@@ -23,7 +23,7 @@ const { sendEmail } = require('./email');
 const { getClientIp } = require('./activity');
 const config = require('../config');
 
-const ADMIN_NOTIFY_TO = 'dw5304@gmail.com';
+const ADMIN_NOTIFY_TO = 'support@screentinker.com';
 
 const LINKS = {
   player:     'https://screentinker.com/player/',
