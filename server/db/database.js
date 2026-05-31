@@ -153,6 +153,15 @@ const migrations = [
   // sent at <time>". The backfill is idempotent: re-runs match nothing.
   "ALTER TABLE users ADD COLUMN welcome_email_sent_at INTEGER",
   "UPDATE users SET welcome_email_sent_at = 1 WHERE welcome_email_sent_at IS NULL",
+  // Slice 3: idempotency guard for the one-time T+3 activation nudge. Same
+  // shape as welcome_email_sent_at: non-null = handled. New signups get a real
+  // unix-seconds stamp when the daily sweep emails them (see
+  // services/activationNudge.js). The paired sentinel-1 backfill marks every
+  // pre-existing user as handled so the FIRST sweep can't blast the entire
+  // dormant legacy base with a stale "you signed up a few days ago" nudge --
+  // only genuinely-new signups (NULL) become eligible going forward.
+  "ALTER TABLE users ADD COLUMN activation_nudge_sent_at INTEGER",
+  "UPDATE users SET activation_nudge_sent_at = 1 WHERE activation_nudge_sent_at IS NULL",
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (e) { /* already exists */ }

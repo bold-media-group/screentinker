@@ -491,6 +491,10 @@ startScheduler(io);
 const { startAlertService } = require('./services/alerts');
 startAlertService(io);
 
+// Start activation-nudge sweep (T+3 onboarding nudge; gated on HOSTED_INSTANCE)
+const { startActivationNudge } = require('./services/activationNudge');
+startActivationNudge();
+
 // Handle provisioning via WebSocket notification
 const { db } = require('./db/database');
 const originalProvisionRoute = require('./routes/provisioning');
