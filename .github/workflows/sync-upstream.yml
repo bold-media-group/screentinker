@@ -1,0 +1,51 @@
+name: Sync with upstream
+
+on:
+  schedule:
+    # Runs every Monday at 6am UTC (4pm Sydney AEST / 5pm AEDT)
+    - cron: '0 6 * * 1'
+  # Lets you also trigger it manually from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout your fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add upstream and fetch
+        run: |
+          git remote add upstream https://github.com/screentinker/screentinker.git
+          git fetch upstream
+
+      - name: Create PR if upstream has changes
+        run: |
+          # Figure out upstream's default branch
+          UPSTREAM_BRANCH=$(git remote show upstream | awk '/HEAD branch/ {print $NF}')
+          echo "Upstream default branch: $UPSTREAM_BRANCH"
+
+          # Check if there's anything new
+          if git diff --quiet HEAD upstream/$UPSTREAM_BRANCH; then
+            echo "Already up to date. Nothing to do."
+            exit 0
+          fi
+
+          # Create a branch with the upstream changes
+          BRANCH="upstream-sync-$(date +%Y%m%d)"
+          git checkout -b $BRANCH upstream/$UPSTREAM_BRANCH
+
+          # Push it to your fork
+          git push origin $BRANCH --force
+
+          # Open a PR using the GitHub CLI (pre-installed on runners)
+          gh pr create \
+            --title "Upstream sync $(date +%Y-%m-%d)" \
+            --body "Automated PR with the latest changes from screentinker/screentinker. Review the diff, then merge when ready. Remember to snapshot your NAS data volumes before deploying." \
+            --base main \
+            --head $BRANCH || echo "PR may already exist for this branch"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
