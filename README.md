@@ -388,6 +388,10 @@ keytool -genkey -v -keystore android/release-key.jks -keyalg RSA -keysize 2048 -
    - **Any browser**: Open `https://your-instance/player` in kiosk/fullscreen mode
 4. Enter the pairing code shown on the device
 
+> **Troubleshooting a player** (stuck on "Connecting to server", re-pointing a
+> device to a different server, or connecting adb over Wi-Fi): see
+> [docs/android-troubleshooting.md](docs/android-troubleshooting.md).
+
 ### For Developers
 
 Working on ScreenTinker itself:
