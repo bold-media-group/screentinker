@@ -433,7 +433,7 @@ app.use('/api/status', require('./routes/status'));
 // APK version check endpoint (public, used by devices to check for updates)
 app.get('/api/update/check', (req, res) => {
   const currentVersion = req.query.version;
-  const apkPath = path.join(__dirname, '..', 'ScreenTinker.apk');
+  const apkPath = path.join(__dirname, '..', 'BoldSignage.apk');
   const apkExists = fs.existsSync(apkPath);
   const apkSize = apkExists ? fs.statSync(apkPath).size : 0;
   const apkModified = apkExists ? fs.statSync(apkPath).mtimeMs : 0;
@@ -528,15 +528,15 @@ app.post('/api/provision/pair', requireAuth, resolveTenancy, checkDeviceLimit, (
 });
 
 // Serve APK download
-const apkPath = path.join(__dirname, '..', 'ScreenTinker.apk');
+const apkPath = path.join(__dirname, '..', 'BoldSignage.apk');
 app.get('/download/apk', (req, res) => {
   if (fs.existsSync(apkPath)) {
     res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-    res.setHeader('Content-Disposition', 'attachment; filename="ScreenTinker.apk"');
+    res.setHeader('Content-Disposition', 'attachment; filename="BoldSignage.apk"');
     res.setHeader('Cache-Control', 'no-cache');
     res.sendFile(apkPath);
   } else {
-    res.status(404).send(`<!DOCTYPE html><html><head><title>APK Not Found</title><style>body{font-family:-apple-system,system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#0f172a;color:#e2e8f0}div{text-align:center;max-width:500px;padding:24px}h1{color:#f87171;font-size:24px}code{background:#1e293b;padding:2px 8px;border-radius:4px;font-size:14px}p{line-height:1.6;color:#94a3b8}</style></head><body><div><h1>APK Not Available</h1><p>The Android APK has not been compiled yet. To build it from source:</p><p><code>cd android</code><br><code>./gradlew assembleDebug</code><br><code>cp app/build/outputs/apk/debug/app-debug.apk ../ScreenTinker.apk</code></p><p>See the <a href="/" style="color:#3b82f6">README</a> for full build instructions.</p><p>Alternatively, use the <a href="/player" style="color:#3b82f6">web player</a> in any browser.</p></div></body></html>`);
+    res.status(404).send(`<!DOCTYPE html><html><head><title>APK Not Found</title><style>body{font-family:-apple-system,system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#0f172a;color:#e2e8f0}div{text-align:center;max-width:500px;padding:24px}h1{color:#f87171;font-size:24px}code{background:#1e293b;padding:2px 8px;border-radius:4px;font-size:14px}p{line-height:1.6;color:#94a3b8}</style></head><body><div><h1>APK Not Available</h1><p>The Android APK has not been compiled yet. To build it from source:</p><p><code>cd android</code><br><code>./gradlew assembleDebug</code><br><code>cp app/build/outputs/apk/debug/app-debug.apk ../BoldSignage.apk</code></p><p>See the <a href="/" style="color:#3b82f6">README</a> for full build instructions.</p><p>Alternatively, use the <a href="/player" style="color:#3b82f6">web player</a> in any browser.</p></div></body></html>`);
   }
 });
 

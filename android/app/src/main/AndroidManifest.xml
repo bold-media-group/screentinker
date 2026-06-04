@@ -19,7 +19,7 @@
         android:name=".RemoteDisplayApp"
         android:allowBackup="true"
         android:icon="@android:drawable/ic_media_play"
-        android:label="RemoteDisplay"
+        android:label="Bold Signage"
         android:largeHeap="true"
         android:theme="@style/Theme.RemoteDisplay"
         android:usesCleartextTraffic="true"
