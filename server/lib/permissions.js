@@ -14,20 +14,26 @@
 
 'use strict';
 
+const { isPlatformRole, isPlatformStaff } = require('../middleware/auth');
+
+// #13: platform staff (admin OR operator) get cross-org read/write. canRead and
+// canWrite include req.isPlatformStaff; canAdmin deliberately does NOT - it stays
+// owner-gated, so operators can read/write resources everywhere but cannot
+// perform workspace-admin actions (member mgmt, rename, branding, etc.).
 function canRead(req) {
-  if (req.isPlatformAdmin) return true;
+  if (req.isPlatformStaff) return true;
   if (req.orgRole === 'org_owner' || req.orgRole === 'org_admin') return true;
   return !!req.workspaceRole; // any workspace_member can read
 }
 
 function canWrite(req) {
-  if (req.isPlatformAdmin) return true;
+  if (req.isPlatformStaff) return true;
   if (req.orgRole === 'org_owner' || req.orgRole === 'org_admin') return true;
   return req.workspaceRole === 'workspace_admin' || req.workspaceRole === 'workspace_editor';
 }
 
 function canAdmin(req) {
-  if (req.isPlatformAdmin) return true;
+  if (req.isPlatformAdmin) return true; // owner only - NOT platform_operator
   if (req.orgRole === 'org_owner' || req.orgRole === 'org_admin') return true;
   return req.workspaceRole === 'workspace_admin';
 }
@@ -86,12 +92,11 @@ function requireOrgOwner(req, res, next) {
   next();
 }
 
-function requirePlatformAdmin(req, res, next) {
-  if (!req.user || req.user.role !== 'platform_admin') {
-    return res.status(403).json({ error: 'Platform admin required' });
-  }
-  next();
-}
+// #14: the dead/stricter requirePlatformAdmin that used to live here (bare
+// `=== 'platform_admin'`, excluding legacy superadmin) was removed. The single
+// platform-admin guard is requirePlatformAdmin in server/middleware/auth.js,
+// which is the alias every route already imports and which accepts the full
+// PLATFORM_ROLES set via isPlatformRole().
 
 // Decoupled "can admin this workspace" predicate. Unlike canAdmin(req) above,
 // this takes an explicit (user, workspace) pair instead of reading from req,
@@ -100,7 +105,9 @@ function requirePlatformAdmin(req, res, next) {
 // active one. Does its own DB lookups against workspace_members + organization_members.
 function canAdminWorkspace(db, user, workspace) {
   if (!user || !workspace) return false;
-  if (user.role === 'platform_admin' || user.role === 'superadmin') return true;
+  // Owner only (isPlatformRole) - platform_operator is intentionally excluded,
+  // so operators cannot manage workspace members, rename, or set branding (#13).
+  if (isPlatformRole(user.role)) return true;
   const om = db.prepare('SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ?')
     .get(workspace.organization_id, user.id);
   if (om && (om.role === 'org_owner' || om.role === 'org_admin')) return true;
@@ -115,7 +122,10 @@ function canAdminWorkspace(db, user, workspace) {
 // where resolveTenancy is not on the request (e.g. /api/workspaces/:id/members).
 function canAccessWorkspace(db, user, workspace) {
   if (!user || !workspace) return false;
-  if (user.role === 'platform_admin' || user.role === 'superadmin') return true;
+  // Read access: platform staff (admin OR operator) can view any workspace,
+  // including its member list (#13, read-only - mutations stay owner-gated via
+  // canAdminWorkspace).
+  if (isPlatformStaff(user.role)) return true;
   const om = db.prepare('SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ?')
     .get(workspace.organization_id, user.id);
   if (om && (om.role === 'org_owner' || om.role === 'org_admin')) return true;
@@ -134,5 +144,4 @@ module.exports = {
   requireWorkspaceAdmin,
   requireOrgAdmin,
   requireOrgOwner,
-  requirePlatformAdmin,
 };

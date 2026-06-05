@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { db } = require('../db/database');
-const { PLATFORM_ROLES, ELEVATED_ROLES } = require('../middleware/auth');
+const { PLATFORM_ROLES, ELEVATED_ROLES, isPlatformStaff } = require('../middleware/auth');
 // Phase 2.2a: workspace-aware access. accessContext returns { workspaceRole, actingAs }
 // or null based on the caller's reach into a specific workspace.
 const { accessContext } = require('../lib/tenancy');
@@ -42,9 +42,11 @@ router.get('/', (req, res) => {
   res.json(devices);
 });
 
-// List unclaimed provisioning devices (admin only)
+// List unclaimed provisioning devices (admin only).
+// #13: read-only, so platform_operator may view the pool too (cross-org staff
+// troubleshooting). Claiming a device is a separate workspace-scoped mutation.
 router.get('/unassigned', (req, res) => {
-  if (!ELEVATED_ROLES.includes(req.user.role)) {
+  if (!ELEVATED_ROLES.includes(req.user.role) && !isPlatformStaff(req.user.role)) {
     return res.status(403).json({ error: 'Admin access required' });
   }
   const devices = db.prepare(`

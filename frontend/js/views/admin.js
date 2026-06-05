@@ -6,6 +6,12 @@ import { t } from '../i18n.js';
 const headers = () => ({ Authorization: `Bearer ${localStorage.getItem('token')}`, 'Content-Type': 'application/json' });
 const API = (url, opts = {}) => fetch('/api' + url, { headers: headers(), ...opts }).then(r => r.json());
 
+// #14: the platform user-management dropdown manages users.role (the
+// PLATFORM-level role) only - workspace/org roles are managed in the members
+// views. Options are the current model; the legacy 'admin'/'superadmin' strings
+// were normalized away. #13 adds 'platform_operator' (cross-org staff).
+const PLATFORM_ROLE_OPTIONS = ['user', 'platform_operator', 'platform_admin'];
+
 export async function render(container) {
   const user = JSON.parse(localStorage.getItem('user') || '{}');
   if (!isPlatformAdmin(user)) {
@@ -65,9 +71,7 @@ async function loadUsers() {
               <td style="padding:8px;font-size:11px;color:var(--text-muted)">${u.last_login ? new Date(u.last_login * 1000).toLocaleString() : t('common.never')}</td>
               <td style="padding:8px">
                 <select class="input" style="max-width:120px;width:100%;background:var(--bg-input);font-size:12px;padding:4px" data-role-user="${u.id}">
-                  <option value="user" ${u.role === 'user' ? 'selected' : ''}>${t('admin.role.user')}</option>
-                  <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>${t('admin.role.admin')}</option>
-                  <option value="superadmin" ${u.role === 'superadmin' ? 'selected' : ''}>${t('admin.role.superadmin')}</option>
+                  ${PLATFORM_ROLE_OPTIONS.map(r => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${t('admin.role.' + r)}</option>`).join('')}
                 </select>
               </td>
               <td style="padding:8px">
@@ -77,7 +81,7 @@ async function loadUsers() {
               </td>
               <td style="padding:8px;white-space:nowrap">
                 ${u.auth_provider === 'local' && u.id !== currentUser.id ? `<button class="btn btn-secondary btn-sm" data-reset-pw-user="${u.id}" data-user-email="${u.email}" style="margin-right:4px">${t('admin.reset_password')}</button>` : ''}
-                ${u.role !== 'superadmin' ? `<button class="btn btn-danger btn-sm" data-delete-user="${u.id}">${t('admin.remove')}</button>` : `<span style="color:var(--text-muted);font-size:11px">${t('admin.owner')}</span>`}
+                ${!isPlatformAdmin(u) ? `<button class="btn btn-danger btn-sm" data-delete-user="${u.id}">${t('admin.remove')}</button>` : `<span style="color:var(--text-muted);font-size:11px">${t('admin.owner')}</span>`}
               </td>
             </tr>
           `).join('')}

@@ -174,6 +174,10 @@ export const api = {
   // Slice 2C - accept a workspace invite by id (post-auth flow)
   acceptInvite: (inviteId) => request(`/auth/accept-invite/${inviteId}`, { method: 'POST' }),
 
+  // Admin-provisioned user creation (#10). data: { email, name, password,
+  // workspaceId, role, mustChangePassword }
+  adminCreateUser: (data) => request('/admin/users', { method: 'POST', body: JSON.stringify(data) }),
+
   // Admin - Users
   getUsers: () => request('/auth/users'),
   deleteUser: (id) => request(`/auth/users/${id}`, { method: 'DELETE' }),

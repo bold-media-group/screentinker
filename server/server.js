@@ -365,6 +365,12 @@ app.use(activityLogger);
 // no resolveTenancy. Permission gated per-handler via canAdminWorkspace().
 app.use('/api/workspaces', requireAuth, require('./routes/workspaces'));
 
+// /api/admin: admin-provisioned user creation (#10). Like /api/workspaces it
+// targets a workspace by body param (not the caller's active one), so
+// requireAuth only - per-handler canAdminWorkspace() gates it. Mounted after
+// activityLogger so creations are auto-logged.
+app.use('/api/admin', requireAuth, require('./routes/admin'));
+
 app.use('/api/devices', requireAuth, resolveTenancy, require('./routes/devices'));
 app.use('/api/content', requireAuth, resolveTenancy, require('./routes/content'));
 app.use('/api/folders', requireAuth, resolveTenancy, require('./routes/folders'));

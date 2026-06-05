@@ -799,6 +799,10 @@ export default {
   'admin.col.monthly': 'Monthly',
   'admin.col.yearly': 'Yearly',
   'admin.role.user': 'User',
+  'admin.role.platform_operator': 'Platform operator',
+  'admin.role.platform_admin': 'Platform admin',
+  // Legacy labels kept for back-compat with any not-yet-normalized data; the
+  // role dropdown no longer offers these (#14 normalization).
   'admin.role.admin': 'Admin',
   'admin.role.superadmin': 'Superadmin',
   'admin.remove': 'Remove',
@@ -1155,9 +1159,21 @@ export default {
   'members.modal.send': 'Send invite',
   'members.modal.sending': 'Sending...',
 
+  // Modal — Add User form (#10, admin-provisioned account)
+  'members.modal.add_user_title': 'Add user to {workspace}',
+  'members.modal.name_label': 'Name',
+  'members.modal.name_placeholder': 'Full name (optional)',
+  'members.modal.password_label': 'Password',
+  'members.modal.password_placeholder': 'Set a password',
+  'members.modal.generate': 'Generate',
+  'members.modal.must_change_label': 'Require a password change on first login',
+  'members.modal.create': 'Create user',
+  'members.modal.creating': 'Creating...',
+
   // Buttons — page header + per-row action affordances (titles double as
   // ARIA labels for the icon-only buttons).
   'members.button.invite': 'Invite member',
+  'members.button.add_user': 'Add user',
   'members.button.remove': 'Remove member',
   'members.button.cancel_invite': 'Cancel invite',
 
@@ -1174,6 +1190,8 @@ export default {
   'members.error.invalid_email': 'Please enter a valid email address.',
   'members.error.org_owner_remove': 'Cannot remove the organization owner.',
   'members.error.email_send_failed': 'Email send failed. Try again.',
+  'members.error.user_exists': 'A user with that email already exists.',
+  'members.error.password_min_8': 'Password must be at least 8 characters.',
   'members.error.mutation_generic': 'Action failed: {error}',
 
   // Success toasts fired post-mutation.
@@ -1181,6 +1199,28 @@ export default {
   'members.success.invite_cancelled': 'Invite cancelled',
   'members.success.role_changed': 'Role updated',
   'members.success.member_removed': '{name} removed',
+  'members.success.user_created': 'User {email} created',
+
+  // Forced first-login password change (#10). Shown when an admin-provisioned
+  // user (must_change_password) is routed to #/change-password.
+  'forcepw.title': 'Set a new password',
+  'forcepw.subtitle': 'Your account was set up by an administrator. Choose your own password to continue.',
+  'forcepw.current': 'Current password',
+  'forcepw.new': 'New password',
+  'forcepw.confirm': 'Confirm new password',
+  'forcepw.hint': 'At least 8 characters.',
+  'forcepw.submit': 'Set password',
+  'forcepw.submitting': 'Saving...',
+  'forcepw.success': 'Password updated',
+  'forcepw.error_required': 'Enter your current and new password.',
+  'forcepw.error_min8': 'Password must be at least 8 characters.',
+  'forcepw.error_mismatch': "Passwords don't match.",
+  'forcepw.error_generic': 'Could not update password. Try again.',
+
+  // No-workspace empty state (#12): shown to an org-less signed-in user.
+  'noworkspace.title': 'No workspaces yet',
+  'noworkspace.body': "Your account isn't part of any workspace yet. Ask your administrator to add you to one, then sign in again.",
+  'noworkspace.sign_out': 'Sign out',
 
   // Accept-invite flow (Slice 2C). Toasts that fire post-accept on the
   // dashboard. Error variants share one helper in app.js's mapAcceptError().

@@ -5,7 +5,7 @@ const https = require('https');
 const { v4: uuidv4 } = require('uuid');
 const { OAuth2Client } = require('google-auth-library');
 const { db } = require('../db/database');
-const { generateToken, requireAuth, requireAdmin, requireSuperAdmin, PLATFORM_ROLES } = require('../middleware/auth');
+const { generateToken, requireAuth, requireAdmin, requireSuperAdmin, isPlatformRole, isPlatformStaff, PLATFORM_ROLES } = require('../middleware/auth');
 const { resolveTenancy } = require('../lib/tenancy');
 const { logActivity, getClientIp } = require('../services/activity');
 const { sendSignupEmails } = require('../services/signupEmails');
@@ -15,7 +15,11 @@ const config = require('../config');
 // workspace_id to embed in the JWT. Idempotent: if the user already has
 // memberships (e.g. migrated from Phase 1), returns the first one without
 // creating anything.
-function ensureDefaultOrgForUser(user) {
+// #12: allowCreate gates the MINT path only. An existing membership is always
+// returned (idempotent). When allowCreate is false and the user has no
+// membership, returns null - the caller is created org-less and an admin /
+// operator assigns them to a workspace afterward.
+function ensureDefaultOrgForUser(user, { allowCreate = true } = {}) {
   const existing = db.prepare(`
     SELECT w.id FROM workspaces w
     JOIN workspace_members wm ON wm.workspace_id = w.id
@@ -23,6 +27,7 @@ function ensureDefaultOrgForUser(user) {
     ORDER BY wm.joined_at ASC LIMIT 1
   `).get(user.id);
   if (existing) return existing.id;
+  if (!allowCreate) return null;
 
   // No memberships -> mint a fresh org and Default workspace owned by user.
   const orgId = uuidv4();
@@ -85,7 +90,7 @@ router.post('/register', (req, res) => {
   if (!canRegister()) {
     return res.status(403).json({ error: 'Public registration is disabled. Contact your administrator.' });
   }
-  const { email, password, name } = req.body;
+  const { email, password, name, createOrg } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
   if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
 
@@ -109,7 +114,14 @@ router.post('/register', (req, res) => {
   `).run(id, email.toLowerCase(), name || email.split('@')[0], passwordHash, role, plan, trialStarted, trialStarted ? 'pro' : null);
 
   const user = db.prepare('SELECT id, email, name, role, auth_provider, avatar_url, plan_id, stripe_customer_id, stripe_subscription_id, subscription_status, subscription_ends FROM users WHERE id = ?').get(id);
-  const workspaceId = ensureDefaultOrgForUser(user);
+  // #12: org-on-create. Per-request createOrg overrides the deployment default
+  // (config.autoCreateOrgOnSignup). The first user is always given an org so a
+  // fresh install is never left headless. When neither applies, the user is
+  // created org-less and lands on the "no workspaces yet" state until an admin
+  // assigns them.
+  const createOrgForUser = isFirstUser
+    || (createOrg !== undefined ? !!createOrg : config.autoCreateOrgOnSignup);
+  const workspaceId = ensureDefaultOrgForUser(user, { allowCreate: createOrgForUser });
   const token = generateToken(user, workspaceId);
 
   res.status(201).json({ token, user, current_workspace_id: workspaceId });
@@ -135,7 +147,7 @@ router.post('/login', (req, res) => {
   }
 
   logSuccessfulLogin(user.id, email, getClientIp(req));
-  const workspaceId = ensureDefaultOrgForUser(user);
+  const workspaceId = ensureDefaultOrgForUser(user, { allowCreate: config.autoCreateOrgOnSignup });
   const token = generateToken(user, workspaceId);
   const { password_hash, ...safeUser } = user;
   res.json({ token, user: safeUser, current_workspace_id: workspaceId });
@@ -187,7 +199,7 @@ router.post('/google', async (req, res) => {
       user = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
     }
 
-    const workspaceId = ensureDefaultOrgForUser(user);
+    const workspaceId = ensureDefaultOrgForUser(user, { allowCreate: config.autoCreateOrgOnSignup });
     const token = generateToken(user, workspaceId);
     const { password_hash, ...safeUser } = user;
     res.json({ token, user: safeUser, current_workspace_id: workspaceId });
@@ -268,7 +280,7 @@ router.post('/microsoft', async (req, res) => {
       user = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
     }
 
-    const workspaceId = ensureDefaultOrgForUser(user);
+    const workspaceId = ensureDefaultOrgForUser(user, { allowCreate: config.autoCreateOrgOnSignup });
     const token = generateToken(user, workspaceId);
     const { password_hash, ...safeUser } = user;
     res.json({ token, user: safeUser, current_workspace_id: workspaceId });
@@ -324,8 +336,12 @@ router.get('/me', requireAuth, resolveTenancy, (req, res) => {
   // so unclaimed pair-pool devices (workspace_id IS NULL) are correctly excluded.
   // Microseconds per row at current scale (~37 rows worst case for platform_admin);
   // not optimizing - revisit if the admin list grows past a few hundred workspaces.
-  const isPlatformAdmin = req.user.role === 'platform_admin' || req.user.role === 'superadmin';
-  const accessible = isPlatformAdmin
+  // #13: platform staff (admin OR operator) SEE every workspace (visibility).
+  // can_admin below is computed separately from isPlatformRole (owner only), so
+  // operators see all workspaces but get can_admin:false on each.
+  const isPlatformStaffUser = isPlatformStaff(req.user.role);
+  const isPlatformAdmin = isPlatformRole(req.user.role);
+  const accessible = isPlatformStaffUser
     ? db.prepare(`
         SELECT w.id, w.name, w.organization_id, o.name AS organization_name,
                wm.role AS workspace_role, om.role AS org_role,
@@ -385,12 +401,13 @@ router.post('/switch-workspace', requireAuth, (req, res) => {
   const ws = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(workspace_id);
   if (!ws) return res.status(404).json({ error: 'Workspace not found' });
 
-  const isPlatformAdmin = req.user.role === 'platform_admin' || req.user.role === 'superadmin';
+  // #13: platform staff (admin OR operator) can switch into any workspace.
+  const isPlatformStaffUser = isPlatformStaff(req.user.role);
   const wsMember = db.prepare('SELECT 1 FROM workspace_members WHERE workspace_id = ? AND user_id = ?').get(ws.id, req.user.id);
   const orgMember = db.prepare(`
     SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ?
   `).get(ws.organization_id, req.user.id);
-  const canAct = isPlatformAdmin
+  const canAct = isPlatformStaffUser
     || !!wsMember
     || (orgMember && (orgMember.role === 'org_owner' || orgMember.role === 'org_admin'));
 
@@ -424,10 +441,12 @@ router.put('/me', requireAuth, (req, res) => {
       }
     }
     const hash = bcrypt.hashSync(password, 10);
-    db.prepare('UPDATE users SET password_hash = ?, updated_at = strftime(\'%s\',\'now\') WHERE id = ?')
+    // #10: a successful password change clears must_change_password, releasing
+    // the first-login change-password gate.
+    db.prepare('UPDATE users SET password_hash = ?, must_change_password = 0, updated_at = strftime(\'%s\',\'now\') WHERE id = ?')
       .run(hash, req.user.id);
   }
-  const user = db.prepare('SELECT id, email, name, role, auth_provider, avatar_url, plan_id, email_alerts FROM users WHERE id = ?').get(req.user.id);
+  const user = db.prepare('SELECT id, email, name, role, auth_provider, avatar_url, plan_id, email_alerts, must_change_password FROM users WHERE id = ?').get(req.user.id);
   res.json(user);
 });
 
@@ -456,11 +475,18 @@ router.delete('/users/:id', requireAuth, requireSuperAdmin, (req, res) => {
   res.json({ success: true });
 });
 
-// Update user role (superadmin only)
+// Update user platform role (platform admin only).
+// #14: this manages users.role (the PLATFORM-level role) only - workspace and
+// org roles are managed in the members views. Whitelist is the current model:
+// 'user' and 'platform_admin' (the legacy 'admin'/'superadmin' strings are gone
+// after normalization and are no longer accepted here).
+const ASSIGNABLE_PLATFORM_ROLES = ['user', 'platform_operator', 'platform_admin'];
 router.put('/users/:id/role', requireAuth, requireSuperAdmin, (req, res) => {
   const { role } = req.body;
-  if (!['user', 'admin', 'superadmin'].includes(role)) return res.status(400).json({ error: 'Invalid role' });
-  if (req.params.id === req.user.id && role !== 'superadmin') return res.status(400).json({ error: 'Cannot demote yourself' });
+  if (!ASSIGNABLE_PLATFORM_ROLES.includes(role)) return res.status(400).json({ error: 'Invalid role' });
+  // Self-demotion guard: a platform admin can't strip their own platform role
+  // (would lock themselves out of platform admin actions).
+  if (req.params.id === req.user.id && !isPlatformRole(role)) return res.status(400).json({ error: 'Cannot demote yourself' });
   db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, req.params.id);
   res.json({ success: true });
 });

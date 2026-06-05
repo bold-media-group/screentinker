@@ -162,6 +162,21 @@ const migrations = [
   // only genuinely-new signups (NULL) become eligible going forward.
   "ALTER TABLE users ADD COLUMN activation_nudge_sent_at INTEGER",
   "UPDATE users SET activation_nudge_sent_at = 1 WHERE activation_nudge_sent_at IS NULL",
+  // Issue #14: normalize the platform-role model. The legacy /api/auth/users
+  // dropdown could write 'superadmin' and 'admin' strings that not every code
+  // path recognized (some checks matched only 'platform_admin', so a superadmin
+  // could list orgs but not act-as into them). Collapse to the current model:
+  //   superadmin -> platform_admin  (equivalent everywhere; fixes act-as)
+  //   admin      -> user            (legacy middle tier; elevated power now
+  //                                  comes from org/workspace membership)
+  // Strictly idempotent: mutates ONLY exact legacy strings, no-ops on rows
+  // already in the current model ('user'/'platform_admin'/'platform_operator').
+  "UPDATE users SET role = 'platform_admin' WHERE role = 'superadmin'",
+  "UPDATE users SET role = 'user' WHERE role = 'admin'",
+  // Issue #10: admin-provisioned users. When an admin creates a user with a
+  // known password, must_change_password=1 forces a password change on first
+  // login. Default 0 so all existing users are unaffected.
+  "ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0",
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (e) { /* already exists */ }

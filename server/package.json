@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node --env-file-if-exists=.env server.js",
-    "dev": "node --watch --env-file-if-exists=.env server.js"
+    "dev": "node --watch --env-file-if-exists=.env server.js",
+    "test": "node --test"
   },
   "dependencies": {
     "@azure/msal-node": "^5.2.1",
