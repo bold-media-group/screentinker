@@ -5,7 +5,7 @@ const https = require('https');
 const { v4: uuidv4 } = require('uuid');
 const { OAuth2Client } = require('google-auth-library');
 const { db } = require('../db/database');
-const { generateToken, requireAuth, requireAdmin, requireSuperAdmin, isPlatformRole, PLATFORM_ROLES } = require('../middleware/auth');
+const { generateToken, requireAuth, requireAdmin, requireSuperAdmin, isPlatformRole, isPlatformStaff, PLATFORM_ROLES } = require('../middleware/auth');
 const { resolveTenancy } = require('../lib/tenancy');
 const { logActivity, getClientIp } = require('../services/activity');
 const { sendSignupEmails } = require('../services/signupEmails');
@@ -324,8 +324,12 @@ router.get('/me', requireAuth, resolveTenancy, (req, res) => {
   // so unclaimed pair-pool devices (workspace_id IS NULL) are correctly excluded.
   // Microseconds per row at current scale (~37 rows worst case for platform_admin);
   // not optimizing - revisit if the admin list grows past a few hundred workspaces.
-  const isPlatformAdmin = req.user.role === 'platform_admin' || req.user.role === 'superadmin';
-  const accessible = isPlatformAdmin
+  // #13: platform staff (admin OR operator) SEE every workspace (visibility).
+  // can_admin below is computed separately from isPlatformRole (owner only), so
+  // operators see all workspaces but get can_admin:false on each.
+  const isPlatformStaffUser = isPlatformStaff(req.user.role);
+  const isPlatformAdmin = isPlatformRole(req.user.role);
+  const accessible = isPlatformStaffUser
     ? db.prepare(`
         SELECT w.id, w.name, w.organization_id, o.name AS organization_name,
                wm.role AS workspace_role, om.role AS org_role,
@@ -385,12 +389,13 @@ router.post('/switch-workspace', requireAuth, (req, res) => {
   const ws = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(workspace_id);
   if (!ws) return res.status(404).json({ error: 'Workspace not found' });
 
-  const isPlatformAdmin = req.user.role === 'platform_admin' || req.user.role === 'superadmin';
+  // #13: platform staff (admin OR operator) can switch into any workspace.
+  const isPlatformStaffUser = isPlatformStaff(req.user.role);
   const wsMember = db.prepare('SELECT 1 FROM workspace_members WHERE workspace_id = ? AND user_id = ?').get(ws.id, req.user.id);
   const orgMember = db.prepare(`
     SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ?
   `).get(ws.organization_id, req.user.id);
-  const canAct = isPlatformAdmin
+  const canAct = isPlatformStaffUser
     || !!wsMember
     || (orgMember && (orgMember.role === 'org_owner' || orgMember.role === 'org_admin'));
 

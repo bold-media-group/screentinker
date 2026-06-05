@@ -101,6 +101,22 @@ function isPlatformRole(role) {
   return PLATFORM_ROLES.includes(role);
 }
 
+// Issue #13: platform_operator is cross-org STAFF - it can see and act-as into
+// every org and read/write workspace-scoped resources there, but holds NO
+// owner-level power (no billing, no org/workspace deletion, no user/role
+// management, no shared/template asset curation, no branding). The owner powers
+// stay gated on PLATFORM_ROLES / isPlatformRole, which operator is deliberately
+// NOT a member of - so every owner capability is deny-by-default for operators,
+// and any NEW owner endpoint added later inherits that denial automatically.
+//
+// PLATFORM_STAFF / isPlatformStaff is the union used ONLY for cross-org
+// VISIBILITY + act-as + workspace-scoped read/write. It must never gate an
+// owner action.
+const PLATFORM_STAFF = ['superadmin', 'platform_admin', 'platform_operator'];
+function isPlatformStaff(role) {
+  return PLATFORM_STAFF.includes(role);
+}
+
 function requireAdmin(req, res, next) {
   if (!req.user || !ELEVATED_ROLES.includes(req.user.role)) {
     return res.status(403).json({ error: 'Admin access required' });
@@ -118,4 +134,4 @@ function requireSuperAdmin(req, res, next) {
 // Preferred alias for new code.
 const requirePlatformAdmin = requireSuperAdmin;
 
-module.exports = { generateToken, verifyToken, requireAuth, optionalAuth, requireAdmin, requireSuperAdmin, requirePlatformAdmin, isPlatformRole, PLATFORM_ROLES, ELEVATED_ROLES };
+module.exports = { generateToken, verifyToken, requireAuth, optionalAuth, requireAdmin, requireSuperAdmin, requirePlatformAdmin, isPlatformRole, isPlatformStaff, PLATFORM_ROLES, PLATFORM_STAFF, ELEVATED_ROLES };

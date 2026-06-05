@@ -9,8 +9,8 @@ const API = (url, opts = {}) => fetch('/api' + url, { headers: headers(), ...opt
 // #14: the platform user-management dropdown manages users.role (the
 // PLATFORM-level role) only - workspace/org roles are managed in the members
 // views. Options are the current model; the legacy 'admin'/'superadmin' strings
-// were normalized away. (#13 adds 'platform_operator' to this list.)
-const PLATFORM_ROLE_OPTIONS = ['user', 'platform_admin'];
+// were normalized away. #13 adds 'platform_operator' (cross-org staff).
+const PLATFORM_ROLE_OPTIONS = ['user', 'platform_operator', 'platform_admin'];
 
 export async function render(container) {
   const user = JSON.parse(localStorage.getItem('user') || '{}');
