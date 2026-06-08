@@ -1144,6 +1144,9 @@ export default {
   'switcher.devices_count_one': '1 device',
   'switcher.devices_count_other': '{n} devices',
   'switcher.no_devices': 'No devices',
+  // #16: searchable org/workspace switcher
+  'switcher.search_placeholder': 'Search organizations…',
+  'switcher.no_matches': 'No matches',
 
   // Workspace members (Slice 2A - read-only listing; 2B adds mutation keys).
   'members.title': 'Workspace members',
