@@ -6,6 +6,7 @@ const { db } = require('../db/database');
 const { canAdminWorkspace } = require('../lib/permissions');
 const { requirePlatformAdmin } = require('../middleware/auth');
 const { logActivity, getClientIp } = require('../services/activity');
+const { platformDefaultRow, HARDCODED_BRANDING, PLATFORM_DEFAULT_ID } = require('../lib/branding');
 
 // Admin-provisioned user creation (#10). Operates on a target workspace
 // specified in the body, NOT the caller's active workspace - so this router is
@@ -222,6 +223,54 @@ router.delete('/users/:id/workspaces/:workspaceId', requirePlatformAdmin, (req, 
   const target = db.prepare('SELECT email FROM users WHERE id = ?').get(req.params.id);
   logActivity(req.user.id, 'admin_remove_user_workspace', `target: ${target?.email}, workspace: ${req.params.workspaceId}`, null, getClientIp(req), req.params.workspaceId);
   res.json({ success: true });
+});
+
+// ===================== Instance-level default branding (#15) =====================
+// Platform-admin only. The "platform default" is a single white_labels row with
+// workspace_id IS NULL that every workspace inherits unless it set its own
+// (resolution lives in lib/branding.js). Editable here / in the Admin UI.
+
+const BRANDING_FIELDS = ['brand_name', 'logo_url', 'favicon_url', 'primary_color', 'secondary_color', 'bg_color', 'custom_css', 'hide_branding'];
+
+// GET - the current platform-default branding (falls back to hardcoded so the
+// admin form always has values to show).
+router.get('/branding', requirePlatformAdmin, (req, res) => {
+  res.json(platformDefaultRow(db) || { ...HARDCODED_BRANDING });
+});
+
+// PUT - upsert the single platform-default row (workspace_id IS NULL).
+router.put('/branding', requirePlatformAdmin, (req, res) => {
+  const existing = platformDefaultRow(db);
+  if (existing) {
+    const updates = [];
+    const values = [];
+    for (const f of BRANDING_FIELDS) {
+      if (req.body[f] !== undefined) {
+        updates.push(`${f} = ?`);
+        values.push(f === 'hide_branding' ? (req.body[f] ? 1 : 0) : (req.body[f] || null));
+      }
+    }
+    if (updates.length) {
+      updates.push("updated_at = strftime('%s','now')");
+      values.push(existing.id);
+      db.prepare(`UPDATE white_labels SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+    }
+  } else {
+    // Fixed id sentinel (not workspace_id IS NULL - see lib/branding.js).
+    // user_id is NOT NULL on the legacy table; stamp the acting admin.
+    db.prepare(`
+      INSERT INTO white_labels (id, user_id, workspace_id, brand_name, logo_url, favicon_url, primary_color, secondary_color, bg_color, custom_css, hide_branding)
+      VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      PLATFORM_DEFAULT_ID, req.user.id,
+      req.body.brand_name || 'ScreenTinker',
+      req.body.logo_url || null, req.body.favicon_url || null,
+      req.body.primary_color || '#3B82F6', req.body.secondary_color || '#1E293B', req.body.bg_color || '#111827',
+      req.body.custom_css || null, req.body.hide_branding ? 1 : 0
+    );
+  }
+  logActivity(req.user.id, 'admin_set_platform_branding', `brand: ${req.body.brand_name || ''}`, null, getClientIp(req), null);
+  res.json(platformDefaultRow(db));
 });
 
 module.exports = router;

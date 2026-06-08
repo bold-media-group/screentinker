@@ -178,6 +178,10 @@ export const api = {
   // workspaceId, role, mustChangePassword }
   adminCreateUser: (data) => request('/admin/users', { method: 'POST', body: JSON.stringify(data) }),
 
+  // Instance-level default branding (#15, platform admin).
+  adminGetBranding: () => request('/admin/branding'),
+  adminSetBranding: (data) => request('/admin/branding', { method: 'PUT', body: JSON.stringify(data) }),
+
   // Per-user workspace membership management (platform Users page modal).
   adminGetUserWorkspaces: (id) => request(`/admin/users/${id}/workspaces`),
   adminAddUserWorkspace: (id, workspaceId, role) => request(`/admin/users/${id}/workspaces`, { method: 'POST', body: JSON.stringify({ workspaceId, role }) }),
