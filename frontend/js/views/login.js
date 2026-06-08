@@ -10,22 +10,59 @@ async function loadAuthConfig() {
   return authConfig;
 }
 
+// #15: resolve instance/default branding for the (pre-login) login page.
+// Public endpoint: custom-domain match -> platform default -> ScreenTinker.
+async function loadLoginBranding() {
+  try {
+    const res = await fetch('/api/branding?domain=' + encodeURIComponent(location.hostname));
+    if (!res.ok) return {};
+    return await res.json();
+  } catch { return {}; }
+}
+
+function brandEsc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+// Apply document-level branding (colors, favicon, title, custom CSS) for login.
+function applyLoginBrandingDoc(b) {
+  const root = document.documentElement;
+  if (b.primary_color) root.style.setProperty('--accent', b.primary_color);
+  if (b.bg_color) root.style.setProperty('--bg-primary', b.bg_color);
+  if (b.brand_name) document.title = b.brand_name;
+  if (b.favicon_url) {
+    document.querySelectorAll('link[rel="icon"], link[rel="apple-touch-icon"]').forEach(l => l.setAttribute('href', b.favicon_url));
+  }
+  if (b.custom_css) {
+    let style = document.getElementById('wl-custom-css');
+    if (!style) { style = document.createElement('style'); style.id = 'wl-custom-css'; document.head.appendChild(style); }
+    style.textContent = b.custom_css;
+  }
+}
+
 export async function render(container) {
-  const config = await loadAuthConfig();
+  const [config, branding] = await Promise.all([loadAuthConfig(), loadLoginBranding()]);
   const isSetup = config.needsSetup;
   // registration_enabled may be absent on older servers — treat as enabled for back-compat
   const canRegister = config.registration_enabled !== false;
+
+  applyLoginBrandingDoc(branding);
+  const brandName = branding.brand_name || 'ScreenTinker';
+  // Branded logo if set, else the default ScreenTinker glyph.
+  const logoHtml = branding.logo_url
+    ? `<img src="${brandEsc(branding.logo_url)}" alt="${brandEsc(brandName)}" style="max-height:48px;max-width:200px;margin:0 auto 12px;display:block">`
+    : `<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" style="margin:0 auto 12px">
+            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+            <line x1="8" y1="21" x2="16" y2="21"/>
+            <line x1="12" y1="17" x2="12" y2="21"/>
+          </svg>`;
 
   container.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:center;min-height:100vh;padding:16px">
       <div style="width:400px;max-width:100%">
         <div style="text-align:center;margin-bottom:32px">
-          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" style="margin:0 auto 12px">
-            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
-            <line x1="8" y1="21" x2="16" y2="21"/>
-            <line x1="12" y1="17" x2="12" y2="21"/>
-          </svg>
-          <h1 style="font-size:24px;font-weight:700;color:var(--accent)">ScreenTinker</h1>
+          ${logoHtml}
+          <h1 style="font-size:24px;font-weight:700;color:var(--accent)">${brandEsc(brandName)}</h1>
           <p style="color:var(--text-secondary);font-size:13px;margin-top:4px">
             ${isSetup ? t('auth.subtitle_setup') : t('auth.subtitle_signin')}
           </p>

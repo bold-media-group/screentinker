@@ -276,6 +276,17 @@ app.use('/api/contact', require('./routes/contact'));
 app.use('/api/player-debug', rateLimit(60000, 10));
 app.use('/api/player-debug', require('./routes/player-debug'));
 
+// Public branding resolver (#15). Pre-login / pre-workspace contexts (the login
+// page especially) need branding without a token. Resolves custom-domain match
+// -> platform default -> hardcoded ScreenTinker. Domain comes from ?domain= or
+// the request hostname (trust-proxy resolves the forwarded Host behind CF/Nginx).
+app.get('/api/branding', (req, res) => {
+  const { db } = require('./db/database');
+  const { resolveBranding } = require('./lib/branding');
+  const domain = (req.query.domain || req.hostname || '').toString();
+  res.json(resolveBranding(db, { domain }));
+});
+
 // Stripe billing routes (checkout, portal)
 app.use('/api/stripe', stripeRouter);
 
