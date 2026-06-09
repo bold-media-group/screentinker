@@ -143,7 +143,9 @@ class ProvisioningActivity : AppCompatActivity() {
                 connectBtn.visibility = View.GONE
                 pairingSection.visibility = View.VISIBLE
                 pairingCodeText.text = wsService?.getPairingCode() ?: "------"
-                statusText.text = "Enter this code in the dashboard to pair this display"
+                // The instruction is shown once, inside the pairing section; don't
+                // duplicate it in statusText.
+                statusText.text = ""
                 connectBtn.isEnabled = false
             }
         }

@@ -102,13 +102,14 @@
                 android:textSize="16sp"
                 android:layout_marginBottom="12dp" />
 
-            <!-- Auto-sizes between 24sp and 56sp to fit the width on a single line.
-                 Capped at 56sp (not 96sp) + vertical padding so tall digits are
-                 never clipped, and the whole block stays on screen on short phones. -->
+            <!-- FIXED-height box: autosize fits the text inside the bounded box and
+                 gravity center vertically centers it, so the digits are never
+                 clipped (the earlier wrap_content height clipped the glyph bottoms).
+                 24-64sp fills the width on phones/TVs/sticks. -->
             <TextView
                 android:id="@+id/pairingCodeText"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
+                android:layout_height="96dp"
                 android:text="------"
                 android:textColor="#3B82F6"
                 android:textStyle="bold"
@@ -116,12 +117,9 @@
                 android:letterSpacing="0.3"
                 android:maxLines="1"
                 android:gravity="center"
-                android:paddingTop="4dp"
-                android:paddingBottom="8dp"
-                android:includeFontPadding="true"
                 app:autoSizeTextType="uniform"
                 app:autoSizeMinTextSize="24sp"
-                app:autoSizeMaxTextSize="56sp"
+                app:autoSizeMaxTextSize="64sp"
                 app:autoSizeStepGranularity="2sp" />
 
             <TextView
