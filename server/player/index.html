@@ -517,13 +517,18 @@
     }
 
     if (config.serverUrl && config.deviceId && config.paired) {
-      // Restore cached playlist immediately so content plays even if offline
+      // Restore cached playlist immediately so content plays even if offline —
+      // but ONLY if we also know the layout, else we'd guess fullscreen and flash
+      // before the payload arrives. Key presence (not value) is the test: an absent
+      // key means "layout unknown" (e.g. first run after this shipped, or cleared
+      // cache), while a stored `null` is a real fullscreen device. Both caches are
+      // written on every payload, so after the first connection this always renders
+      // immediately; only a genuinely-unknown layout waits (~1s) for the payload.
       const cachedPlaylist = loadPlaylistCache();
-      if (cachedPlaylist.length > 0) {
+      const layoutKnown = localStorage.getItem(LAYOUT_CACHE_KEY) !== null;
+      if (cachedPlaylist.length > 0 && layoutKnown) {
         console.log('Restored cached playlist:', cachedPlaylist.length, 'items');
         playlist = cachedPlaylist;
-        // Restore the cached layout too, so the first render is already zoned
-        // (otherwise the cold start shows fullscreen until the payload arrives).
         layout = loadLayoutCache();
         currentIndex = 0;
         isPlaying = true;
