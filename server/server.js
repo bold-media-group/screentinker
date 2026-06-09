@@ -137,7 +137,10 @@ app.use(cors({
 const stripeRouter = require('./routes/stripe');
 app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), stripeRouter);
 
-app.use(express.json());
+// 12mb so AI-designed signs with embedded generated images (base64 data URLs)
+// can be published. #41 follow-up: upload generated images to the content store
+// and reference by URL instead of embedding, to keep widget configs small.
+app.use(express.json({ limit: '12mb' }));
 const { sanitizeBody } = require('./middleware/sanitize');
 app.use(sanitizeBody);
 

@@ -136,13 +136,18 @@ export function render(container) {
     try {
       const design = await api.aiGenerateDesign(prompt);
       elements = []; selectedIdx = -1;
-      if (design.background) {
+      if (design.backgroundImage) {
+        bgImageDataUrl = design.backgroundImage;           // AI-generated backdrop
+        if (design.background) bgValue = design.background; // kept as fallback
+      } else if (design.background) {
         bgValue = design.background; bgImageDataUrl = null;
         const bc = document.getElementById('bgColor'); if (bc) bc.value = design.background;
       }
       (design.elements || []).forEach(el => elements.push(el));
       redraw();
-      status.textContent = t('designer.ai.done', { n: (design.elements || []).length });
+      status.textContent = design.image_warning
+        ? t('designer.ai.done_imgwarn', { n: (design.elements || []).length })
+        : t('designer.ai.done', { n: (design.elements || []).length });
     } catch (err) {
       status.textContent = (err && err.message) || t('designer.ai.failed');
     } finally {
@@ -340,6 +345,21 @@ async function openAiSettings() {
         <div class="form-group"><label>${t('designer.ai.api_key')}</label>
           <input id="aiKey" class="input" type="password" autocomplete="off" placeholder="${cur.has_key ? t('designer.ai.key_set') : t('designer.ai.key_placeholder')}" style="width:100%">
           <div style="font-size:11px;color:var(--text-muted);margin-top:4px">${t('designer.ai.key_hint')}</div></div>
+
+        <hr style="border:none;border-top:1px solid var(--border);margin:14px 0 10px">
+        <h4 style="font-size:13px;margin-bottom:4px">${t('designer.ai.images_title')}</h4>
+        <p style="font-size:11px;color:var(--text-muted);margin-bottom:8px">${t('designer.ai.images_desc')}</p>
+        <div class="form-group"><label>${t('designer.ai.image_provider')}</label>
+          <select id="aiImageProvider" class="input" style="width:100%">
+            <option value="" ${!cur.image_provider ? 'selected' : ''}>${t('designer.ai.image_off')}</option>
+            <option value="sdcpp" ${cur.image_provider === 'sdcpp' ? 'selected' : ''}>Stable Diffusion — local (sd.cpp)</option>
+            <option value="openai" ${cur.image_provider === 'openai' ? 'selected' : ''}>OpenAI / OpenAI-compatible</option>
+            <option value="comfyui" ${cur.image_provider === 'comfyui' ? 'selected' : ''}>ComfyUI</option>
+          </select></div>
+        <div class="form-group"><label>${t('designer.ai.image_base_url')}</label>
+          <input id="aiImageBaseUrl" class="input" value="${esc(cur.image_base_url || '')}" placeholder="http://localhost:8080/v1  ·  http://localhost:8188" style="width:100%"></div>
+        <div class="form-group"><label>${t('designer.ai.image_model')}</label>
+          <input id="aiImageModel" class="input" value="${esc(cur.image_model || '')}" placeholder="${t('designer.ai.image_model_ph')}" style="width:100%"></div>
         <div id="aiSettingsErr" style="display:none;color:var(--danger);font-size:13px;margin-top:8px"></div>
       </div>
       <div class="modal-footer">
@@ -380,6 +400,9 @@ async function openAiSettings() {
     const data = {
       base_url: overlay.querySelector('#aiBaseUrl').value.trim(),
       model: overlay.querySelector('#aiModel').value.trim(),
+      image_provider: overlay.querySelector('#aiImageProvider').value,
+      image_base_url: overlay.querySelector('#aiImageBaseUrl').value.trim(),
+      image_model: overlay.querySelector('#aiImageModel').value.trim(),
     };
     const key = overlay.querySelector('#aiKey').value;
     if (key) data.api_key = key;
@@ -631,6 +654,9 @@ function updateLayers() {
 
 function generateInnerHTML() {
   let html = '';
+  // A background image (e.g. AI-generated) is the body background in the editor;
+  // bake it into the published HTML as a full-cover bottom layer so it survives.
+  if (bgImageDataUrl) html += `<img src="${bgImageDataUrl}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" alt="">`;
   elements.forEach((el, i) => {
     // Use vw units for font sizes (same as designer preview) so output scales to any viewport
     const fs = el.fontSize / 10;
