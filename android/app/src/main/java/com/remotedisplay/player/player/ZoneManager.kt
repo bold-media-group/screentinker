@@ -2,6 +2,8 @@ package com.remotedisplay.player.player
 
 import android.content.Context
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.View
 import android.view.ViewGroup
@@ -35,11 +37,15 @@ class ZoneManager(
     private val onAllVideosComplete: () -> Unit
 ) {
     private val TAG = "ZoneManager"
+    private val handler = Handler(Looper.getMainLooper())
     private val zoneViews = mutableMapOf<String, View>()
     private val zoneExoPlayers = mutableMapOf<String, ExoPlayer>()
+    // Per-zone rotation timers: each zone cycles its own list of assignments.
+    private val zoneRotators = mutableMapOf<String, Runnable>()
     private var zones = listOf<Zone>()
-    private var activeVideoCount = 0
-    private var completedVideoCount = 0
+    // Render context kept for rotation re-renders.
+    private var renderServerUrl = ""
+    private var renderCache: com.remotedisplay.player.data.ContentCache? = null
 
     var currentLayoutId: String? = null
         private set
@@ -68,163 +74,181 @@ class ZoneManager(
     }
 
     fun renderAssignments(assignments: JSONArray, serverUrl: String, contentCache: com.remotedisplay.player.data.ContentCache) {
-        // Clear existing zone views
-        container.removeAllViews()
+        // Clear ONLY our own zone views/timers. `container` is the activity root and
+        // also holds the static playerView/imageView/youtubeWebView/statusOverlay -
+        // removeAllViews() here would detach those and black the screen on switch-back.
+        cancelAllRotations()
+        zoneViews.values.forEach { container.removeView(it) }
         zoneViews.clear()
         releaseExoPlayers()
-        activeVideoCount = 0
-        completedVideoCount = 0
+        renderServerUrl = serverUrl
+        renderCache = contentCache
 
         val containerWidth = container.width
         val containerHeight = container.height
-
         if (containerWidth == 0 || containerHeight == 0) {
-            // Container not laid out yet, post delayed
+            // Container not laid out yet, retry after layout.
             container.post { renderAssignments(assignments, serverUrl, contentCache) }
             return
         }
 
-        // Map assignments by zone_id
+        // Group assignments by zone_id, ordered by sort_order so rotation is stable.
         val assignmentsByZone = mutableMapOf<String?, MutableList<JSONObject>>()
         for (i in 0 until assignments.length()) {
             val a = assignments.getJSONObject(i)
             val zoneId = if (a.isNull("zone_id")) null else a.optString("zone_id", null)
             assignmentsByZone.getOrPut(zoneId) { mutableListOf() }.add(a)
         }
+        assignmentsByZone.values.forEach { list -> list.sortBy { it.optInt("sort_order", 0) } }
 
-        // Render each zone - only show content specifically assigned to this zone
-        // Unassigned content (zone_id=null) goes to the FIRST zone only
+        // Unassigned content (zone_id=null) goes to the FIRST zone only.
         var unassignedUsed = false
         for (zone in zones.sortedBy { it.zIndex }) {
             val zoneAssignments: List<JSONObject> = assignmentsByZone[zone.id]
                 ?: if (!unassignedUsed) { unassignedUsed = true; assignmentsByZone[null] ?: emptyList() } else emptyList()
-            val firstAssignment = zoneAssignments.firstOrNull() ?: continue
+            if (zoneAssignments.isEmpty()) continue
 
-            // Calculate pixel position
             val x = (zone.xPercent / 100f * containerWidth).toInt()
             val y = (zone.yPercent / 100f * containerHeight).toInt()
             val w = (zone.widthPercent / 100f * containerWidth).toInt()
             val h = (zone.heightPercent / 100f * containerHeight).toInt()
+            val params = FrameLayout.LayoutParams(w, h).apply { leftMargin = x; topMargin = y }
 
-            val params = FrameLayout.LayoutParams(w, h).apply {
-                leftMargin = x
-                topMargin = y
-            }
-
-            val mimeType = firstAssignment.optString("mime_type", "")
-            val remoteUrl = if (firstAssignment.isNull("remote_url")) null else firstAssignment.optString("remote_url", null)
-            val widgetType = if (firstAssignment.isNull("widget_type")) null else firstAssignment.optString("widget_type", null)
-            val widgetConfig = if (firstAssignment.isNull("widget_config")) null else firstAssignment.optString("widget_config", null)
-            val contentId = if (firstAssignment.isNull("content_id")) null else firstAssignment.optString("content_id", null)
-            val filepath = firstAssignment.optString("filepath", "")
-            val isMuted = firstAssignment.optInt("muted", 0) == 1
-
-            when {
-                // Widget - render in WebView
-                widgetType != null -> {
-                    val widgetId = firstAssignment.optString("widget_id", "")
-                    val webView = createWebView()
-                    webView.loadUrl("$serverUrl/api/widgets/$widgetId/render")
-                    webView.layoutParams = params
-                    container.addView(webView)
-                    zoneViews[zone.id] = webView
-                    Log.i(TAG, "Zone ${zone.name}: widget $widgetType")
-                }
-
-                // YouTube - render in WebView
-                mimeType == "video/youtube" && !remoteUrl.isNullOrEmpty() -> {
-                    val webView = createWebView()
-                    webView.loadUrl(remoteUrl)
-                    webView.layoutParams = params
-                    container.addView(webView)
-                    zoneViews[zone.id] = webView
-                    Log.i(TAG, "Zone ${zone.name}: youtube $remoteUrl")
-                }
-
-                // Video
-                mimeType.startsWith("video/") -> {
-                    val src = if (!remoteUrl.isNullOrEmpty()) remoteUrl
-                             else if (contentId != null) contentCache.getCachedFile(contentId)?.let { Uri.fromFile(it).toString() }
-                                  ?: "$serverUrl/uploads/content/$filepath"
-                             else continue
-
-                    val playerView = (android.view.LayoutInflater.from(context)
-                        .inflate(com.remotedisplay.player.R.layout.zone_player, null) as PlayerView).apply {
-                        useController = false
-                        layoutParams = params
-                    }
-                    val exoPlayer = ExoPlayer.Builder(context).build().apply {
-                        setMediaItem(MediaItem.fromUri(src))
-                        repeatMode = Player.REPEAT_MODE_ALL
-                        // Use muted flag from assignment, default unmuted for first video
-                        volume = if (isMuted) 0f else 1f
-                        prepare()
-                        playWhenReady = true
-                    }
-                    playerView.player = exoPlayer
-                    container.addView(playerView)
-                    zoneViews[zone.id] = playerView
-                    zoneExoPlayers[zone.id] = exoPlayer
-                    activeVideoCount++
-                    Log.i(TAG, "Zone ${zone.name}: video $src")
-                }
-
-                // Image
-                mimeType.startsWith("image/") -> {
-                    val imageView = ImageView(context).apply {
-                        scaleType = when (zone.fitMode) {
-                            "contain" -> ImageView.ScaleType.FIT_CENTER
-                            "fill" -> ImageView.ScaleType.FIT_XY
-                            else -> ImageView.ScaleType.CENTER_CROP
-                        }
-                        layoutParams = params
-                    }
-
-                    // Target the zone size (already known) so we don't decode larger than the
-                    // visible region. Falls back to screen size if zone hasn't been measured.
-                    val targetW = if (w > 0) w else com.remotedisplay.player.util.ImageLoader.screenWidth(context)
-                    val targetH = if (h > 0) h else com.remotedisplay.player.util.ImageLoader.screenHeight(context)
-
-                    val file = contentId?.let { contentCache.getCachedFile(it) }
-                    if (file != null) {
-                        val bitmap = com.remotedisplay.player.util.ImageLoader.decodeFile(file, targetW, targetH)
-                        if (bitmap != null) {
-                            try { imageView.setImageBitmap(bitmap) }
-                            catch (e: Throwable) { Log.e(TAG, "setImageBitmap failed: ${e.message}") }
-                        } else {
-                            Log.w(TAG, "Zone ${zone.name}: skipping unloadable image $contentId")
-                        }
-                    } else if (!remoteUrl.isNullOrEmpty()) {
-                        Thread {
-                            val bitmap = com.remotedisplay.player.util.ImageLoader.decodeUrl(remoteUrl, targetW, targetH)
-                            if (bitmap != null) {
-                                imageView.post {
-                                    try { imageView.setImageBitmap(bitmap) }
-                                    catch (e: Throwable) { Log.e(TAG, "setImageBitmap failed: ${e.message}") }
-                                }
-                            } else {
-                                Log.w(TAG, "Zone ${zone.name}: skipping unloadable remote image")
-                            }
-                        }.start()
-                    }
-
-                    container.addView(imageView)
-                    zoneViews[zone.id] = imageView
-                    Log.i(TAG, "Zone ${zone.name}: image")
-                }
-            }
+            com.remotedisplay.player.util.DebugLog.i("Zone", "Zone '${zone.name}' (${zone.widthPercent.toInt()}x${zone.heightPercent.toInt()}%) -> ${zoneAssignments.size} item(s)")
+            showZoneItem(zone, zoneAssignments, 0, params)
         }
-
         Log.i(TAG, "Rendered ${zoneViews.size} zone views")
+    }
+
+    // Render assignment[index] in a zone, replacing its current view. If the zone
+    // has more than one assignment it rotates: images/widgets advance on a duration
+    // timer; videos advance when they end (single-item zones loop the video).
+    private fun showZoneItem(zone: Zone, assignments: List<JSONObject>, index: Int, params: FrameLayout.LayoutParams) {
+        cancelZoneRotation(zone.id)
+        zoneViews.remove(zone.id)?.let { container.removeView(it) }
+        zoneExoPlayers.remove(zone.id)?.release()
+
+        val a = assignments[index % assignments.size]
+        val multi = assignments.size > 1
+        val advance: () -> Unit = { showZoneItem(zone, assignments, index + 1, params) }
+
+        val mimeType = a.optString("mime_type", "")
+        val remoteUrl = if (a.isNull("remote_url")) null else a.optString("remote_url", null)
+        val widgetType = if (a.isNull("widget_type")) null else a.optString("widget_type", null)
+        val contentId = if (a.isNull("content_id")) null else a.optString("content_id", null)
+        val filepath = a.optString("filepath", "")
+        val isMuted = a.optInt("muted", 0) == 1
+        val durationMs = a.optInt("duration_sec", 10).coerceAtLeast(3) * 1000L
+
+        // Per-zone content switch log (fires on initial render AND each rotation), so
+        // the live debug panel shows each zone advancing on its own interval.
+        val label = a.optString("filename", "").ifEmpty { widgetType?.let { "widget:$it" } ?: mimeType.ifEmpty { "item" } }
+        com.remotedisplay.player.util.DebugLog.i("Zone", "'${zone.name}' [${(index % assignments.size) + 1}/${assignments.size}] -> $label (${durationMs / 1000}s)")
+
+        when {
+            // Widget - render in WebView
+            widgetType != null -> {
+                val widgetId = a.optString("widget_id", "")
+                val webView = createWebView()
+                webView.loadUrl("$renderServerUrl/api/widgets/$widgetId/render")
+                webView.layoutParams = params
+                container.addView(webView); zoneViews[zone.id] = webView
+                if (multi) scheduleZoneAdvance(zone.id, durationMs, advance)
+            }
+            // YouTube - render via an embed wrapper with a valid origin (Error 153 fix)
+            mimeType == "video/youtube" && !remoteUrl.isNullOrEmpty() -> {
+                val webView = createWebView()
+                val html = com.remotedisplay.player.util.WebViewSupport.youtubeEmbedHtml(remoteUrl)
+                if (html != null) webView.loadDataWithBaseURL(com.remotedisplay.player.util.WebViewSupport.YT_BASE, html, "text/html", "UTF-8", null)
+                else webView.loadUrl(remoteUrl)
+                webView.layoutParams = params
+                container.addView(webView); zoneViews[zone.id] = webView
+                if (multi) scheduleZoneAdvance(zone.id, durationMs, advance)
+            }
+            // Video
+            mimeType.startsWith("video/") -> {
+                val src = if (!remoteUrl.isNullOrEmpty()) remoteUrl
+                          else if (contentId != null) renderCache?.getCachedFile(contentId)?.let { Uri.fromFile(it).toString() }
+                               ?: "$renderServerUrl/uploads/content/$filepath"
+                          else { if (multi) scheduleZoneAdvance(zone.id, durationMs, advance); return }
+                val playerView = (android.view.LayoutInflater.from(context)
+                    .inflate(com.remotedisplay.player.R.layout.zone_player, null) as PlayerView).apply {
+                    useController = false
+                    layoutParams = params
+                }
+                val exoPlayer = ExoPlayer.Builder(context).build().apply {
+                    setMediaItem(MediaItem.fromUri(src))
+                    repeatMode = if (multi) Player.REPEAT_MODE_OFF else Player.REPEAT_MODE_ALL
+                    volume = if (isMuted) 0f else 1f
+                    if (multi) addListener(object : Player.Listener {
+                        override fun onPlaybackStateChanged(state: Int) {
+                            if (state == Player.STATE_ENDED) handler.post { advance() }
+                        }
+                    })
+                    prepare()
+                    playWhenReady = true
+                }
+                playerView.player = exoPlayer
+                container.addView(playerView); zoneViews[zone.id] = playerView; zoneExoPlayers[zone.id] = exoPlayer
+            }
+            // Image
+            mimeType.startsWith("image/") -> {
+                val imageView = ImageView(context).apply {
+                    scaleType = when (zone.fitMode) {
+                        "contain" -> ImageView.ScaleType.FIT_CENTER
+                        "fill" -> ImageView.ScaleType.FIT_XY
+                        else -> ImageView.ScaleType.CENTER_CROP
+                    }
+                    layoutParams = params
+                }
+                val targetW = if (params.width > 0) params.width else com.remotedisplay.player.util.ImageLoader.screenWidth(context)
+                val targetH = if (params.height > 0) params.height else com.remotedisplay.player.util.ImageLoader.screenHeight(context)
+                val file = contentId?.let { renderCache?.getCachedFile(it) }
+                if (file != null) {
+                    val bitmap = com.remotedisplay.player.util.ImageLoader.decodeFile(file, targetW, targetH)
+                    if (bitmap != null) {
+                        try { imageView.setImageBitmap(bitmap) } catch (e: Throwable) { Log.e(TAG, "setImageBitmap failed: ${e.message}") }
+                    } else {
+                        Log.w(TAG, "Zone ${zone.name}: skipping unloadable image $contentId")
+                    }
+                } else if (!remoteUrl.isNullOrEmpty()) {
+                    Thread {
+                        val bitmap = com.remotedisplay.player.util.ImageLoader.decodeUrl(remoteUrl, targetW, targetH)
+                        if (bitmap != null) {
+                            imageView.post {
+                                try { imageView.setImageBitmap(bitmap) } catch (e: Throwable) { Log.e(TAG, "setImageBitmap failed: ${e.message}") }
+                            }
+                        } else {
+                            Log.w(TAG, "Zone ${zone.name}: skipping unloadable remote image")
+                        }
+                    }.start()
+                }
+                container.addView(imageView); zoneViews[zone.id] = imageView
+                if (multi) scheduleZoneAdvance(zone.id, durationMs, advance)
+            }
+            // Unknown / empty assignment - keep rotating so it doesn't get stuck.
+            else -> { if (multi) scheduleZoneAdvance(zone.id, durationMs, advance) }
+        }
+    }
+
+    private fun scheduleZoneAdvance(zoneId: String, delayMs: Long, advance: () -> Unit) {
+        val r = Runnable { advance() }
+        zoneRotators[zoneId] = r
+        handler.postDelayed(r, delayMs)
+    }
+
+    private fun cancelZoneRotation(zoneId: String) {
+        zoneRotators.remove(zoneId)?.let { handler.removeCallbacks(it) }
+    }
+
+    private fun cancelAllRotations() {
+        zoneRotators.values.forEach { handler.removeCallbacks(it) }
+        zoneRotators.clear()
     }
 
     private fun createWebView(): WebView {
         return WebView(context).apply {
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            settings.mediaPlaybackRequiresUserGesture = false
-            setBackgroundColor(android.graphics.Color.TRANSPARENT)
-            webViewClient = WebViewClient()
+            com.remotedisplay.player.util.WebViewSupport.configure(this, "Zone")
         }
     }
 
@@ -234,8 +258,12 @@ class ZoneManager(
     }
 
     fun cleanup() {
+        cancelAllRotations()
         releaseExoPlayers()
-        container.removeAllViews()
+        // Remove ONLY the views we added for zones; the activity's static views live
+        // in this same container and must NOT be removed (else single-zone/fullscreen
+        // playback, which reuses them, renders black).
+        zoneViews.values.forEach { container.removeView(it) }
         zoneViews.clear()
         zones = listOf()
     }

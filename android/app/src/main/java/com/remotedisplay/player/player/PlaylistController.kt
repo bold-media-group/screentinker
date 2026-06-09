@@ -17,9 +17,13 @@ data class PlaylistItem(
     val sortOrder: Int,
     val enabled: Boolean = true,
     val remoteUrl: String? = null,
-    val muted: Boolean = false
+    val muted: Boolean = false,
+    val widgetId: String? = null,
+    val widgetType: String? = null
 ) {
     val isRemote: Boolean get() = !remoteUrl.isNullOrEmpty()
+    // Widget assignments have a widget_id and no downloadable content file.
+    val isWidget: Boolean get() = !widgetId.isNullOrEmpty()
 }
 
 class PlaylistController(
@@ -51,7 +55,8 @@ class PlaylistController(
             newItems.add(
                 PlaylistItem(
                     assignmentId = obj.optInt("id", 0),
-                    contentId = obj.getString("content_id"),
+                    // Tolerant: widget assignments have no content_id (getString threw).
+                    contentId = if (obj.isNull("content_id")) "" else obj.optString("content_id", ""),
                     filename = obj.optString("filename", "unknown"),
                     mimeType = obj.optString("mime_type", "video/mp4"),
                     filepath = obj.optString("filepath", ""),
@@ -60,14 +65,17 @@ class PlaylistController(
                     sortOrder = obj.optInt("sort_order", 0),
                     enabled = obj.optInt("enabled", 1) == 1,
                     remoteUrl = if (obj.isNull("remote_url")) null else obj.optString("remote_url", "").ifEmpty { null },
-                    muted = obj.optInt("muted", 0) == 1
+                    muted = obj.optInt("muted", 0) == 1,
+                    widgetId = if (obj.isNull("widget_id")) null else obj.optString("widget_id", "").ifEmpty { null },
+                    widgetType = if (obj.isNull("widget_type")) null else obj.optString("widget_type", "").ifEmpty { null }
                 )
             )
         }
 
-        // Check if playlist actually changed
-        val oldContentIds = items.map { it.contentId }
-        val newContentIds = newItems.map { it.contentId }
+        // Check if playlist actually changed (key on content OR widget id, since
+        // widget items share an empty contentId).
+        val oldContentIds = items.map { it.contentId + "|" + (it.widgetId ?: "") }
+        val newContentIds = newItems.map { it.contentId + "|" + (it.widgetId ?: "") }
         val playlistChanged = oldContentIds != newContentIds
 
         if (!playlistChanged && items.isNotEmpty()) {
@@ -169,8 +177,9 @@ class PlaylistController(
         Log.i("PlaylistController", "Playing: ${item.filename} (index $currentIndex)")
         onItemChanged(item)
 
-        // For images, auto-advance after duration. For videos, wait for completion callback.
-        if (item.mimeType.startsWith("image/")) {
+        // For images and widgets, auto-advance after duration. For videos, wait
+        // for the completion callback.
+        if (item.mimeType.startsWith("image/") || item.isWidget) {
             scheduleAdvance(item.durationSec * 1000L)
         }
     }

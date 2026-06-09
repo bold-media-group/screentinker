@@ -52,6 +52,12 @@ export function connectSocket() {
     emit('playback-state', data);
   });
 
+  // Live device debug log line (device-detail screen streams these when the
+  // per-device "Debug logging" checkbox is on).
+  dashboardSocket.on('dashboard:device-log', (data) => {
+    emit('device-log', data);
+  });
+
   // Playback progress (play_start with duration — drives device-card progress bars)
   dashboardSocket.on('dashboard:playback-progress', (data) => {
     emit('playback-progress', data);

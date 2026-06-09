@@ -25,7 +25,7 @@ class MediaPlayerManager(
     private var exoPlayer: ExoPlayer? = null
     private var currentType: MediaType = MediaType.NONE
 
-    enum class MediaType { NONE, VIDEO, IMAGE, YOUTUBE }
+    enum class MediaType { NONE, VIDEO, IMAGE, YOUTUBE, WIDGET }
 
     init {
         setupExoPlayer()
@@ -55,13 +55,30 @@ class MediaPlayerManager(
         exoPlayer?.stop()
 
         youtubeWebView?.apply {
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            settings.mediaPlaybackRequiresUserGesture = false
-            webViewClient = WebViewClient()
-            webChromeClient = WebChromeClient()
+            com.remotedisplay.player.util.WebViewSupport.configure(this, "YouTube")
             setBackgroundColor(android.graphics.Color.BLACK)
-            loadUrl(embedUrl)
+            // Load via an embed wrapper with a valid youtube.com origin (Error 153 fix).
+            val html = com.remotedisplay.player.util.WebViewSupport.youtubeEmbedHtml(embedUrl)
+            if (html != null) loadDataWithBaseURL(com.remotedisplay.player.util.WebViewSupport.YT_BASE, html, "text/html", "UTF-8", null)
+            else loadUrl(embedUrl)
+        }
+    }
+
+    // Fullscreen widget render (single-zone / "fullscreen" layouts). Reuses the
+    // full-screen WebView; ZoneManager handles widgets in multi-zone layouts.
+    fun showWidget(url: String) {
+        Log.i("MediaPlayerManager", "Showing widget: $url")
+        currentType = MediaType.WIDGET
+
+        playerView.visibility = android.view.View.GONE
+        imageView.visibility = android.view.View.GONE
+        youtubeWebView?.visibility = android.view.View.VISIBLE
+
+        exoPlayer?.stop()
+
+        youtubeWebView?.apply {
+            com.remotedisplay.player.util.WebViewSupport.configure(this, "Widget")
+            loadUrl(url)
         }
     }
 
