@@ -65,6 +65,21 @@ function safeUrl(url) {
   } catch { return 'about:blank'; }
 }
 
+// Security: widget render output is public and CSP-exempt, so config values that
+// get inlined into <style>/CSS must not be able to break out (a config field set
+// via the API could otherwise carry `}</style><script>...`). safeCss allows
+// colors/gradients but rejects breakout/exfil constructs; safeNumber coerces to
+// a finite number (so e.g. font_size can't smuggle markup).
+function safeCss(v, fallback) {
+  if (typeof v !== 'string') return fallback;
+  if (/[<>{}\\;]/.test(v) || /url\s*\(/i.test(v) || /@import/i.test(v) || /expression/i.test(v) || /javascript:/i.test(v)) return fallback;
+  return v.trim().slice(0, 200);
+}
+function safeNumber(v, fallback) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 // List widgets accessible to the caller's current workspace, plus any
 // platform-template rows (workspace_id IS NULL) shared with all workspaces.
 // Phase 2.2d: workspace-scoped. Cross-workspace visibility comes from
@@ -168,6 +183,15 @@ router.get('/:id/render', (req, res) => {
   const widget = db.prepare('SELECT * FROM widgets WHERE id = ?').get(req.params.id);
   if (!widget) return res.status(404).send('Widget not found');
   const config = JSON.parse(widget.config || '{}');
+  // This page is DESIGNED to be embedded by the player, which frames it in a
+  // sandboxed (allow-scripts, no allow-same-origin) iframe = a null origin. The
+  // global helmet X-Frame-Options: SAMEORIGIN refuses that (null != same), so
+  // widgets render blank in the web player. Drop it here; the sandbox - not
+  // X-Frame-Options - is what isolates the widget (it can't read the dashboard JWT).
+  res.removeHeader('X-Frame-Options');
+  // Never cache the render: widget data (clock/weather/rss/directory) changes, and
+  // a cached copy from before the X-Frame-Options change would keep showing blank.
+  res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Content-Type', 'text/html');
   res.send(renderWidgetHtml(widget.widget_type, config));
 });
@@ -186,9 +210,9 @@ router.post('/preview', (req, res) => {
 function renderClock(c) {
   return `<!DOCTYPE html><html><head><style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  body { background:${c.background || 'transparent'}; display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; font-family:-apple-system,sans-serif; overflow:hidden; }
-  #time { font-size:${c.font_size || 64}px; font-weight:700; color:${c.color || '#FFFFFF'}; }
-  #date { font-size:${Math.max(16, (c.font_size || 64) / 3)}px; color:${c.color || '#FFFFFF'}; opacity:0.7; margin-top:8px; }
+  body { background:${safeCss(c.background, 'transparent')}; display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; font-family:-apple-system,sans-serif; overflow:hidden; }
+  #time { font-size:${safeNumber(c.font_size, 64)}px; font-weight:700; color:${safeCss(c.color, '#FFFFFF')}; }
+  #date { font-size:${Math.max(16, safeNumber(c.font_size, 64) / 3)}px; color:${safeCss(c.color, '#FFFFFF')}; opacity:0.7; margin-top:8px; }
 </style></head><body>
 <div id="time"></div>
 ${c.show_date !== false ? '<div id="date"></div>' : ''}
@@ -205,9 +229,9 @@ setInterval(update, 1000); update();
 function renderWeather(c) {
   return `<!DOCTYPE html><html><head><style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  body { background:${c.background || 'transparent'}; display:flex; align-items:center; justify-content:center; height:100vh; font-family:-apple-system,sans-serif; color:${c.color || '#FFF'}; }
+  body { background:${safeCss(c.background, 'transparent')}; display:flex; align-items:center; justify-content:center; height:100vh; font-family:-apple-system,sans-serif; color:${safeCss(c.color, '#FFF')}; }
   .weather { text-align:center; }
-  .temp { font-size:${c.font_size || 48}px; font-weight:700; }
+  .temp { font-size:${safeNumber(c.font_size, 48)}px; font-weight:700; }
   .location { font-size:18px; opacity:0.7; margin-top:4px; }
   .desc { font-size:16px; opacity:0.6; margin-top:8px; }
   .icon { font-size:64px; }
@@ -240,9 +264,9 @@ load(); setInterval(load, 600000);
 function renderRSS(c) {
   return `<!DOCTYPE html><html><head><style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  body { background:${c.background || '#000'}; height:100vh; overflow:hidden; font-family:-apple-system,sans-serif; }
-  .ticker { display:flex; align-items:center; height:100%; white-space:nowrap; animation:scroll ${c.scroll_speed || 30}s linear infinite; }
-  .item { display:inline-block; padding:0 40px; font-size:${c.font_size || 24}px; color:${c.color || '#FFF'}; }
+  body { background:${safeCss(c.background, '#000')}; height:100vh; overflow:hidden; font-family:-apple-system,sans-serif; }
+  .ticker { display:flex; align-items:center; height:100%; white-space:nowrap; animation:scroll ${safeNumber(c.scroll_speed, 30)}s linear infinite; }
+  .item { display:inline-block; padding:0 40px; font-size:${safeNumber(c.font_size, 24)}px; color:${safeCss(c.color, '#FFF')}; }
   .item .title { font-weight:600; }
   .item .sep { margin:0 20px; opacity:0.3; }
   @keyframes scroll { 0%{transform:translateX(100vw)} 100%{transform:translateX(-100%)} }
@@ -253,7 +277,7 @@ async function load() {
   try {
     const r = await fetch('https://api.rss2json.com/v1/api.json?rss_url=' + encodeURIComponent('${escapeHtml(c.feed_url) || ''}'));
     const d = await r.json();
-    const items = d.items?.slice(0, ${c.max_items || 10}) || [];
+    const items = d.items?.slice(0, ${safeNumber(c.max_items, 10)}) || [];
     // NOTE: RSS feed titles are external content - using textContent instead of innerHTML to prevent XSS
     document.getElementById('ticker').innerHTML = items.map(i => {
       const el = document.createElement('span'); el.textContent = i.title;
@@ -272,12 +296,21 @@ function renderText(c) {
   html = html.replace(/font-size:\s*([\d.]+)px/g, (match, px) => {
     return `font-size:${(parseFloat(px) / 108).toFixed(2)}vw`;
   });
-  return `<!DOCTYPE html><html><head><style>
+  // Security: c.html / c.css are intentionally raw user-authored content, but the
+  // render is public and same-origin with the dashboard - injected <script> could
+  // otherwise read the dashboard's localStorage JWT. Render the user content inside
+  // a sandboxed iframe with NO allow-same-origin: scripts still run (so legit
+  // widget markup works) but in a null origin that can't touch the app's storage.
+  const inner = `<!DOCTYPE html><html><head><style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  body { background:${c.background || 'transparent'}; width:100vw; height:100vh; overflow:hidden; }
+  html, body { width:100vw; height:100vh; overflow:hidden; }
   ${c.css || ''}
 </style></head><body>${html}</body></html>`;
-  // NOTE: c.html is intentionally rendered as raw HTML - this is user-authored content for the text widget
+  return `<!DOCTYPE html><html><head><style>
+  * { margin:0; padding:0; }
+  html, body { width:100vw; height:100vh; overflow:hidden; background:${safeCss(c.background, 'transparent')}; }
+  iframe { width:100%; height:100%; border:0; display:block; }
+</style></head><body><iframe sandbox="allow-scripts" srcdoc="${escapeHtml(inner)}"></iframe></body></html>`;
 }
 
 function renderWebpage(c) {
@@ -294,7 +327,7 @@ ${c.refresh_interval > 0 ? `<script>setInterval(()=>document.querySelector('ifra
 
 function renderSocial(c) {
   return `<!DOCTYPE html><html><head><style>
-  body { background:${c.background || '#000'}; color:${c.color || '#FFF'}; font-family:-apple-system,sans-serif; display:flex; align-items:center; justify-content:center; height:100vh; margin:0; }
+  body { background:${safeCss(c.background, '#000')}; color:${safeCss(c.color, '#FFF')}; font-family:-apple-system,sans-serif; display:flex; align-items:center; justify-content:center; height:100vh; margin:0; }
 </style></head><body>
 <div style="text-align:center">
   <p style="font-size:24px">Social Feed</p>

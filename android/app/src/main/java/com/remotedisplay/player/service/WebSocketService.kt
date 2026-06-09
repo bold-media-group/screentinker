@@ -269,6 +269,21 @@ class WebSocketService : Service() {
                         "screen_on" -> {
                             Thread { try { Runtime.getRuntime().exec(arrayOf("input", "keyevent", "224")).waitFor() } catch (_: Exception) {} }.start()
                         }
+                        "set_debug" -> {
+                            val on = payload?.optBoolean("enabled", false) ?: false
+                            // Point the sink at this socket, then flip the flag. When on,
+                            // DebugLog.* mirrors player/zone lines to the dashboard.
+                            com.remotedisplay.player.util.DebugLog.sink = { tag, level, msg ->
+                                try {
+                                    socket?.emit("device:log", JSONObject().apply {
+                                        put("tag", tag); put("level", level); put("message", msg)
+                                    })
+                                } catch (_: Throwable) {}
+                            }
+                            com.remotedisplay.player.util.DebugLog.enabled = on
+                            Log.i("WebSocketService", "Remote debug logging ${if (on) "ENABLED" else "disabled"}")
+                            com.remotedisplay.player.util.DebugLog.i("Debug", "Remote debug logging ${if (on) "ON" else "OFF"}")
+                        }
                         else -> handler.post { try { onCommand?.invoke(type, payload) } catch (e: Throwable) { Log.e("WebSocketService", "onCommand cb: ${e.message}") } }
                     }
                 }

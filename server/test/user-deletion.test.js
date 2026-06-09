@@ -192,3 +192,44 @@ test('missing user -> 404', async () => {
   const res = await del('does-not-exist', tokens.admin);
   assert.equal(res.status, 404);
 });
+
+// --- #36: deleteOrgCascade / deleteWorkspaceCascade (shared cascade helpers) ---
+const { deleteOrgCascade, deleteWorkspaceCascade } = require('../lib/user-deletion');
+
+test('deleteOrgCascade: org + all workspaces/resources/members gone; member users kept', () => {
+  user('u-cust');
+  db.prepare("INSERT INTO organizations (id, name, owner_user_id) VALUES ('orgD','Cust','u-cust')").run();
+  db.prepare("INSERT INTO organization_members (organization_id, user_id, role) VALUES ('orgD','u-cust','org_owner')").run();
+  db.prepare("INSERT INTO workspaces (id, organization_id, name) VALUES ('wsD1','orgD','D1'),('wsD2','orgD','D2')").run();
+  db.prepare("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES ('wsD1','u-cust','workspace_admin')").run();
+  db.prepare("INSERT INTO devices (id, workspace_id) VALUES ('dvD','wsD1')").run();
+  db.prepare("INSERT INTO content (id, workspace_id) VALUES ('ctD','wsD2')").run();
+  db.prepare("INSERT INTO playlists (id, user_id, workspace_id) VALUES ('plD','u-cust','wsD1')").run();
+
+  deleteOrgCascade(db, { orgId: 'orgD' });
+
+  assert.equal(exists('organizations','orgD'), false, 'org gone');
+  assert.equal(exists('workspaces','wsD1') || exists('workspaces','wsD2'), false, 'workspaces gone');
+  assert.equal(exists('devices','dvD'), false, 'device gone');
+  assert.equal(exists('content','ctD'), false, 'content gone');
+  assert.equal(exists('playlists','plD'), false, 'playlist gone');
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM organization_members WHERE organization_id='orgD'").get().c, 0, 'org members cascaded');
+  assert.equal(exists('users','u-cust'), true, 'member user is NOT deleted');
+});
+
+test('deleteWorkspaceCascade: one workspace + resources gone; org + sibling intact', () => {
+  user('u-cust2');
+  db.prepare("INSERT INTO organizations (id, name, owner_user_id) VALUES ('orgW','W','u-cust2')").run();
+  db.prepare("INSERT INTO workspaces (id, organization_id, name) VALUES ('wsW1','orgW','W1'),('wsW2','orgW','W2')").run();
+  db.prepare("INSERT INTO workspace_members (workspace_id, user_id, role) VALUES ('wsW1','u-cust2','workspace_admin')").run();
+  db.prepare("INSERT INTO devices (id, workspace_id) VALUES ('dvW','wsW1'),('dvW2','wsW2')").run();
+
+  deleteWorkspaceCascade(db, { workspaceId: 'wsW1' });
+
+  assert.equal(exists('workspaces','wsW1'), false, 'target ws gone');
+  assert.equal(exists('devices','dvW'), false, 'target ws device gone');
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM workspace_members WHERE workspace_id='wsW1'").get().c, 0, 'members cascaded');
+  assert.equal(exists('organizations','orgW'), true, 'org intact');
+  assert.equal(exists('workspaces','wsW2'), true, 'sibling ws intact');
+  assert.equal(exists('devices','dvW2'), true, 'sibling device intact');
+});

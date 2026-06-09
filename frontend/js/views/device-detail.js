@@ -8,6 +8,7 @@ let currentDevice = null;
 let statusHandler = null;
 let screenshotHandler = null;
 let playbackHandler = null;
+let logHandler = null;
 let screenshotInterval = null;
 let remoteActive = false;
 
@@ -99,9 +100,24 @@ export function render(container, deviceId) {
     }
   };
 
+  // Live debug log lines streamed from the device (when the Debug logging
+  // checkbox is on). Appended via textContent — no HTML injection.
+  logHandler = (data) => {
+    if (data.device_id !== deviceId) return;
+    const panel = document.getElementById('debugLogPanel');
+    if (!panel) return;
+    const line = document.createElement('div');
+    const time = new Date(data.ts || Date.now()).toLocaleTimeString();
+    line.textContent = `${time} [${data.tag || ''}] ${data.message || ''}`;
+    panel.appendChild(line);
+    while (panel.childElementCount > 500) panel.removeChild(panel.firstChild);
+    panel.scrollTop = panel.scrollHeight;
+  };
+
   on('device-status', statusHandler);
   on('screenshot-ready', screenshotHandler);
   on('playback-state', playbackHandler);
+  on('device-log', logHandler);
 }
 
 async function loadDevice(deviceId, activeTab = null) {
@@ -324,6 +340,15 @@ async function loadDevice(deviceId, activeTab = null) {
           </div>
           <button class="btn btn-secondary btn-sm" id="saveNotesBtn">${t('device.form.save_settings')}</button>
         </div>
+
+        <div style="margin-top:20px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
+            <input type="checkbox" id="debugLogToggle"> ${t('device.debug.toggle')}
+          </label>
+          <div style="font-size:11px;color:var(--text-muted);margin:4px 0 0 24px">${t('device.debug.hint')}</div>
+          <div id="debugLogPanel" style="display:none;margin-top:8px;background:#0b0f1a;border:1px solid var(--border);border-radius:6px;padding:8px;height:220px;overflow-y:auto;font-family:monospace;font-size:11px;line-height:1.45;color:#cbd5e1"></div>
+        </div>
+
         <div style="margin-top:20px;display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn btn-secondary btn-sm" id="rebootBtn">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -571,6 +596,15 @@ async function setupActions(device) {
   } catch {}
 
   // Save settings (notes + orientation + default content)
+  // Debug logging toggle: sends a transient set_debug command to the device and
+  // reveals the live log panel. State is per-session (resets on device reconnect).
+  document.getElementById('debugLogToggle')?.addEventListener('change', (e) => {
+    const enabled = e.target.checked;
+    const panel = document.getElementById('debugLogPanel');
+    if (panel) panel.style.display = enabled ? 'block' : 'none';
+    sendCommand(device.id, 'set_debug', { enabled });
+  });
+
   document.getElementById('saveNotesBtn')?.addEventListener('click', async () => {
     try {
       await api.updateDevice(device.id, {
@@ -1268,6 +1302,7 @@ export function cleanup() {
   if (statusHandler) off('device-status', statusHandler);
   if (screenshotHandler) off('screenshot-ready', screenshotHandler);
   if (playbackHandler) off('playback-state', playbackHandler);
+  if (logHandler) off('device-log', logHandler);
   if (screenshotInterval) clearInterval(screenshotInterval);
   if (remoteActive && currentDevice) stopRemote(currentDevice.id);
   remoteActive = false;

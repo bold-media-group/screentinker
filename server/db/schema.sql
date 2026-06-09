@@ -141,7 +141,7 @@ CREATE TABLE IF NOT EXISTS layout_zones (
     height_percent  REAL NOT NULL DEFAULT 100,
     z_index         INTEGER NOT NULL DEFAULT 0,
     zone_type       TEXT NOT NULL DEFAULT 'content',
-    fit_mode        TEXT NOT NULL DEFAULT 'cover',
+    fit_mode        TEXT NOT NULL DEFAULT 'contain',
     background_color TEXT DEFAULT '#000000',
     sort_order      INTEGER NOT NULL DEFAULT 0
 );
@@ -386,6 +386,23 @@ CREATE TABLE IF NOT EXISTS white_labels (
     custom_css      TEXT,
     hide_branding   INTEGER DEFAULT 0,
     created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    updated_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+-- ===================== AI (BYOK) SETTINGS =====================
+-- #41: per-workspace AI design generation. Bring-your-own OpenAI-COMPATIBLE
+-- endpoint (OpenAI cloud, or self-hosted: Ollama / LM Studio / llama.cpp, and
+-- AUTOMATIC1111 etc. for images), so the operator bears no AI cost. api_key_enc
+-- is AES-256-GCM encrypted (lib/secretbox.js); it is never returned to clients.
+CREATE TABLE IF NOT EXISTS ai_settings (
+    workspace_id    TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+    base_url        TEXT,
+    api_key_enc     TEXT,
+    model           TEXT,
+    image_base_url  TEXT,
+    image_model     TEXT,
+    image_provider  TEXT,
+    image_api_key_enc TEXT,
     updated_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
 

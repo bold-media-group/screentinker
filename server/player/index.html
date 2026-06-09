@@ -309,6 +309,16 @@
     function loadPlaylistCache() {
       try { return JSON.parse(localStorage.getItem(PLAYLIST_CACHE_KEY) || '[]'); } catch { return []; }
     }
+    // Cache the layout alongside the playlist so a cold start renders the correct
+    // zone layout on the FIRST pass, instead of rendering fullscreen and only
+    // switching to zones once the server payload arrives.
+    const LAYOUT_CACHE_KEY = 'rd_layout_cache';
+    function saveLayoutCache(l) {
+      try { localStorage.setItem(LAYOUT_CACHE_KEY, JSON.stringify(l || null)); } catch {}
+    }
+    function loadLayoutCache() {
+      try { return JSON.parse(localStorage.getItem(LAYOUT_CACHE_KEY) || 'null'); } catch { return null; }
+    }
 
     // ==================== State ====================
     let socket = null;
@@ -329,6 +339,9 @@
     // playback muted).
     let userHasInteracted = false;
     let advanceTimer = null;
+    // Per-zone rotation timers (multi-zone). Each zone advances independently on
+    // its own interval, decoupled from the fullscreen advanceTimer/nextItem.
+    let zoneTimers = {};
     // Video wall state. wallConfig is the tile assignment from the server
     // (null when this device isn't in a wall). The leader runs the playlist
     // normally and broadcasts wall:sync every second; followers don't run
@@ -504,11 +517,19 @@
     }
 
     if (config.serverUrl && config.deviceId && config.paired) {
-      // Restore cached playlist immediately so content plays even if offline
+      // Restore cached playlist immediately so content plays even if offline —
+      // but ONLY if we also know the layout, else we'd guess fullscreen and flash
+      // before the payload arrives. Key presence (not value) is the test: an absent
+      // key means "layout unknown" (e.g. first run after this shipped, or cleared
+      // cache), while a stored `null` is a real fullscreen device. Both caches are
+      // written on every payload, so after the first connection this always renders
+      // immediately; only a genuinely-unknown layout waits (~1s) for the payload.
       const cachedPlaylist = loadPlaylistCache();
-      if (cachedPlaylist.length > 0) {
+      const layoutKnown = localStorage.getItem(LAYOUT_CACHE_KEY) !== null;
+      if (cachedPlaylist.length > 0 && layoutKnown) {
         console.log('Restored cached playlist:', cachedPlaylist.length, 'items');
         playlist = cachedPlaylist;
+        layout = loadLayoutCache();
         currentIndex = 0;
         isPlaying = true;
         document.getElementById('setupScreen').style.display = 'none';
@@ -1053,6 +1074,7 @@
       }
 
       layout = data.layout || null;
+      saveLayoutCache(layout);
 
       if (newFp === oldFp && playlist.length > 0 && !wallChanged) {
         console.log('Playlist unchanged');
@@ -1297,8 +1319,14 @@
     // releases the decoder and kills audio. Null event handlers so a late onended
     // can't fire into a stale playlist state. Queries all <video> elements so
     // zone-mode (multi-region) videos get cleaned up too, not just currentVideoEl.
+    function clearZoneTimers() {
+      for (const k in zoneTimers) clearTimeout(zoneTimers[k]);
+      zoneTimers = {};
+    }
+
     function teardownCurrentMedia() {
       if (advanceTimer) { clearTimeout(advanceTimer); advanceTimer = null; }
+      clearZoneTimers();
       const container = document.getElementById('playerContainer');
       if (container) {
         container.querySelectorAll('video').forEach(v => {
@@ -1319,6 +1347,14 @@
 
       const container = document.getElementById('playerContainer');
       container.style.display = 'block';
+
+      // Multi-zone: each zone pulls + rotates its own assignments by zone_id,
+      // independent of the "current item". Render zones here (before the single-item
+      // bail) so an empty/placeholder current item can't blank the whole screen.
+      if (layout && layout.zones && layout.zones.length > 1 && !wallConfig) {
+        renderZones(container, item);
+        return;
+      }
 
       // Defense in depth: bail to waiting state on missing/malformed item rather
       // than fall through every branch and leave a blank container.
@@ -1444,50 +1480,83 @@
     }
 
     function renderZones(container, defaultItem) {
-      // Multi-zone layout
+      clearZoneTimers();
+      // Group assignments by zone, ordered by sort_order so each zone rotates its
+      // OWN list independently (images/widgets on a duration timer, videos on end)
+      // rather than every zone re-rendering on a single global tick.
+      const byZone = {};
+      for (const a of playlist) {
+        const zid = a.zone_id || '__none__';
+        (byZone[zid] = byZone[zid] || []).push(a);
+      }
+      for (const k in byZone) byZone[k].sort((x, y) => (x.sort_order || 0) - (y.sort_order || 0));
+
+      let unassignedUsed = false;
       layout.zones.forEach(zone => {
+        let items = byZone[zone.id];
+        if ((!items || !items.length) && !unassignedUsed && byZone['__none__']) {
+          unassignedUsed = true; items = byZone['__none__'];
+        }
+        if ((!items || !items.length) && defaultItem) items = [defaultItem];
+        if (!items || !items.length) return;
+
         const div = document.createElement('div');
         div.className = 'zone';
         div.style.cssText = `left:${zone.x_percent}%;top:${zone.y_percent}%;width:${zone.width_percent}%;height:${zone.height_percent}%;z-index:${zone.z_index || 0}`;
-
-        // Find assignment for this zone
-        const assignment = playlist.find(a => a.zone_id === zone.id) || defaultItem;
-        if (!assignment) return;
-
-        const isVideo = assignment.mime_type?.startsWith('video/');
-        const src = assignment.remote_url || `${config.serverUrl}/uploads/content/${assignment.filepath}`;
-
-        const isYoutubeZone = assignment.mime_type === 'video/youtube';
-
-        if (zone.zone_type === 'widget' && assignment.widget_id) {
-          const iframe = document.createElement('iframe');
-          iframe.src = `${config.serverUrl}/api/widgets/${assignment.widget_id}/render`;
-          // Sandbox into a unique origin so widget scripts can't read window.parent
-          // state (localStorage / JWT). allow-scripts keeps inline widget code running.
-          iframe.setAttribute('sandbox', 'allow-scripts');
-          div.appendChild(iframe);
-        } else if (isYoutubeZone) {
-          createYoutubeEmbed(src, assignment, div);
-        } else if (isVideo) {
-          const video = document.createElement('video');
-          video.src = src;
-          video.autoplay = true;
-          video.muted = (zone.sort_order > 0); // Only first zone has audio
-          video.loop = (playlist.length === 1);
-          video.playsInline = true;
-          video.style.cssText = `width:100%;height:100%;object-fit:${zone.fit_mode || 'cover'}`;
-          if (!video.loop) video.onended = () => nextItem();
-          div.appendChild(video);
-        } else {
-          const img = document.createElement('img');
-          img.src = src;
-          img.style.cssText = `width:100%;height:100%;object-fit:${zone.fit_mode || 'cover'}`;
-          div.appendChild(img);
-          if (playlist.length > 1) advanceTimer = setTimeout(nextItem, (assignment.duration_sec || 10) * 1000);
-        }
-
         container.appendChild(div);
+        showZoneItem(zone, div, items, 0);
       });
+    }
+
+    // Render items[index] in a zone and schedule the next item on the zone's OWN
+    // timer (images/widgets/youtube: duration; videos: on end). Single-item zones
+    // loop / don't advance.
+    function showZoneItem(zone, div, items, index) {
+      if (zoneTimers[zone.id]) { clearTimeout(zoneTimers[zone.id]); delete zoneTimers[zone.id]; }
+      const a = items[index % items.length];
+      const multi = items.length > 1;
+      const advance = () => showZoneItem(zone, div, items, index + 1);
+      // Tear down any prior media in this zone before swapping.
+      div.querySelectorAll('video').forEach(v => { try { v.onended = null; v.pause(); v.removeAttribute('src'); v.load(); } catch (e) {} });
+      div.innerHTML = '';
+
+      const isYoutube = a.mime_type === 'video/youtube';
+      const isVideo = !isYoutube && a.mime_type?.startsWith('video/');
+      const src = a.remote_url || `${config.serverUrl}/uploads/content/${a.filepath}`;
+      const dur = (a.duration_sec || 10) * 1000;
+
+      // Render based on what the ASSIGNMENT is (widget_id), not the zone's type:
+      // a widget can be placed in a 'content' zone, and gating on zone_type==='widget'
+      // left those zones blank (mime_type is null -> no video/image match). Matches the
+      // Android player, which keys off the assignment's widget_type.
+      if (a.widget_id) {
+        const iframe = document.createElement('iframe');
+        iframe.src = `${config.serverUrl}/api/widgets/${a.widget_id}/render`;
+        // Sandbox into a unique origin so widget scripts can't read window.parent
+        // state (localStorage / JWT). allow-scripts keeps inline widget code running.
+        iframe.setAttribute('sandbox', 'allow-scripts');
+        div.appendChild(iframe);
+        if (multi) zoneTimers[zone.id] = setTimeout(advance, dur);
+      } else if (isYoutube) {
+        createYoutubeEmbed(src, a, div);
+        if (multi) zoneTimers[zone.id] = setTimeout(advance, dur);
+      } else if (isVideo) {
+        const video = document.createElement('video');
+        video.src = src;
+        video.autoplay = true;
+        video.muted = (zone.sort_order > 0); // Only first zone has audio
+        video.loop = !multi; // single-item zone loops; multi advances on end
+        video.playsInline = true;
+        video.style.cssText = `width:100%;height:100%;object-fit:${zone.fit_mode || 'cover'}`;
+        if (multi) video.onended = advance;
+        div.appendChild(video);
+      } else {
+        const img = document.createElement('img');
+        img.src = src;
+        img.style.cssText = `width:100%;height:100%;object-fit:${zone.fit_mode || 'cover'}`;
+        div.appendChild(img);
+        if (multi) zoneTimers[zone.id] = setTimeout(advance, dur);
+      }
     }
 
     // ==================== Screenshots ====================
@@ -1676,6 +1745,7 @@
         if (confirm('Reset player and return to setup?')) {
           localStorage.removeItem(STORAGE_KEY);
           localStorage.removeItem(PLAYLIST_CACHE_KEY);
+          localStorage.removeItem(LAYOUT_CACHE_KEY);
           location.reload();
         }
       }

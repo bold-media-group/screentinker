@@ -6,6 +6,7 @@ const { db } = require('../db/database');
 const { canAdminWorkspace } = require('../lib/permissions');
 const { requirePlatformAdmin } = require('../middleware/auth');
 const { logActivity, getClientIp } = require('../services/activity');
+const { deleteWorkspaceCascade, deleteOrgCascade } = require('../lib/user-deletion');
 const { platformDefaultRow, HARDCODED_BRANDING, PLATFORM_DEFAULT_ID } = require('../lib/branding');
 
 // Admin-provisioned user creation (#10). Operates on a target workspace
@@ -99,6 +100,91 @@ router.post('/users', (req, res) => {
     'SELECT id, email, name, role, auth_provider, plan_id, must_change_password, created_at FROM users WHERE id = ?'
   ).get(id);
   res.status(201).json({ ...created, workspace_id: ws.id, workspace_role: role });
+});
+
+// POST /api/admin/orgs - create a new organization + its first ("Default")
+// workspace (#35). Platform-admin only. The MSP use case: provision a customer
+// org without the signup/auto-org path (AUTO_CREATE_ORG_ON_SIGNUP=false).
+//
+// organizations.owner_user_id is NOT NULL, so a brand-new org can't be ownerless.
+// We make the creating platform admin the owner + workspace_admin (mirrors the
+// signup org-bootstrap in routes/auth.js), which also surfaces the org in their
+// switcher immediately. Customer users are then added via the Add User /
+// manage-memberships flow.
+router.post('/orgs', requirePlatformAdmin, (req, res) => {
+  const name = String(req.body?.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'Organization name required' });
+  if (name.length > 120) return res.status(400).json({ error: 'Organization name must be 120 characters or fewer' });
+
+  const orgId = uuidv4();
+  const wsId = uuidv4();
+  const ownerId = req.user.id;
+  const txn = db.transaction(() => {
+    db.prepare(
+      `INSERT INTO organizations (id, name, owner_user_id, plan_id, subscription_status) VALUES (?, ?, ?, 'free', 'active')`
+    ).run(orgId, name, ownerId);
+    db.prepare(`INSERT INTO organization_members (organization_id, user_id, role) VALUES (?, ?, 'org_owner')`).run(orgId, ownerId);
+    db.prepare(`INSERT INTO workspaces (id, organization_id, name, created_by) VALUES (?, ?, 'Default', ?)`).run(wsId, orgId, ownerId);
+    db.prepare(`INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, 'workspace_admin')`).run(wsId, ownerId);
+  });
+  txn();
+
+  req.workspaceId = wsId; // attribute the audit row to the new tenant
+  logActivity(req.user.id, 'admin_create_org', `org: ${name}`, null, getClientIp(req), wsId);
+  res.status(201).json({ id: orgId, name, owner_user_id: ownerId, workspace_id: wsId, workspace_name: 'Default' });
+});
+
+// GET /api/admin/orgs - list every organization with owner + resource counts and
+// its workspaces (#36, drives the Organizations admin section). Platform-admin only.
+router.get('/orgs', requirePlatformAdmin, (req, res) => {
+  const orgs = db.prepare(`
+    SELECT o.id, o.name, o.created_at, u.email AS owner_email, u.name AS owner_name,
+      (SELECT COUNT(*) FROM organization_members m WHERE m.organization_id = o.id) AS member_count,
+      (SELECT COUNT(*) FROM workspaces w WHERE w.organization_id = o.id) AS workspace_count,
+      (SELECT COUNT(*) FROM devices d JOIN workspaces w ON w.id = d.workspace_id WHERE w.organization_id = o.id) AS device_count
+    FROM organizations o
+    LEFT JOIN users u ON u.id = o.owner_user_id
+    ORDER BY o.created_at DESC
+  `).all();
+  const wsByOrg = {};
+  for (const w of db.prepare(`
+    SELECT w.id, w.name, w.organization_id,
+      (SELECT COUNT(*) FROM devices d WHERE d.workspace_id = w.id) AS device_count,
+      (SELECT COUNT(*) FROM workspace_members m WHERE m.workspace_id = w.id) AS member_count
+    FROM workspaces w ORDER BY w.created_at
+  `).all()) {
+    (wsByOrg[w.organization_id] = wsByOrg[w.organization_id] || []).push(w);
+  }
+  res.json(orgs.map(o => ({ ...o, workspaces: wsByOrg[o.id] || [] })));
+});
+
+// DELETE /api/admin/orgs/:id - cascade-delete an org and everything in it (#36).
+// Platform-admin only. The frontend requires a type-the-name confirmation; this
+// is irreversible. Uses the shared cascade helper so no tenant resource is orphaned.
+router.delete('/orgs/:id', requirePlatformAdmin, (req, res) => {
+  const org = db.prepare('SELECT id, name FROM organizations WHERE id = ?').get(req.params.id);
+  if (!org) return res.status(404).json({ error: 'Organization not found' });
+  try {
+    deleteOrgCascade(db, { orgId: org.id });
+  } catch (e) {
+    return res.status(500).json({ error: 'Failed to delete organization' });
+  }
+  logActivity(req.user.id, 'admin_delete_org', `org: ${org.name} (${org.id})`, null, getClientIp(req), null);
+  res.json({ deleted: true, id: org.id });
+});
+
+// DELETE /api/admin/workspaces/:id - cascade-delete a single workspace + its
+// tenant resources (#36); the parent org is left intact. Platform-admin only.
+router.delete('/workspaces/:id', requirePlatformAdmin, (req, res) => {
+  const ws = db.prepare('SELECT id, name, organization_id FROM workspaces WHERE id = ?').get(req.params.id);
+  if (!ws) return res.status(404).json({ error: 'Workspace not found' });
+  try {
+    deleteWorkspaceCascade(db, { workspaceId: ws.id });
+  } catch (e) {
+    return res.status(500).json({ error: 'Failed to delete workspace' });
+  }
+  logActivity(req.user.id, 'admin_delete_workspace', `workspace: ${ws.name} (${ws.id})`, null, getClientIp(req), null);
+  res.json({ deleted: true, id: ws.id });
 });
 
 // PUT /api/admin/users/:id/workspace - move/assign a SINGLE-workspace user to a

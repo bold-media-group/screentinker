@@ -154,6 +154,16 @@ function buildPlaylistPayload(deviceId) {
     }
   }
 
+  // Zone reset: if the device isn't in a real multi-zone layout (single zone or
+  // no layout), strip any leftover zone_id from assignments. Otherwise, after
+  // switching a device from a multi-zone layout back to single/fullscreen, the
+  // content stays bound to a now-gone left/right zone_id and never plays. With
+  // zone_id nulled, both players fall back to the default fullscreen renderer.
+  const zoneCount = layout?.zones?.length || 0;
+  if (zoneCount < 2 && Array.isArray(assignments)) {
+    assignments = assignments.map(a => (a && a.zone_id != null ? { ...a, zone_id: null } : a));
+  }
+
   return { assignments, layout, orientation: device?.orientation || 'landscape', wall_config };
 }
 
@@ -517,6 +527,22 @@ module.exports = function setupDeviceSocket(io) {
       // currentDeviceId is the authenticated device for this socket; use it
       // for the workspace lookup since data may not carry device_id consistently.
       emitToDeviceWorkspace(dashboardNs, currentDeviceId, 'dashboard:playback-state', data);
+    });
+
+    // Live debug log line from the player (only sent when debug logging is toggled
+    // on for this device). Relayed to the device's workspace dashboard room so the
+    // open device-detail screen can stream it. Not persisted.
+    socket.on('device:log', (data) => {
+      if (!requireDeviceAuth() || !currentDeviceId) return;
+      const message = typeof data?.message === 'string' ? data.message.slice(0, 2000) : '';
+      if (!message) return;
+      emitToDeviceWorkspace(dashboardNs, currentDeviceId, 'dashboard:device-log', {
+        device_id: currentDeviceId,
+        tag: typeof data?.tag === 'string' ? data.tag.slice(0, 64) : '',
+        level: typeof data?.level === 'string' ? data.level.slice(0, 8) : 'd',
+        message,
+        ts: Date.now(),
+      });
     });
 
     // Play event logging (proof-of-play)

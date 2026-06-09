@@ -212,6 +212,11 @@ body {
 .nav-links {
   flex: 1;
   padding: 12px 8px;
+  /* Scroll the nav when it's taller than the viewport (short screens, e.g.
+     1366x768) so items below the fold (Settings) stay reachable. min-height:0
+     is required for a flex child to shrink and scroll instead of overflowing. */
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .nav-link {

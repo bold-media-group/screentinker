@@ -6,6 +6,15 @@
 
 let applied = false;
 
+// Current workspace id from the JWT, so the branding cache (read render-blocking by
+// brand-prime.js) is keyed per workspace — a switch shows the right brand. (#38)
+function currentWorkspaceId() {
+  try {
+    const seg = localStorage.getItem('token').split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    return (JSON.parse(atob(seg)) || {}).current_workspace_id || 'none';
+  } catch { return 'none'; }
+}
+
 export async function applyBranding() {
   if (applied) return;
   applied = true;
@@ -21,6 +30,9 @@ export async function applyBranding() {
   } catch { return; }
   if (!wl) return;
 
+  // Cache for the next load/switch so brand-prime.js can apply it before paint.
+  try { localStorage.setItem('rd_branding_' + currentWorkspaceId(), JSON.stringify(wl)); } catch {}
+
   const root = document.documentElement;
   if (wl.primary_color) root.style.setProperty('--accent', wl.primary_color);
   if (wl.bg_color) {
@@ -31,7 +43,7 @@ export async function applyBranding() {
 
   if (wl.brand_name) {
     document.title = wl.brand_name;
-    const span = document.querySelector('.sidebar-header .logo span');
+    const span = document.getElementById('brandName');
     if (span) span.textContent = wl.brand_name;
   }
 

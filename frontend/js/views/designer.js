@@ -1,5 +1,6 @@
 import { api } from '../api.js';
 import { showToast } from '../components/toast.js';
+import { esc } from '../utils.js';
 import { t } from '../i18n.js';
 
 // Background swatches: ids resolve to translated names; values are the actual
@@ -44,12 +45,25 @@ export function render(container) {
       <!-- Preview -->
       <div style="flex:1">
         <div id="previewWrap" style="position:relative;border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;background:#000;aspect-ratio:16/9">
-          <div id="designPreview" style="position:relative;width:100%;height:100%;overflow:hidden"></div>
+          <div id="designPreview" style="position:relative;width:100%;height:100%;overflow:hidden;container-type:inline-size"></div>
         </div>
         <p style="font-size:11px;color:var(--text-muted);margin-top:8px">${t('designer.preview_hint')}</p>
       </div>
       <!-- Sidebar -->
       <div style="width:300px;display:flex;flex-direction:column;gap:12px;max-height:calc(100vh - 120px);overflow-y:auto">
+        <!-- AI Generate (#41) -->
+        <div style="background:var(--bg-card);border:1px solid var(--accent);border-radius:var(--radius);padding:12px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <h4 style="font-size:13px">${t('designer.ai.title')}</h4>
+            <button class="btn-icon" id="aiSettingsBtn" title="${t('designer.ai.settings')}" style="padding:2px">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </button>
+          </div>
+          <textarea id="aiPrompt" rows="2" class="input" placeholder="${t('designer.ai.placeholder')}" style="width:100%;resize:vertical;font-size:12px"></textarea>
+          <button class="btn btn-primary btn-sm" id="aiGenerateBtn" style="width:100%;justify-content:center;margin-top:6px">${t('designer.ai.generate')}</button>
+          <div id="aiStatus" style="font-size:11px;color:var(--text-muted);margin-top:6px"></div>
+        </div>
+
         <!-- Add Elements -->
         <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:12px">
           <h4 style="font-size:13px;margin-bottom:10px">${t('designer.add_element')}</h4>
@@ -108,6 +122,37 @@ export function render(container) {
     const reader = new FileReader();
     reader.onload = (ev) => { bgImageDataUrl = ev.target.result; redraw(); };
     reader.readAsDataURL(file);
+  };
+
+  // AI generate (#41): prompt -> validated design spec -> load onto the canvas.
+  document.getElementById('aiSettingsBtn').onclick = openAiSettings;
+  const aiGenBtn = document.getElementById('aiGenerateBtn');
+  aiGenBtn.onclick = async () => {
+    const prompt = document.getElementById('aiPrompt').value.trim();
+    const status = document.getElementById('aiStatus');
+    if (!prompt) { status.textContent = t('designer.ai.need_prompt'); return; }
+    aiGenBtn.disabled = true; aiGenBtn.textContent = t('designer.ai.generating');
+    status.textContent = t('designer.ai.contacting');
+    try {
+      const design = await api.aiGenerateDesign(prompt);
+      elements = []; selectedIdx = -1;
+      if (design.backgroundImage) {
+        bgImageDataUrl = design.backgroundImage;           // AI-generated backdrop
+        if (design.background) bgValue = design.background; // kept as fallback
+      } else if (design.background) {
+        bgValue = design.background; bgImageDataUrl = null;
+        const bc = document.getElementById('bgColor'); if (bc) bc.value = design.background;
+      }
+      (design.elements || []).forEach(el => elements.push(el));
+      redraw();
+      status.textContent = design.image_warning
+        ? t('designer.ai.done_imgwarn', { n: (design.elements || []).length })
+        : t('designer.ai.done', { n: (design.elements || []).length });
+    } catch (err) {
+      status.textContent = (err && err.message) || t('designer.ai.failed');
+    } finally {
+      aiGenBtn.disabled = false; aiGenBtn.textContent = t('designer.ai.generate');
+    }
   };
 
   // Add element handlers
@@ -273,6 +318,110 @@ function addElement(el) {
   redraw();
 }
 
+// #41: per-workspace AI endpoint config (BYO OpenAI-compatible endpoint + key).
+async function openAiSettings() {
+  let cur = {};
+  try { cur = await api.aiGetSettings(); } catch { /* show empty form */ }
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.style.display = 'flex';
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:520px;width:95vw">
+      <div class="modal-header">
+        <h3>${t('designer.ai.settings_title')}</h3>
+        <button class="btn-icon" data-ai-close aria-label="Close"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">${t('designer.ai.settings_desc')}</p>
+        <div class="form-group"><label>${t('designer.ai.base_url')}</label>
+          <input id="aiBaseUrl" class="input" value="${esc(cur.base_url || '')}" placeholder="https://api.openai.com/v1  ·  http://localhost:11434/v1" style="width:100%"></div>
+        <div class="form-group"><label>${t('designer.ai.model')}</label>
+          <div style="display:flex;gap:6px">
+            <input id="aiModel" class="input" list="aiModelList" value="${esc(cur.model || '')}" placeholder="gpt-4o-mini  ·  llama3.1:8b" style="flex:1" autocomplete="off">
+            <button class="btn btn-secondary btn-sm" id="aiLoadModels" type="button" style="white-space:nowrap">${t('designer.ai.load_models')}</button>
+          </div>
+          <datalist id="aiModelList"></datalist>
+          <div id="aiModelMsg" style="font-size:11px;color:var(--text-muted);margin-top:4px"></div></div>
+        <div class="form-group"><label>${t('designer.ai.api_key')}</label>
+          <input id="aiKey" class="input" type="password" autocomplete="off" placeholder="${cur.has_key ? t('designer.ai.key_set') : t('designer.ai.key_placeholder')}" style="width:100%">
+          <div style="font-size:11px;color:var(--text-muted);margin-top:4px">${t('designer.ai.key_hint')}</div></div>
+
+        <hr style="border:none;border-top:1px solid var(--border);margin:14px 0 10px">
+        <h4 style="font-size:13px;margin-bottom:4px">${t('designer.ai.images_title')}</h4>
+        <p style="font-size:11px;color:var(--text-muted);margin-bottom:8px">${t('designer.ai.images_desc')}</p>
+        <div class="form-group"><label>${t('designer.ai.image_provider')}</label>
+          <select id="aiImageProvider" class="input" style="width:100%">
+            <option value="" ${!cur.image_provider ? 'selected' : ''}>${t('designer.ai.image_off')}</option>
+            <option value="sdcpp" ${cur.image_provider === 'sdcpp' ? 'selected' : ''}>Stable Diffusion — local (sd.cpp)</option>
+            <option value="openai" ${cur.image_provider === 'openai' ? 'selected' : ''}>OpenAI / OpenAI-compatible</option>
+            <option value="comfyui" ${cur.image_provider === 'comfyui' ? 'selected' : ''}>ComfyUI</option>
+          </select></div>
+        <div class="form-group"><label>${t('designer.ai.image_base_url')}</label>
+          <input id="aiImageBaseUrl" class="input" value="${esc(cur.image_base_url || '')}" placeholder="http://localhost:8080/v1  ·  http://localhost:8188" style="width:100%"></div>
+        <div class="form-group"><label>${t('designer.ai.image_model')}</label>
+          <input id="aiImageModel" class="input" value="${esc(cur.image_model || '')}" placeholder="${t('designer.ai.image_model_ph')}" style="width:100%"></div>
+        <div class="form-group"><label>${t('designer.ai.image_api_key')}</label>
+          <input id="aiImageKey" class="input" type="password" autocomplete="off" placeholder="${cur.has_image_key ? t('designer.ai.key_set') : t('designer.ai.image_key_ph')}" style="width:100%">
+          <div style="font-size:11px;color:var(--text-muted);margin-top:4px">${t('designer.ai.image_key_hint')}</div></div>
+        <div id="aiSettingsErr" style="display:none;color:var(--danger);font-size:13px;margin-top:8px"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-ai-close>${t('common.cancel')}</button>
+        <button class="btn btn-primary" id="aiSaveSettings">${t('common.save')}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.querySelectorAll('[data-ai-close]').forEach(b => b.onclick = close);
+  overlay.onclick = (e) => { if (e.target === overlay) close(); };
+
+  // Load the model list from the entered endpoint into the dropdown.
+  overlay.querySelector('#aiLoadModels').onclick = async () => {
+    const msg = overlay.querySelector('#aiModelMsg');
+    const base_url = overlay.querySelector('#aiBaseUrl').value.trim();
+    if (!base_url) { msg.style.color = 'var(--danger)'; msg.textContent = t('designer.ai.need_base_url'); return; }
+    const btn = overlay.querySelector('#aiLoadModels');
+    btn.disabled = true;
+    msg.style.color = 'var(--text-muted)'; msg.textContent = t('designer.ai.loading_models');
+    try {
+      const r = await api.aiListModels(base_url, overlay.querySelector('#aiKey').value || undefined);
+      const models = r.models || [];
+      overlay.querySelector('#aiModelList').innerHTML = models.map(m => `<option value="${esc(m)}"></option>`).join('');
+      const modelInput = overlay.querySelector('#aiModel');
+      if (models.length && !modelInput.value) modelInput.value = models[0];
+      msg.textContent = t('designer.ai.models_loaded', { n: models.length });
+    } catch (e2) {
+      msg.style.color = 'var(--danger)'; msg.textContent = (e2 && e2.message) || t('designer.ai.models_failed');
+    } finally {
+      btn.disabled = false;
+    }
+  };
+
+  overlay.querySelector('#aiSaveSettings').onclick = async () => {
+    const errEl = overlay.querySelector('#aiSettingsErr');
+    errEl.style.display = 'none';
+    const data = {
+      base_url: overlay.querySelector('#aiBaseUrl').value.trim(),
+      model: overlay.querySelector('#aiModel').value.trim(),
+      image_provider: overlay.querySelector('#aiImageProvider').value,
+      image_base_url: overlay.querySelector('#aiImageBaseUrl').value.trim(),
+      image_model: overlay.querySelector('#aiImageModel').value.trim(),
+    };
+    const key = overlay.querySelector('#aiKey').value;
+    if (key) data.api_key = key;
+    const imgKey = overlay.querySelector('#aiImageKey').value;
+    if (imgKey) data.image_api_key = imgKey;
+    try {
+      await api.aiSaveSettings(data);
+      showToast(t('designer.ai.saved'), 'success');
+      close();
+    } catch (e2) {
+      errEl.textContent = (e2 && e2.message) || t('designer.ai.save_failed');
+      errEl.style.display = 'block';
+    }
+  };
+}
+
 function getBounds(el) {
   const w = el.width || el.size || (el.fontSize ? el.fontSize * 0.6 * (el.text?.length || 8) / 100 * 100 : 20);
   const h = el.height || el.size || (el.fontSize ? el.fontSize * 1.2 / 100 * 100 : 10);
@@ -300,13 +449,13 @@ function redraw() {
 
     switch (el.type) {
       case 'text':
-        html += `<div style="position:absolute;left:${el.x}%;top:${el.y}%;font-size:${el.fontSize / 10}vw;font-family:${el.fontFamily};color:${el.color};font-weight:${el.bold ? 'bold' : 'normal'};${el.shadow ? 'text-shadow:2px 2px 4px rgba(0,0,0,0.5);' : ''}white-space:nowrap;${border}${cursor}" data-idx="${i}">${el.text}</div>`;
+        html += `<div style="position:absolute;left:${el.x}%;top:${el.y}%;font-size:${el.fontSize / 10}cqw;font-family:${el.fontFamily};color:${el.color};font-weight:${el.bold ? 'bold' : 'normal'};${el.shadow ? 'text-shadow:2px 2px 4px rgba(0,0,0,0.5);' : ''}white-space:nowrap;${border}${cursor}" data-idx="${i}">${el.text}</div>`;
         break;
       case 'clock':
-        html += `<div style="position:absolute;left:${el.x}%;top:${el.y}%;font-size:${el.fontSize / 10}vw;font-family:${el.fontFamily};color:${el.color};font-weight:bold;${el.shadow ? 'text-shadow:2px 2px 4px rgba(0,0,0,0.5);' : ''}${border}${cursor}" data-idx="${i}" id="clock_${i}"></div>`;
+        html += `<div style="position:absolute;left:${el.x}%;top:${el.y}%;font-size:${el.fontSize / 10}cqw;font-family:${el.fontFamily};color:${el.color};font-weight:bold;${el.shadow ? 'text-shadow:2px 2px 4px rgba(0,0,0,0.5);' : ''}${border}${cursor}" data-idx="${i}" id="clock_${i}"></div>`;
         break;
       case 'date':
-        html += `<div style="position:absolute;left:${el.x}%;top:${el.y}%;font-size:${el.fontSize / 10}vw;font-family:${el.fontFamily};color:${el.color};${el.shadow ? 'text-shadow:2px 2px 4px rgba(0,0,0,0.5);' : ''}${border}${cursor}" data-idx="${i}" id="date_${i}"></div>`;
+        html += `<div style="position:absolute;left:${el.x}%;top:${el.y}%;font-size:${el.fontSize / 10}cqw;font-family:${el.fontFamily};color:${el.color};${el.shadow ? 'text-shadow:2px 2px 4px rgba(0,0,0,0.5);' : ''}${border}${cursor}" data-idx="${i}" id="date_${i}"></div>`;
         break;
       case 'image':
         html += `<img src="${el.src}" style="position:absolute;left:${el.x}%;top:${el.y}%;width:${el.width}%;height:${el.height}%;object-fit:contain;${border}${cursor}" data-idx="${i}" draggable="false">`;
@@ -318,11 +467,11 @@ function redraw() {
         html += `<div style="position:absolute;left:${el.x}%;top:${el.y}%;width:${el.width}%;height:${el.height}%;background:${el.color};opacity:${el.opacity};border-radius:${el.radius || 0}px;${el.shape === 'circle' ? 'border-radius:50%;' : ''}${border}${cursor}" data-idx="${i}"></div>`;
         break;
       case 'weather':
-        html += `<div style="position:absolute;left:${el.x}%;top:${el.y}%;font-size:${el.fontSize / 10}vw;color:${el.color};${border}${cursor}" data-idx="${i}" id="weather_${i}">&#9925; ${t('common.loading')}</div>`;
+        html += `<div style="position:absolute;left:${el.x}%;top:${el.y}%;font-size:${el.fontSize / 10}cqw;color:${el.color};${border}${cursor}" data-idx="${i}" id="weather_${i}">&#9925; ${t('common.loading')}</div>`;
         break;
       case 'ticker':
         html += `<div style="position:absolute;left:${el.x}%;top:${el.y}%;width:${el.width}%;height:${el.height}%;background:${el.bgColor};overflow:hidden;display:flex;align-items:center;${border}" data-idx="${i}">
-          <div style="white-space:nowrap;animation:ticker ${el.speed || 30}s linear infinite;font-size:${el.fontSize / 10}vw;color:${el.color}" id="ticker_${i}">${t('designer.loading_news')}</div>
+          <div style="white-space:nowrap;animation:ticker ${el.speed || 30}s linear infinite;font-size:${el.fontSize / 10}cqw;color:${el.color}" id="ticker_${i}">${t('designer.loading_news')}</div>
         </div>`;
         break;
       case 'qr':
@@ -333,8 +482,8 @@ function redraw() {
         break;
       case 'countdown':
         html += `<div style="position:absolute;left:${el.x}%;top:${el.y}%;text-align:center;color:${el.color};${border}${cursor}" data-idx="${i}">
-          <div style="font-size:${el.fontSize / 15}vw;opacity:0.8">${el.label || ''}</div>
-          <div style="font-size:${el.fontSize / 10}vw;font-weight:bold" id="countdown_${i}"></div>
+          <div style="font-size:${el.fontSize / 15}cqw;opacity:0.8">${el.label || ''}</div>
+          <div style="font-size:${el.fontSize / 10}cqw;font-weight:bold" id="countdown_${i}"></div>
         </div>`;
         break;
       case 'webpage':
@@ -510,6 +659,9 @@ function updateLayers() {
 
 function generateInnerHTML() {
   let html = '';
+  // A background image (e.g. AI-generated) is the body background in the editor;
+  // bake it into the published HTML as a full-cover bottom layer so it survives.
+  if (bgImageDataUrl) html += `<img src="${bgImageDataUrl}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" alt="">`;
   elements.forEach((el, i) => {
     // Use vw units for font sizes (same as designer preview) so output scales to any viewport
     const fs = el.fontSize / 10;

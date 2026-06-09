@@ -229,6 +229,7 @@ class MainActivity : AppCompatActivity() {
                 }.sorted().joinToString("|")
                 val changed = assignmentSig != zoneManager?.lastAssignmentSig
 
+                com.remotedisplay.player.util.DebugLog.i("Player", "Layout: MULTI-ZONE (${layoutZones.length()} zones, layout=$layoutId), ${assignments.length()} assignments")
                 if (zoneManager?.hasZones() != true || layoutId != currentLayoutId) {
                     Log.i("MainActivity", "Multi-zone layout with ${layoutZones.length()} zones (layout=$layoutId, was=$currentLayoutId)")
                     handler.post {
@@ -252,6 +253,7 @@ class MainActivity : AppCompatActivity() {
                 }
             } else {
                 // Single-zone mode - use PlaylistController (existing behavior)
+                com.remotedisplay.player.util.DebugLog.i("Player", "Layout: SINGLE/FULLSCREEN (${layoutZones?.length() ?: 0} zones), ${assignments.length()} assignments")
                 if (zoneManager?.hasZones() == true) handler.post { zoneManager?.cleanup() }
                 playlistController.updatePlaylist(assignments)
             }
@@ -260,7 +262,12 @@ class MainActivity : AppCompatActivity() {
             thread {
                 for (i in 0 until assignments.length()) {
                     val item = assignments.getJSONObject(i)
-                    val contentId = item.getString("content_id")
+                    // Widget assignments have no downloadable content file - skip
+                    // (also avoids getString throwing on a null content_id).
+                    val widgetId = if (item.isNull("widget_id")) "" else item.optString("widget_id", "")
+                    if (widgetId.isNotEmpty()) continue
+                    val contentId = if (item.isNull("content_id")) "" else item.optString("content_id", "")
+                    if (contentId.isEmpty()) continue
                     val filename = item.optString("filename", "content")
                     val remoteUrl = item.optString("remote_url", null)
 
@@ -287,9 +294,12 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
 
-                // Start or resume playback after downloads complete
+                // Start or resume playback after downloads complete — but ONLY in
+                // single-zone/fullscreen mode. In multi-zone, ZoneManager drives each
+                // zone; restarting the fullscreen controller here made it keep playing
+                // items behind the zones (wasted work + phantom audio for videos).
                 handler.post {
-                    playlistController.startIfNeeded()
+                    if (zoneManager?.hasZones() != true) playlistController.startIfNeeded()
                 }
             }
             } // end else (not suspended)
@@ -415,6 +425,18 @@ class MainActivity : AppCompatActivity() {
 
     private fun playItem(item: PlaylistItem) {
         hideStatus()
+        com.remotedisplay.player.util.DebugLog.i("Player", "playItem: ${item.filename} mime=${item.mimeType} widget=${item.widgetId ?: "-"} zone=fullscreen")
+
+        // Widget content - render fullscreen in a WebView (single-zone / fullscreen
+        // layouts; multi-zone widgets go through ZoneManager). Previously unhandled,
+        // so widgets were blank/broken in default-fullscreen and the fullscreen template.
+        if (item.isWidget) {
+            val url = "${config.serverUrl}/api/widgets/${item.widgetId}/render"
+            Log.i("MainActivity", "Playing widget fullscreen: $url")
+            mediaPlayer.showWidget(url)
+            wsService?.sendPlaybackState(item.contentId.ifEmpty { item.widgetId ?: "" }, 0f)
+            return
+        }
 
         // YouTube content - play in WebView
         if (item.mimeType == "video/youtube" && !item.remoteUrl.isNullOrEmpty()) {

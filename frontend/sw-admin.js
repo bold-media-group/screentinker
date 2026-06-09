@@ -4,9 +4,14 @@
 //   v2 - first network-first version (replaced a cache-first SW that shipped stale JS)
 //   v3 - force returning clients to drop the old bucket so the "Add user" admin
 //        button (and any client still on a pre-v2 cache-first SW) lands.
+//   v4 - stop intercepting media/content/player + range requests. The old handler
+//        clone+cache+respond'd every non-API request; a video Range request gets a
+//        206 (uncacheable) which broke the handler ("ServiceWorker encountered an
+//        unexpected error"), so videos never loaded on pages this SW controls
+//        (e.g. the web player, since this SW's scope is '/').
 // Changing this string is what makes the browser detect a new SW + run activate,
 // which deletes every cache key != CACHE below.
-const CACHE = 'rd-admin-v3';
+const CACHE = 'rd-admin-v4';
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll([
@@ -23,18 +28,31 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('fetch', e => {
-  // Don't intercept API or socket.io traffic - those need to hit the network unmediated.
-  if (e.request.url.includes('/api/') || e.request.url.includes('/socket.io/')) return;
-  // Network-first: respect the server's Cache-Control: no-cache + ETag (304s
-  // stay fast); fall back to cache only when offline. Re-populate the cache
-  // on every successful fetch so the offline fallback stays current.
+  const req = e.request;
+  // Only handle same-origin GET navigations/assets. Everything else hits the
+  // network unmediated:
+  //  - non-GET: cache.put() rejects on them anyway.
+  //  - Range requests (video seeking): the response is 206 Partial Content, which
+  //    is uncacheable and breaks clone+cache+respond -> "ServiceWorker encountered
+  //    an unexpected error", stalling video playback.
+  //  - /uploads/ (content/media), /player (the web player), /api/, /socket.io/:
+  //    not ours to cache; the player + server set their own cache headers.
+  if (req.method !== 'GET' || req.headers.has('range')) return;
+  const url = req.url;
+  if (url.includes('/api/') || url.includes('/socket.io/') ||
+      url.includes('/uploads/') || url.includes('/player')) return;
+
+  // Network-first: respect the server's Cache-Control: no-cache + ETag (304s stay
+  // fast); fall back to cache only when offline. Only cache full, same-origin 200s.
   e.respondWith(
-    fetch(e.request)
+    fetch(req)
       .then(resp => {
-        const copy = resp.clone();
-        caches.open(CACHE).then(c => c.put(e.request, copy)).catch(() => {});
+        if (resp && resp.status === 200 && resp.type === 'basic') {
+          const copy = resp.clone();
+          caches.open(CACHE).then(c => c.put(req, copy)).catch(() => {});
+        }
         return resp;
       })
-      .catch(() => caches.match(e.request))
+      .catch(() => caches.match(req))
   );
 });

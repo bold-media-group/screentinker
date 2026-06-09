@@ -177,10 +177,33 @@ const migrations = [
   // known password, must_change_password=1 forces a password change on first
   // login. Default 0 so all existing users are unaffected.
   "ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0",
+  // #41 Phase 2: which image backend the workspace's image endpoint speaks.
+  "ALTER TABLE ai_settings ADD COLUMN image_provider TEXT",
+  // #41: optional separate key for the image endpoint (for local-LLM + cloud-image setups).
+  "ALTER TABLE ai_settings ADD COLUMN image_api_key_enc TEXT",
 ];
+// Apply each ALTER idempotently. A "duplicate column name" / "already exists"
+// error means the column is already present (expected on a migrated DB) - benign.
+// ANY OTHER error is a real, partial-migration failure: log it loudly so it's
+// visible at boot rather than as a silent runtime failure later (issue #37, where
+// a swallowed failure left users.must_change_password absent -> total auth lockout).
+let _migApplied = 0;
 for (const sql of migrations) {
-  try { db.exec(sql); } catch (e) { /* already exists */ }
+  // Only a successful ADD COLUMN means a genuinely-new column (it would throw
+  // "duplicate column" if it already existed). UPDATE/index statements always
+  // succeed, so they must NOT count toward "new migrations applied" or the boot
+  // would falsely report work on every healthy start.
+  const isAddColumn = /alter\s+table\s+\S+\s+add\s+column/i.test(sql);
+  try {
+    db.exec(sql);
+    if (isAddColumn) _migApplied++;
+  } catch (e) {
+    if (!/duplicate column name|already exists/i.test(e.message)) {
+      console.error(`[migrate] FAILED: ${sql}\n          -> ${e.message}`);
+    }
+  }
 }
+if (_migApplied > 0) console.log(`[migrate] applied ${_migApplied} new column migration(s)`);
 
 // Fix assignments table: make content_id nullable (SQLite requires table rebuild)
 try {
@@ -699,5 +722,43 @@ function pruneScreenshots(deviceId) {
     )
   `).run(deviceId, deviceId);
 }
+
+// De-duplicate built-in template zones. A prior layout-editor save regenerated
+// every zone id on save; schema.sql's INSERT OR IGNORE then re-seeded the
+// canonical zone on the next boot, so template layouts accumulated positional
+// duplicates (e.g. a 2-zone split template grew to 4+). For each position in a
+// template, keep ONE zone, preferring the canonical seeded id (the built-in
+// template zones use 'z-...' ids; bug copies are uuids) so schema.sql's re-seed
+// stays an idempotent no-op; tiebreak by earliest rowid. One-time; the atomic
+// id-preserving save prevents recurrence.
+try {
+  const DEDUPE_ID = 'dedupe_template_zones_v1';
+  if (!db.prepare('SELECT 1 FROM schema_migrations WHERE id = ?').get(DEDUPE_ID)) {
+    const removed = db.prepare(`
+      DELETE FROM layout_zones WHERE id IN (
+        SELECT z.id FROM layout_zones z
+        JOIN layouts l ON l.id = z.layout_id
+        WHERE l.is_template = 1 AND EXISTS (
+          SELECT 1 FROM layout_zones z2
+          WHERE z2.layout_id = z.layout_id AND z2.id != z.id
+            AND z2.x_percent = z.x_percent AND z2.y_percent = z.y_percent
+            AND z2.width_percent = z.width_percent AND z2.height_percent = z.height_percent
+            AND (
+              -- z2 is canonical and z is not -> keep z2, drop z
+              (z2.id LIKE 'z-%' AND z.id NOT LIKE 'z-%')
+              -- same canonical-ness -> keep the earliest, drop the rest
+              OR ((CASE WHEN z2.id LIKE 'z-%' THEN 1 ELSE 0 END) = (CASE WHEN z.id LIKE 'z-%' THEN 1 ELSE 0 END) AND z2.rowid < z.rowid)
+            )
+        )
+      )
+    `).run().changes;
+    if (removed > 0) console.log(`[migrate] removed ${removed} duplicate template zone(s)`);
+    db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(DEDUPE_ID);
+  }
+} catch (e) { console.error('[migrate] template-zone dedupe failed:', e.message); }
+
+// #37: fail fast (loud) if migrations left the DB missing schema the code needs.
+const { verifyAndRepairSchema } = require('../lib/schema-check');
+verifyAndRepairSchema(db);
 
 module.exports = { db, pruneTelemetry, pruneScreenshots };
