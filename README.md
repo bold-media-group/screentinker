@@ -125,6 +125,14 @@ Schema migrations run automatically on first boot — no manual migration comman
 
 All integrations are optional. The app works fully without any of them.
 
+#### AI Content Design (local or cloud)
+
+The Content Designer can turn a prompt into a finished sign — layout + copy from
+an LLM, and optional background/foreground imagery from an image model. Each
+workspace brings its own **OpenAI-compatible** endpoints (cloud, or fully local
+and free via Ollama + stable-diffusion.cpp). See
+**[docs/local-ai-setup.md](docs/local-ai-setup.md)**.
+
 #### Stripe (Billing)
 
 If you want to charge your users, plug in your own Stripe keys. Without them, all features are free for all users.
