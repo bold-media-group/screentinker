@@ -10,6 +10,7 @@ const router = express.Router();
 const { db } = require('../db/database');
 const config = require('../config');
 const { encrypt, decrypt } = require('../lib/secretbox');
+const { generateImage } = require('../lib/image-gen');
 const { logActivity, getClientIp } = require('../services/activity');
 
 const isWorkspaceAdmin = (req) => req.isPlatformAdmin || req.actingAs || req.workspaceRole === 'workspace_admin';
@@ -30,13 +31,19 @@ function endpointAllowed(rawUrl) {
   return true;
 }
 
-const DESIGN_SYSTEM_PROMPT =
-`You are a digital-signage designer. The canvas is 1920x1080 (16:9). Respond with ONLY a JSON object (no prose, no markdown fences) shaped exactly:
-{"background":"#RRGGBB","elements":[ELEMENT, ...]}
+function designSystemPrompt(imagesAvailable) {
+  const imgLine = imagesAvailable ? '\n{"type":"image","image_prompt":"DESCRIPTION","x":N,"y":N,"width":N,"height":N}' : '';
+  const bgImg = imagesAvailable ? '"background_prompt":"DESCRIPTION or omit",' : '';
+  const imgRules = imagesAvailable
+    ? ' Strongly PREFER a "background_prompt" — a vivid full-bleed atmospheric scene behind everything; this makes the best-looking signs. Only add a foreground "image" element when a specific product/object must appear as a distinct picture. image_prompt / background_prompt describe a PICTURE ONLY and must contain NO words, letters, or text (the AI cannot render text) — all wording goes in text elements layered on top, and pick text colors with strong contrast against the image.'
+    : '';
+  return `You are a digital-signage designer. The canvas is 1920x1080 (16:9). Respond with ONLY a JSON object (no prose, no markdown fences) shaped exactly:
+{"background":"#RRGGBB",${bgImg}"elements":[ELEMENT, ...]}
 ELEMENT is one of:
 {"type":"text","x":N,"y":N,"text":"STRING","fontSize":N,"color":"#RRGGBB","bold":true|false}
-{"type":"shape","x":N,"y":N,"width":N,"height":N,"color":"#RRGGBB","opacity":N}
-x, y, width, height are PERCENTAGES of the canvas (0-100). fontSize is a number where a big headline is about 90 and body text about 36. Use 3 to 6 elements: one bold headline, 1-2 supporting lines, and 0-2 shapes as colored accent bands behind/beside the text. Pick a tasteful, high-contrast palette that fits the request. Keep every element within 0-95 on both axes. Output JSON only.`;
+{"type":"shape","x":N,"y":N,"width":N,"height":N,"color":"#RRGGBB","opacity":N}${imgLine}
+x, y, width, height are PERCENTAGES of the canvas (0-100). fontSize is a number where a big headline is about 90 and body text about 36. Use 3 to 6 elements: one bold headline, 1-2 supporting lines, and 0-2 shapes as colored accent bands behind/beside the text. Pick a tasteful, high-contrast palette that fits the request. Keep every element within 0-95 on both axes.${imgRules} Output JSON only.`;
+}
 
 const clampN = (n, lo, hi, d) => { n = Number(n); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
 const hex = (c, d) => (typeof c === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(c.trim())) ? c.trim() : d;
@@ -66,10 +73,22 @@ function fitText(el) {
 // often emit pixels), strip any HTML from text, validate colors, fit to canvas.
 function normalizeDesign(raw) {
   const out = { background: hex(raw && raw.background, '#111827'), elements: [] };
+  const bgPrompt = cleanText(raw && raw.background_prompt);
+  if (bgPrompt) out.background_prompt = bgPrompt;
   const els = Array.isArray(raw && raw.elements) ? raw.elements.slice(0, 20) : [];
   for (const e of els) {
     if (!e || typeof e !== 'object') continue;
-    if (e.type === 'text') {
+    if (e.type === 'image') {
+      const prompt = cleanText(e.image_prompt || e.prompt);
+      if (!prompt) continue;
+      const w = clampN(e.width, 5, 100, 30), h = clampN(e.height, 5, 100, 40);
+      out.elements.push({
+        type: 'image', image_prompt: prompt,
+        x: Math.min(clampN(e.x, 0, 100, 60), 100 - w),
+        y: Math.min(clampN(e.y, 0, 100, 30), 100 - h),
+        width: w, height: h,
+      });
+    } else if (e.type === 'text') {
       const text = cleanText(e.text);
       if (!text) continue;
       const el = {
@@ -96,12 +115,13 @@ function normalizeDesign(raw) {
     }
   }
 
-  // De-overlap text lines (models stack them at the same y) and order shapes
-  // behind text so accent bands never hide the words.
+  // De-overlap text lines (models stack them at the same y) and stack layers so
+  // text is always on top: shapes (back) -> images (mid) -> text (front).
   const shapes = out.elements.filter((e) => e.type === 'shape');
+  const images = out.elements.filter((e) => e.type === 'image').slice(0, 2);
   const texts = out.elements.filter((e) => e.type === 'text');
   deoverlapTexts(texts);
-  out.elements = [...shapes, ...texts];
+  out.elements = [...shapes, ...images, ...texts];
   return out;
 }
 
@@ -136,14 +156,16 @@ function deoverlapTexts(texts) {
 
 // GET /api/ai/settings — workspace members (never returns the key)
 router.get('/settings', (req, res) => {
-  const row = db.prepare('SELECT base_url, model, image_base_url, image_model, api_key_enc FROM ai_settings WHERE workspace_id = ?').get(req.workspaceId);
+  const row = db.prepare('SELECT base_url, model, image_base_url, image_model, image_provider, api_key_enc FROM ai_settings WHERE workspace_id = ?').get(req.workspaceId);
   res.json({
     base_url: row ? row.base_url || '' : '',
     model: row ? row.model || '' : '',
     image_base_url: row ? row.image_base_url || '' : '',
     image_model: row ? row.image_model || '' : '',
+    image_provider: row ? row.image_provider || '' : '',
     has_key: !!(row && row.api_key_enc),
     configured: !!(row && row.base_url && row.model),
+    image_configured: !!(row && row.image_base_url && row.image_provider),
   });
 });
 
@@ -154,6 +176,7 @@ router.put('/settings', (req, res) => {
   const model = String(req.body && req.body.model || '').trim();
   const image_base_url = String(req.body && req.body.image_base_url || '').trim().replace(/\/+$/, '');
   const image_model = String(req.body && req.body.image_model || '').trim();
+  const image_provider = ['comfyui', 'openai', 'sdcpp'].includes(req.body && req.body.image_provider) ? req.body.image_provider : null;
   if (base_url && !endpointAllowed(base_url)) return res.status(400).json({ error: 'Endpoint URL not allowed (private/internal addresses are blocked on this instance).' });
   if (image_base_url && !endpointAllowed(image_base_url)) return res.status(400).json({ error: 'Image endpoint URL not allowed.' });
 
@@ -163,11 +186,12 @@ router.put('/settings', (req, res) => {
   if (req.body && req.body.clear_key) api_key_enc = null;
 
   db.prepare(`
-    INSERT INTO ai_settings (workspace_id, base_url, api_key_enc, model, image_base_url, image_model, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, strftime('%s','now'))
+    INSERT INTO ai_settings (workspace_id, base_url, api_key_enc, model, image_base_url, image_model, image_provider, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
     ON CONFLICT(workspace_id) DO UPDATE SET base_url=excluded.base_url, api_key_enc=excluded.api_key_enc,
-      model=excluded.model, image_base_url=excluded.image_base_url, image_model=excluded.image_model, updated_at=excluded.updated_at
-  `).run(req.workspaceId, base_url || null, api_key_enc, model || null, image_base_url || null, image_model || null);
+      model=excluded.model, image_base_url=excluded.image_base_url, image_model=excluded.image_model,
+      image_provider=excluded.image_provider, updated_at=excluded.updated_at
+  `).run(req.workspaceId, base_url || null, api_key_enc, model || null, image_base_url || null, image_model || null, image_provider);
   logActivity(req.user.id, 'ai_settings_update', `endpoint: ${base_url || '(none)'} model: ${model || '(none)'}`, null, getClientIp(req), req.workspaceId);
   res.json({ ok: true });
 });
@@ -203,9 +227,12 @@ router.post('/generate-design', async (req, res) => {
   const prompt = String(req.body && req.body.prompt || '').trim().slice(0, 500);
   if (!prompt) return res.status(400).json({ error: 'Prompt required' });
 
-  const row = db.prepare('SELECT base_url, api_key_enc, model FROM ai_settings WHERE workspace_id = ?').get(req.workspaceId);
+  const row = db.prepare('SELECT base_url, api_key_enc, model, image_base_url, image_model, image_provider FROM ai_settings WHERE workspace_id = ?').get(req.workspaceId);
   if (!row || !row.base_url || !row.model) return res.status(400).json({ error: 'AI is not configured. Set an endpoint and model in AI settings first.' });
   if (!endpointAllowed(row.base_url)) return res.status(400).json({ error: 'Configured endpoint is not allowed.' });
+
+  const imgBase = row.image_base_url ? row.image_base_url.replace(/\/+$/, '') : '';
+  const imagesAvailable = !!(imgBase && row.image_provider && endpointAllowed(imgBase));
 
   const key = decrypt(row.api_key_enc) || 'none';
   const url = row.base_url.replace(/\/+$/, '') + '/chat/completions';
@@ -218,7 +245,7 @@ router.post('/generate-design', async (req, res) => {
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
       body: JSON.stringify({
         model: row.model, temperature: 0.6, stream: false,
-        messages: [{ role: 'system', content: DESIGN_SYSTEM_PROMPT }, { role: 'user', content: prompt }],
+        messages: [{ role: 'system', content: designSystemPrompt(imagesAvailable) }, { role: 'user', content: prompt }],
       }),
       signal: controller.signal,
     });
@@ -240,8 +267,32 @@ router.post('/generate-design', async (req, res) => {
     parsed = JSON.parse(m ? m[0] : content);
   } catch { return res.status(502).json({ error: 'AI did not return a usable design. Try rephrasing.' }); }
   const design = normalizeDesign(parsed);
-  if (!design.elements.length) return res.status(502).json({ error: 'AI returned an empty design. Try a more specific prompt.' });
-  logActivity(req.user.id, 'ai_generate_design', `prompt: ${prompt.slice(0, 80)}`, null, getClientIp(req), req.workspaceId);
+  if (!design.elements.length && !design.background_prompt) return res.status(502).json({ error: 'AI returned an empty design. Try a more specific prompt.' });
+
+  // Phase 2: generate the AI background + foreground images (best-effort: a failed
+  // image never fails the whole design — the text/shapes still come back).
+  const imageEls = design.elements.filter((e) => e.type === 'image');
+  if (imagesAvailable && (design.background_prompt || imageEls.length)) {
+    const common = { provider: row.image_provider, baseUrl: imgBase, apiKey: key, model: row.image_model, timeoutMs: 180000 };
+    const jobs = [];
+    if (design.background_prompt) {
+      jobs.push(generateImage({ ...common, prompt: design.background_prompt, width: 1024, height: 576 })
+        .then((src) => { design.backgroundImage = src; })
+        .catch((e) => { design.image_warning = 'Background image failed: ' + e.message; }));
+    }
+    for (const el of imageEls) {
+      jobs.push(generateImage({ ...common, prompt: el.image_prompt, width: 768, height: 768 })
+        .then((src) => { el.src = src; })
+        .catch(() => { el._failed = true; }));
+    }
+    await Promise.all(jobs);
+  }
+  // drop image elements that never got a src (no endpoint, or generation failed)
+  design.elements = design.elements.filter((e) => e.type !== 'image' || e.src);
+  design.elements.forEach((e) => { delete e.image_prompt; delete e._failed; });
+  delete design.background_prompt;
+
+  logActivity(req.user.id, 'ai_generate_design', `prompt: ${prompt.slice(0, 80)}${imagesAvailable ? ' (+images)' : ''}`, null, getClientIp(req), req.workspaceId);
   res.json(design);
 });
 

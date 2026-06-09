@@ -401,6 +401,7 @@ CREATE TABLE IF NOT EXISTS ai_settings (
     model           TEXT,
     image_base_url  TEXT,
     image_model     TEXT,
+    image_provider  TEXT,
     updated_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
 

@@ -177,6 +177,8 @@ const migrations = [
   // known password, must_change_password=1 forces a password change on first
   // login. Default 0 so all existing users are unaffected.
   "ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0",
+  // #41 Phase 2: which image backend the workspace's image endpoint speaks.
+  "ALTER TABLE ai_settings ADD COLUMN image_provider TEXT",
 ];
 // Apply each ALTER idempotently. A "duplicate column name" / "already exists"
 // error means the column is already present (expected on a migrated DB) - benign.
