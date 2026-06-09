@@ -183,6 +183,7 @@ router.get('/:id/render', (req, res) => {
   // Embedded by the player in a sandboxed (null-origin) iframe; the global
   // X-Frame-Options: SAMEORIGIN would refuse that and leave it blank.
   res.removeHeader('X-Frame-Options');
+  res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Content-Type', 'text/html');
   res.send(html);
 });

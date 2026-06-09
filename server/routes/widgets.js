@@ -189,6 +189,9 @@ router.get('/:id/render', (req, res) => {
   // widgets render blank in the web player. Drop it here; the sandbox - not
   // X-Frame-Options - is what isolates the widget (it can't read the dashboard JWT).
   res.removeHeader('X-Frame-Options');
+  // Never cache the render: widget data (clock/weather/rss/directory) changes, and
+  // a cached copy from before the X-Frame-Options change would keep showing blank.
+  res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Content-Type', 'text/html');
   res.send(renderWidgetHtml(widget.widget_type, config));
 });
