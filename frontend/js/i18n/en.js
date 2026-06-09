@@ -134,7 +134,7 @@ export default {
   'content.title': 'Content Library',
   'content.subtitle': 'Upload and manage your media files',
   'content.help_tip': 'Upload videos and images here. Select multiple files for bulk upload. Use Remote URL to stream from external sources. Click a thumbnail to preview.',
-  'content.drop': 'Drop files here or click to upload',
+  'content.drop': 'Drop files here, or click to select one or more',
   'content.upload_hint': 'Supports MP4, WebM, AVI, MKV, JPEG, PNG, GIF, WebP',
   'content.upload_progress': 'Uploading...',
   'content.upload_progress_named': 'Uploading {name}...',
