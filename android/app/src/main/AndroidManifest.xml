@@ -67,11 +67,21 @@
             android:screenOrientation="landscape"
             android:theme="@style/Theme.RemoteDisplay.Fullscreen" />
 
-        <!-- WebSocket foreground service -->
+        <!-- WebSocket foreground service. #5: declares ONLY mediaPlayback - the
+             always-on service must not claim the mediaProjection FGS type, which
+             Android 14+ rejects unless a projection consent token is held. -->
         <service
             android:name=".service.WebSocketService"
             android:exported="false"
-            android:foregroundServiceType="mediaPlayback|mediaProjection" />
+            android:foregroundServiceType="mediaPlayback" />
+
+        <!-- #5: dedicated MediaProjection foreground service for system screen
+             capture. Started only after the user grants consent, so claiming the
+             mediaProjection FGS type is valid on Android 14+. -->
+        <service
+            android:name=".service.MediaProjectionService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
 
         <!-- Accessibility service for power controls -->
         <service

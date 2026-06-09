@@ -53,7 +53,16 @@ class WebSocketService : Service() {
         super.onCreate()
         config = ServerConfig(this)
         deviceInfo = DeviceInfo(this)
-        startForeground(1, createNotification())
+        // #5: claim ONLY the mediaPlayback FGS type. The 2-arg startForeground
+        // claims every manifest-declared type, and on Android 14+ claiming
+        // mediaProjection without a consent token throws and kills the service at
+        // boot (the "app won't run on newer Android" symptom). Screen capture has
+        // its own mediaProjection-typed service (MediaProjectionService).
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            startForeground(1, createNotification(), android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+        } else {
+            startForeground(1, createNotification())
+        }
 
         // Keep CPU alive so the WebSocket connection stays alive in background
         val pm = getSystemService(POWER_SERVICE) as android.os.PowerManager

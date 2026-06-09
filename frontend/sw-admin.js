@@ -1,8 +1,12 @@
-// Service worker for the admin SPA. Bumped to v2 to invalidate the cache-first
-// caches that were shipping stale JS to existing clients (the server already
-// sends Cache-Control: no-cache + ETag, but the previous SW intercepted before
-// any of that mattered). Strategy is now network-first with offline fallback.
-const CACHE = 'rd-admin-v2';
+// Service worker for the admin SPA. Strategy is network-first with offline
+// fallback (the server sends Cache-Control: no-cache + ETag, so 304s stay fast).
+// Cache name is bumped on each release that must invalidate stale client caches:
+//   v2 - first network-first version (replaced a cache-first SW that shipped stale JS)
+//   v3 - force returning clients to drop the old bucket so the "Add user" admin
+//        button (and any client still on a pre-v2 cache-first SW) lands.
+// Changing this string is what makes the browser detect a new SW + run activate,
+// which deletes every cache key != CACHE below.
+const CACHE = 'rd-admin-v3';
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll([

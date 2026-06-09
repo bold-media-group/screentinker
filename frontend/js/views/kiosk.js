@@ -1,5 +1,6 @@
 import { showToast } from '../components/toast.js';
 import { t } from '../i18n.js';
+import { esc } from '../utils.js';
 
 const API = (url, opts = {}) => fetch('/api' + url, { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}`, ...opts.headers }, ...opts }).then(r => r.json());
 
@@ -44,12 +45,12 @@ async function renderList(container) {
           <span style="font-size:48px">&#128433;</span>
         </div>
         <div class="content-item-body">
-          <div class="content-item-name">${p.name}</div>
+          <div class="content-item-name">${esc(p.name)}</div>
           <div class="content-item-size">${t('kiosk.label')}</div>
         </div>
         <div class="content-item-actions">
           <a href="/api/kiosk/${p.id}/render" target="_blank" class="btn btn-secondary btn-sm" style="text-decoration:none" onclick="event.stopPropagation()">${t('kiosk.preview')}</a>
-          <button class="btn btn-danger btn-sm" data-delete-kiosk="${p.id}" data-kiosk-name="${p.name}" onclick="event.stopPropagation()">${t('common.delete')}</button>
+          <button class="btn btn-danger btn-sm" data-delete-kiosk="${esc(p.id)}" data-kiosk-name="${esc(p.name)}" onclick="event.stopPropagation()">${t('common.delete')}</button>
         </div>
       </div>
     `).join('');
@@ -85,7 +86,7 @@ async function renderEditor(container, pageId) {
       ${t('kiosk.back')}
     </a>
     <div class="page-header">
-      <h1>${page.name}</h1>
+      <h1>${esc(page.name)}</h1>
       <div style="display:flex;gap:8px">
         <a href="/api/kiosk/${pageId}/render" target="_blank" class="btn btn-secondary" style="text-decoration:none">${t('kiosk.preview')}</a>
         <button class="btn btn-primary" id="saveKioskBtn">${t('common.save')}</button>
@@ -98,17 +99,17 @@ async function renderEditor(container, pageId) {
       <div style="width:320px;max-height:calc(100vh - 140px);overflow-y:auto;display:flex;flex-direction:column;gap:12px">
         <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:12px">
           <h4 style="font-size:13px;margin-bottom:10px">${t('kiosk.page_settings')}</h4>
-          <div class="form-group"><label>${t('kiosk.title_label')}</label><input type="text" id="kTitle" class="input" value="${config.title || ''}"></div>
-          <div class="form-group"><label>${t('kiosk.subtitle_label')}</label><input type="text" id="kSubtitle" class="input" value="${config.subtitle || ''}"></div>
-          <div class="form-group"><label>${t('kiosk.logo_url')}</label><input type="text" id="kLogo" class="input" value="${config.logoUrl || ''}" placeholder="https://..."></div>
-          <div class="form-group"><label>${t('kiosk.footer_text')}</label><input type="text" id="kFooter" class="input" value="${config.footer || ''}"></div>
-          <div class="form-group"><label>${t('kiosk.idle_title')}</label><input type="text" id="kIdleTitle" class="input" value="${config.idleTitle || t('kiosk.idle_default')}"></div>
+          <div class="form-group"><label>${t('kiosk.title_label')}</label><input type="text" id="kTitle" class="input" value="${esc(config.title || '')}"></div>
+          <div class="form-group"><label>${t('kiosk.subtitle_label')}</label><input type="text" id="kSubtitle" class="input" value="${esc(config.subtitle || '')}"></div>
+          <div class="form-group"><label>${t('kiosk.logo_url')}</label><input type="text" id="kLogo" class="input" value="${esc(config.logoUrl || '')}" placeholder="https://..."></div>
+          <div class="form-group"><label>${t('kiosk.footer_text')}</label><input type="text" id="kFooter" class="input" value="${esc(config.footer || '')}"></div>
+          <div class="form-group"><label>${t('kiosk.idle_title')}</label><input type="text" id="kIdleTitle" class="input" value="${esc(config.idleTitle || t('kiosk.idle_default'))}"></div>
           <div class="form-group"><label>${t('kiosk.idle_timeout')}</label><input type="number" id="kIdleTimeout" class="input" value="${config.idleTimeout || 60}"></div>
         </div>
 
         <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:12px">
           <h4 style="font-size:13px;margin-bottom:10px">${t('kiosk.style')}</h4>
-          <div class="form-group"><label>${t('kiosk.background')}</label><input type="text" id="kBg" class="input" value="${config.style?.background || '#111827'}"></div>
+          <div class="form-group"><label>${t('kiosk.background')}</label><input type="text" id="kBg" class="input" value="${esc(config.style?.background || '#111827')}"></div>
           <div class="form-group"><label>${t('kiosk.text_color')}</label><input type="color" id="kTextColor" value="${config.style?.textColor || '#f1f5f9'}" style="width:100%;height:28px;border:none;cursor:pointer"></div>
           <div class="form-group"><label>${t('kiosk.columns')}</label><select id="kColumns" class="input" style="background:var(--bg-input)">
             <option ${(config.style?.columns || 3) === 2 ? 'selected' : ''} value="2">2</option>
@@ -135,10 +136,10 @@ async function renderEditor(container, pageId) {
     list.innerHTML = config.buttons.map((btn, i) => `
       <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:8px;margin-bottom:6px">
         <div style="display:flex;gap:6px;margin-bottom:6px">
-          <input type="text" class="input" value="${btn.icon || ''}" placeholder="${t('kiosk.icon_placeholder')}" style="width:50px;text-align:center" data-btn="${i}" data-field="icon">
-          <input type="text" class="input" value="${btn.label || ''}" placeholder="${t('kiosk.label_placeholder')}" style="flex:1" data-btn="${i}" data-field="label">
+          <input type="text" class="input" value="${esc(btn.icon || '')}" placeholder="${t('kiosk.icon_placeholder')}" style="width:50px;text-align:center" data-btn="${i}" data-field="icon">
+          <input type="text" class="input" value="${esc(btn.label || '')}" placeholder="${t('kiosk.label_placeholder')}" style="flex:1" data-btn="${i}" data-field="label">
         </div>
-        <input type="text" class="input" value="${btn.sublabel || ''}" placeholder="${t('kiosk.sublabel_placeholder')}" style="font-size:12px;margin-bottom:4px" data-btn="${i}" data-field="sublabel">
+        <input type="text" class="input" value="${esc(btn.sublabel || '')}" placeholder="${t('kiosk.sublabel_placeholder')}" style="font-size:12px;margin-bottom:4px" data-btn="${i}" data-field="sublabel">
         <div style="display:flex;gap:6px;align-items:center">
           <select class="input" style="background:var(--bg-input);font-size:11px;flex:1" data-btn="${i}" data-field="action">
             <option value="" ${!btn.action ? 'selected' : ''}>${t('kiosk.action_none')}</option>
@@ -147,7 +148,7 @@ async function renderEditor(container, pageId) {
           </select>
           <button class="btn-icon" style="color:var(--danger)" data-remove-btn="${i}" title="${t('common.delete')}">&#10005;</button>
         </div>
-        <input type="text" class="input" value="${btn.url || btn.page || ''}" placeholder="${t('kiosk.url_placeholder')}" style="font-size:11px;margin-top:4px" data-btn="${i}" data-field="url">
+        <input type="text" class="input" value="${esc(btn.url || btn.page || '')}" placeholder="${t('kiosk.url_placeholder')}" style="font-size:11px;margin-top:4px" data-btn="${i}" data-field="url">
       </div>
     `).join('') || `<p style="color:var(--text-muted);font-size:12px">${t('kiosk.no_buttons')}</p>`;
 

@@ -142,6 +142,41 @@ const migrations = [
   // playlist_items conversion (migrateAssignmentsToPlaylists) dropped this
   // column. Column ADD is idempotent via the surrounding try/catch loop.
   "ALTER TABLE playlist_items ADD COLUMN zone_id TEXT REFERENCES layout_zones(id) ON DELETE SET NULL",
+  // Slice 1: idempotency guard for the one-time signup welcome/admin emails.
+  // Non-null = this user has already been handled, so we never double-send.
+  // New signups are stamped with the real unix-seconds time the send block ran
+  // (see services/signupEmails.js). The paired backfill below stamps every
+  // pre-existing user with the sentinel value 1, so that a future "IS NULL"
+  // sweep/nudge can't mistake the legacy user base for un-welcomed accounts and
+  // blast all of them. Sentinel 1 (vs a real timestamp) also lets a later
+  // deliberate campaign tell "backfilled, never emailed" apart from "genuinely
+  // sent at <time>". The backfill is idempotent: re-runs match nothing.
+  "ALTER TABLE users ADD COLUMN welcome_email_sent_at INTEGER",
+  "UPDATE users SET welcome_email_sent_at = 1 WHERE welcome_email_sent_at IS NULL",
+  // Slice 3: idempotency guard for the one-time T+3 activation nudge. Same
+  // shape as welcome_email_sent_at: non-null = handled. New signups get a real
+  // unix-seconds stamp when the daily sweep emails them (see
+  // services/activationNudge.js). The paired sentinel-1 backfill marks every
+  // pre-existing user as handled so the FIRST sweep can't blast the entire
+  // dormant legacy base with a stale "you signed up a few days ago" nudge --
+  // only genuinely-new signups (NULL) become eligible going forward.
+  "ALTER TABLE users ADD COLUMN activation_nudge_sent_at INTEGER",
+  "UPDATE users SET activation_nudge_sent_at = 1 WHERE activation_nudge_sent_at IS NULL",
+  // Issue #14: normalize the platform-role model. The legacy /api/auth/users
+  // dropdown could write 'superadmin' and 'admin' strings that not every code
+  // path recognized (some checks matched only 'platform_admin', so a superadmin
+  // could list orgs but not act-as into them). Collapse to the current model:
+  //   superadmin -> platform_admin  (equivalent everywhere; fixes act-as)
+  //   admin      -> user            (legacy middle tier; elevated power now
+  //                                  comes from org/workspace membership)
+  // Strictly idempotent: mutates ONLY exact legacy strings, no-ops on rows
+  // already in the current model ('user'/'platform_admin'/'platform_operator').
+  "UPDATE users SET role = 'platform_admin' WHERE role = 'superadmin'",
+  "UPDATE users SET role = 'user' WHERE role = 'admin'",
+  // Issue #10: admin-provisioned users. When an admin creates a user with a
+  // known password, must_change_password=1 forces a password change on first
+  // login. Default 0 so all existing users are unaffected.
+  "ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0",
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (e) { /* already exists */ }
@@ -592,6 +627,44 @@ function backfillPlaylistItemsZoneId() {
 }
 
 backfillPlaylistItemsZoneId();
+
+// Tenant delete-cascade (issue #18 follow-up). Core logic + table list live in
+// lib/tenant-cascade-migration.js (so they're unit-testable against an in-memory
+// DB). Here we own the boot concerns: a pre-migration snapshot for rollback and
+// process.exit on failure, matching the other heavy migrations above.
+const { applyTenantDeleteCascade } = require('../lib/tenant-cascade-migration');
+(function migrateTenantDeleteCascadeAtBoot() {
+  // Cheap guard so we don't snapshot on every boot once applied.
+  try {
+    if (db.prepare("SELECT 1 FROM schema_migrations WHERE id = 'phase2_3_tenant_delete_cascade'").get()) return;
+  } catch { /* schema_migrations may not exist yet */ }
+
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  const snapshotPath = path.join(dbDir, `remote_display.pre-tenant-cascade-${ts}.db`);
+  let snapped = false;
+  try {
+    db.pragma('wal_checkpoint(TRUNCATE)');
+    fs.copyFileSync(config.dbPath, snapshotPath);
+    snapped = true;
+  } catch (e) {
+    console.error(`[tenant-cascade] Snapshot failed: ${e.message}`);
+    process.exit(1);
+  }
+
+  try {
+    const result = applyTenantDeleteCascade(db);
+    if (result.status === 'applied') {
+      console.warn(`[tenant-cascade] workspace/org deletion now cascades (${result.tables.length} tables rebuilt). Snapshot: ${snapshotPath}`);
+    } else if (snapped) {
+      // Nothing to do (already applied / no tenancy tables) - drop the snapshot.
+      try { fs.unlinkSync(snapshotPath); } catch { /* ignore */ }
+    }
+  } catch (e) {
+    console.error(`[tenant-cascade] Migration FAILED: ${e.message}`);
+    console.error(`[tenant-cascade] Restore with: cp ${snapshotPath} ${config.dbPath}`);
+    process.exit(1);
+  }
+})();
 
 // Prune old telemetry (keep last 24h worth at 15s intervals = ~5760, cap at 6000)
 function pruneTelemetry(deviceId) {

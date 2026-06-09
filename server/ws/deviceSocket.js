@@ -18,6 +18,15 @@ const commandQueue = require('../lib/command-queue');
 // next checker sweep within heartbeatInterval).
 const pendingOfflines = new Map();
 const OFFLINE_DEBOUNCE_MS = 5000;
+
+// Proof-of-play write throttle. A player stuck in a tight loop (e.g. a playlist
+// with 0-second item durations) fires device:play-event 'play_start' several
+// times per second; unthrottled this once bloated play_logs to ~900k rows
+// (~3 inserts/sec from a single web player). Cap proof-of-play inserts to at
+// most one per device per PLAY_LOG_MIN_GAP_MS. The live dashboard progress
+// event is still forwarded every time, so the UI is unaffected. In-memory only.
+const lastPlayLogAt = new Map();
+const PLAY_LOG_MIN_GAP_MS = 2000;
 const { getUserPlan, getUserDeviceCount } = require('../middleware/subscription');
 // Phase 2.3: deviceRoom() resolves a device_id to its workspace room so
 // dashboardNs.emit can be scoped instead of broadcast platform-wide.
@@ -517,10 +526,18 @@ module.exports = function setupDeviceSocket(io) {
       if (device_id !== currentDeviceId) return;
       try {
         if (event === 'play_start') {
-          db.prepare(`
-            INSERT INTO play_logs (device_id, content_id, zone_id, content_name, started_at, trigger_type)
-            VALUES (?, ?, ?, ?, strftime('%s','now'), 'playlist')
-          `).run(device_id, content_id || null, zone_id || null, content_name || 'Unknown');
+          // Throttle proof-of-play inserts per device so a runaway player
+          // (0-second items) can't flood play_logs. Skipped cycles simply
+          // don't create a row; the dashboard progress event below still fires.
+          const nowMs = Date.now();
+          const lastMs = lastPlayLogAt.get(device_id) || 0;
+          if (nowMs - lastMs >= PLAY_LOG_MIN_GAP_MS) {
+            lastPlayLogAt.set(device_id, nowMs);
+            db.prepare(`
+              INSERT INTO play_logs (device_id, content_id, zone_id, content_name, started_at, trigger_type)
+              VALUES (?, ?, ?, ?, strftime('%s','now'), 'playlist')
+            `).run(device_id, content_id || null, zone_id || null, content_name || 'Unknown');
+          }
           // Forward to dashboard so it can render a per-device progress bar.
           // Server-side timestamp avoids clock-skew between player and dashboard.
           emitToDeviceWorkspace(dashboardNs, device_id, 'dashboard:playback-progress', {

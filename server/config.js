@@ -69,4 +69,10 @@ module.exports = {
   // Redirect / -> /app instead of serving the marketing landing page.
   // For self-hosted internal deployments that don't want the public homepage.
   disableHomepage: ['true', '1'].includes(String(process.env.DISABLE_HOMEPAGE || '').toLowerCase()),
+  // Issue #12: auto-create a personal org + Default workspace for self-service
+  // signups (public register + OAuth). Defaults TRUE so single-tenant and the
+  // hosted self-service flow are unaffected; set AUTO_CREATE_ORG_ON_SIGNUP=false
+  // on MSP-style deployments where an admin/operator assigns users to existing
+  // orgs after signup instead.
+  autoCreateOrgOnSignup: !['false', '0'].includes(String(process.env.AUTO_CREATE_ORG_ON_SIGNUP || '').toLowerCase()),
 };

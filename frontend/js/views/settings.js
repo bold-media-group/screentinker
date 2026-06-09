@@ -12,7 +12,10 @@ export async function render(container) {
   try { user = await api.getMe(); localStorage.setItem('user', JSON.stringify(user)); }
   catch { user = JSON.parse(localStorage.getItem('user') || '{}'); }
   const isSuperAdmin = isPlatformAdmin(user);
-  const isAdmin = user.role === 'admin' || isSuperAdmin;
+  // #14: the legacy 'admin' platform role was normalized away; platform-level
+  // admin is now just isPlatformAdmin. (Elevated capability otherwise comes from
+  // org/workspace membership, gated in the members views, not users.role.)
+  const isAdmin = isSuperAdmin;
 
   container.innerHTML = `
     <div class="page-header">
@@ -430,7 +433,7 @@ async function loadUsers() {
                 <span style="background:var(--bg-primary);padding:2px 8px;border-radius:10px;font-size:11px">${u.auth_provider}</span>
               </td>
               <td style="padding:10px 12px">
-                <span style="color:${u.role === 'admin' ? 'var(--accent)' : 'var(--text-secondary)'}">${u.role}</span>
+                <span style="color:${isPlatformAdmin(u) ? 'var(--accent)' : 'var(--text-secondary)'}">${u.role}</span>
               </td>
               <td style="padding:10px 12px">
                 <select class="input plan-select" data-user-id="${u.id}" style="padding:4px 8px;font-size:12px;width:auto">

@@ -2,9 +2,51 @@ import { api } from '../api.js';
 import { showToast } from '../components/toast.js';
 import { esc, isPlatformAdmin } from '../utils.js';
 import { t } from '../i18n.js';
+import { openAddUserModal } from '../components/workspace-members-add-user-modal.js';
+import { openManageWorkspacesModal } from '../components/admin-user-workspaces-modal.js';
+// Reuse the members view's server-error -> friendly-string mapper (handles the
+// 409 duplicate-email / weak-password / invalid-email cases) so we don't fork a
+// second mapper.
+import { mapMutationError } from './workspace-members.js';
 
 const headers = () => ({ Authorization: `Bearer ${localStorage.getItem('token')}`, 'Content-Type': 'application/json' });
 const API = (url, opts = {}) => fetch('/api' + url, { headers: headers(), ...opts }).then(r => r.json());
+
+// #14: the platform user-management dropdown manages users.role (the
+// PLATFORM-level role) only - workspace/org roles are managed in the members
+// views. Options are the current model; the legacy 'admin'/'superadmin' strings
+// were normalized away. #13 adds 'platform_operator' (cross-org staff).
+const PLATFORM_ROLE_OPTIONS = ['user', 'platform_operator', 'platform_admin'];
+
+// Platform staff have cross-org access (no single workspace), so the Workspace
+// column shows read-only "Platform (all)" for them. Note utils.isPlatformAdmin
+// only covers admin/superadmin; operators are staff here too.
+function isPlatformStaffRole(role) {
+  return role === 'platform_admin' || role === 'superadmin' || role === 'platform_operator';
+}
+
+// Short summary of a user's workspace membership for the Users-table cell.
+// Platform staff have cross-org access (not per-workspace membership) -> "Platform
+// (all)". Otherwise: Unassigned (0), the workspace name (1), or "N workspaces".
+function workspaceSummary(u) {
+  if (isPlatformStaffRole(u.role)) return t('admin.workspace.platform_all');
+  const count = u.workspace_count || 0;
+  if (count === 0) return t('admin.workspace.unassigned');
+  if (count === 1) return esc(u.workspace_name || '');
+  return t('admin.workspace.multi', { n: count });
+}
+
+// Workspace cell: a summary + a "Manage" button that opens the full membership
+// modal (add/remove workspaces, set per-workspace role). Manage is offered for
+// everyone, including staff (you can grant them explicit memberships too).
+function workspaceCell(u) {
+  return `<td style="padding:8px">
+    <div style="display:flex;align-items:center;gap:8px">
+      <span style="color:var(--text-muted);font-size:12px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${workspaceSummary(u)}</span>
+      <button class="btn btn-secondary btn-sm" type="button" data-ws-manage="${esc(u.id)}">${t('admin.workspace.manage')}</button>
+    </div>
+  </td>`;
+}
 
 export async function render(container) {
   const user = JSON.parse(localStorage.getItem('user') || '{}');
@@ -16,11 +58,18 @@ export async function render(container) {
   container.innerHTML = `
     <div class="page-header">
       <div><h1>${t('admin.title')}</h1><div class="subtitle">${t('admin.subtitle')}</div></div>
+      <button class="btn btn-primary" id="adminAddUserBtn">${t('admin.add_user')}</button>
     </div>
 
     <div class="settings-section">
       <h3>${t('admin.all_users')}</h3>
       <div id="allUsersTable"><p style="color:var(--text-muted)">${t('common.loading')}</p></div>
+    </div>
+
+    <div class="settings-section">
+      <h3>${t('admin.branding.title')}</h3>
+      <p style="color:var(--text-muted);font-size:12px;margin-bottom:12px">${t('admin.branding.desc')}</p>
+      <div id="brandingForm"><p style="color:var(--text-muted)">${t('common.loading')}</p></div>
     </div>
 
     <div class="settings-section">
@@ -34,16 +83,72 @@ export async function render(container) {
     </div>
   `;
 
+  // Add User (#10): platform admin provisions a user into ANY workspace. The
+  // page is platform_admin-gated; the modal opens in picker mode (no fixed
+  // workspace) so the admin chooses the target org/workspace. The endpoint
+  // additionally enforces canAdminWorkspace (platform_admin passes everywhere).
+  document.getElementById('adminAddUserBtn')?.addEventListener('click', () => {
+    openAddUserModal(null, {
+      onSuccess: (result) => {
+        showToast(t('members.success.user_created', { email: result.email }), 'success');
+        loadUsers();
+      },
+      mapError: mapMutationError,
+    });
+  });
+
   loadUsers();
+  loadBranding();
   loadPlans();
   loadSystem();
 
 }
 
+// #15: instance-level default branding form (platform default; every workspace
+// without its own white-label inherits this, as does the login page).
+async function loadBranding() {
+  const el = document.getElementById('brandingForm');
+  if (!el) return;
+  let b = {};
+  try { b = await api.adminGetBranding(); } catch (e) { el.innerHTML = `<p style="color:var(--danger)">${esc(e.message || 'Failed to load')}</p>`; return; }
+  const v = (x) => esc(x == null ? '' : x);
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;max-width:640px">
+      <div class="form-group" style="grid-column:1/-1"><label>${t('admin.branding.brand_name')}</label><input type="text" id="brBrandName" class="input" placeholder="ScreenTinker" value="${v(b.brand_name)}"></div>
+      <div class="form-group"><label>${t('admin.branding.primary_color')}</label><input type="text" id="brPrimary" class="input" placeholder="#3B82F6" value="${v(b.primary_color)}"></div>
+      <div class="form-group"><label>${t('admin.branding.bg_color')}</label><input type="text" id="brBg" class="input" placeholder="#111827" value="${v(b.bg_color)}"></div>
+      <div class="form-group" style="grid-column:1/-1"><label>${t('admin.branding.logo_url')}</label><input type="text" id="brLogo" class="input" placeholder="https://…/logo.png" value="${v(b.logo_url)}"></div>
+      <div class="form-group" style="grid-column:1/-1"><label>${t('admin.branding.favicon_url')}</label><input type="text" id="brFavicon" class="input" placeholder="https://…/favicon.ico" value="${v(b.favicon_url)}"></div>
+      <div class="form-group" style="grid-column:1/-1"><label>${t('admin.branding.custom_css')}</label><textarea id="brCss" class="input" rows="3" placeholder="/* optional */">${v(b.custom_css)}</textarea></div>
+      <label style="grid-column:1/-1;display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+        <input type="checkbox" id="brHide" ${b.hide_branding ? 'checked' : ''}> ${t('admin.branding.hide_branding')}
+      </label>
+    </div>
+    <button class="btn btn-primary btn-sm" id="brSave" style="margin-top:12px">${t('admin.branding.save')}</button>
+  `;
+  document.getElementById('brSave').onclick = async () => {
+    try {
+      await api.adminSetBranding({
+        brand_name: document.getElementById('brBrandName').value.trim() || 'ScreenTinker',
+        primary_color: document.getElementById('brPrimary').value.trim() || null,
+        bg_color: document.getElementById('brBg').value.trim() || null,
+        logo_url: document.getElementById('brLogo').value.trim() || null,
+        favicon_url: document.getElementById('brFavicon').value.trim() || null,
+        custom_css: document.getElementById('brCss').value.trim() || null,
+        hide_branding: document.getElementById('brHide').checked,
+      });
+      showToast(t('admin.branding.saved'), 'success');
+    } catch (err) { showToast(err.message, 'error'); }
+  };
+}
+
 async function loadUsers() {
   const el = document.getElementById('allUsersTable');
   try {
-    const [users, plans] = await Promise.all([API('/auth/users'), fetch('/api/subscription/plans').then(r => r.json())]);
+    const [users, plans] = await Promise.all([
+      API('/auth/users'),
+      fetch('/api/subscription/plans').then(r => r.json()),
+    ]);
     const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
 
     el.innerHTML = `
@@ -55,6 +160,7 @@ async function loadUsers() {
           <th style="padding:8px;text-align:left;color:var(--text-muted)">${t('admin.col.last_login')}</th>
           <th style="padding:8px;text-align:left;color:var(--text-muted)">${t('admin.col.role')}</th>
           <th style="padding:8px;text-align:left;color:var(--text-muted)">${t('admin.col.plan')}</th>
+          <th style="padding:8px;text-align:left;color:var(--text-muted)">${t('admin.col.workspace')}</th>
           <th style="padding:8px;text-align:left;color:var(--text-muted)">${t('admin.col.actions')}</th>
         </tr></thead>
         <tbody>
@@ -65,9 +171,7 @@ async function loadUsers() {
               <td style="padding:8px;font-size:11px;color:var(--text-muted)">${u.last_login ? new Date(u.last_login * 1000).toLocaleString() : t('common.never')}</td>
               <td style="padding:8px">
                 <select class="input" style="max-width:120px;width:100%;background:var(--bg-input);font-size:12px;padding:4px" data-role-user="${u.id}">
-                  <option value="user" ${u.role === 'user' ? 'selected' : ''}>${t('admin.role.user')}</option>
-                  <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>${t('admin.role.admin')}</option>
-                  <option value="superadmin" ${u.role === 'superadmin' ? 'selected' : ''}>${t('admin.role.superadmin')}</option>
+                  ${PLATFORM_ROLE_OPTIONS.map(r => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${t('admin.role.' + r)}</option>`).join('')}
                 </select>
               </td>
               <td style="padding:8px">
@@ -75,9 +179,10 @@ async function loadUsers() {
                   ${plans.map(p => `<option value="${p.id}" ${u.plan_id === p.id ? 'selected' : ''}>${p.display_name}</option>`).join('')}
                 </select>
               </td>
+              ${workspaceCell(u)}
               <td style="padding:8px;white-space:nowrap">
                 ${u.auth_provider === 'local' && u.id !== currentUser.id ? `<button class="btn btn-secondary btn-sm" data-reset-pw-user="${u.id}" data-user-email="${u.email}" style="margin-right:4px">${t('admin.reset_password')}</button>` : ''}
-                ${u.role !== 'superadmin' ? `<button class="btn btn-danger btn-sm" data-delete-user="${u.id}">${t('admin.remove')}</button>` : `<span style="color:var(--text-muted);font-size:11px">${t('admin.owner')}</span>`}
+                ${!isPlatformAdmin(u) ? `<button class="btn btn-danger btn-sm" data-delete-user="${u.id}">${t('admin.remove')}</button>` : `<span style="color:var(--text-muted);font-size:11px">${t('admin.owner')}</span>`}
               </td>
             </tr>
           `).join('')}
@@ -102,6 +207,17 @@ async function loadUsers() {
           await API('/subscription/assign', { method: 'POST', body: JSON.stringify({ user_id: select.dataset.planUser, plan_id: select.value }) });
           showToast(t('admin.toast.plan_updated'), 'success');
         } catch (err) { showToast(err.message, 'error'); loadUsers(); }
+      };
+    });
+
+    // Manage workspaces: open the per-user membership modal (add/remove
+    // workspaces, set per-workspace role). Refresh the table on close only if
+    // something changed (the modal calls onClose then).
+    el.querySelectorAll('[data-ws-manage]').forEach(btn => {
+      btn.onclick = () => {
+        const u = users.find(x => x.id === btn.dataset.wsManage);
+        if (!u) return;
+        openManageWorkspacesModal(u, { onClose: () => loadUsers() });
       };
     });
 

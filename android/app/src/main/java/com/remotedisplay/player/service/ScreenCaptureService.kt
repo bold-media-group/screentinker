@@ -54,19 +54,22 @@ object ScreenCaptureService {
 
         imageReader = ImageReader.newInstance(captureWidth, captureHeight, PixelFormat.RGBA_8888, 4)
 
-        virtualDisplay = projection.createVirtualDisplay(
-            "ScreenTinker",
-            captureWidth, captureHeight, density,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            imageReader!!.surface, null, null
-        )
-
+        // #5: Android 14+ requires a Callback registered BEFORE createVirtualDisplay,
+        // otherwise createVirtualDisplay throws IllegalStateException. (Was registered
+        // after, which broke system capture on Android 14+.)
         projection.registerCallback(object : MediaProjection.Callback() {
             override fun onStop() {
                 Log.i(TAG, "MediaProjection stopped by system")
                 cleanup()
             }
         }, null)
+
+        virtualDisplay = projection.createVirtualDisplay(
+            "ScreenTinker",
+            captureWidth, captureHeight, density,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+            imageReader!!.surface, null, null
+        )
 
         Log.i(TAG, "MediaProjection started: ${captureWidth}x${captureHeight}")
     }

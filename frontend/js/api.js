@@ -174,6 +174,20 @@ export const api = {
   // Slice 2C - accept a workspace invite by id (post-auth flow)
   acceptInvite: (inviteId) => request(`/auth/accept-invite/${inviteId}`, { method: 'POST' }),
 
+  // Admin-provisioned user creation (#10). data: { email, name, password,
+  // workspaceId, role, mustChangePassword }
+  adminCreateUser: (data) => request('/admin/users', { method: 'POST', body: JSON.stringify(data) }),
+
+  // Instance-level default branding (#15, platform admin).
+  adminGetBranding: () => request('/admin/branding'),
+  adminSetBranding: (data) => request('/admin/branding', { method: 'PUT', body: JSON.stringify(data) }),
+
+  // Per-user workspace membership management (platform Users page modal).
+  adminGetUserWorkspaces: (id) => request(`/admin/users/${id}/workspaces`),
+  adminAddUserWorkspace: (id, workspaceId, role) => request(`/admin/users/${id}/workspaces`, { method: 'POST', body: JSON.stringify({ workspaceId, role }) }),
+  adminSetUserWorkspaceRole: (id, workspaceId, role) => request(`/admin/users/${id}/workspaces/${workspaceId}`, { method: 'PUT', body: JSON.stringify({ role }) }),
+  adminRemoveUserWorkspace: (id, workspaceId) => request(`/admin/users/${id}/workspaces/${workspaceId}`, { method: 'DELETE' }),
+
   // Admin - Users
   getUsers: () => request('/auth/users'),
   deleteUser: (id) => request(`/auth/users/${id}`, { method: 'DELETE' }),

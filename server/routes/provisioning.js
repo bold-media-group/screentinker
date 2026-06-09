@@ -17,7 +17,7 @@ router.post('/', (req, res) => {
   `).run(device.id);
 
   const updated = db.prepare('SELECT * FROM devices WHERE id = ?').get(device.id);
-  res.json(updated);
+  res.json(require('../lib/device-sanitize').stripDeviceSecrets(updated));
 });
 
 module.exports = router;

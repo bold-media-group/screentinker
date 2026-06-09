@@ -1,6 +1,7 @@
 import { api } from '../api.js';
 import { showToast } from '../components/toast.js';
 import { t, tn } from '../i18n.js';
+import { esc } from '../utils.js';
 
 const API = (url, opts = {}) => fetch('/api' + url, { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}`, ...opts.headers }, ...opts }).then(r => r.json());
 
@@ -46,9 +47,9 @@ async function renderList(container) {
         <div class="content-item" style="cursor:pointer" onclick="window.location.hash='#/team/${team.id}'">
           <div style="padding:20px">
             <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
-              <div style="width:40px;height:40px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;color:white">${team.name[0].toUpperCase()}</div>
+              <div style="width:40px;height:40px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;color:white">${esc(team.name[0].toUpperCase())}</div>
               <div>
-                <div style="font-weight:600;font-size:16px">${team.name}</div>
+                <div style="font-weight:600;font-size:16px">${esc(team.name)}</div>
                 <div style="font-size:12px;color:var(--text-muted)">${t('team.your_role', { role: team.my_role })} &middot; ${tn('team.member_count', team.member_count)}</div>
               </div>
             </div>
@@ -77,7 +78,7 @@ async function renderTeamDetail(container, teamId) {
       ${t('team.back')}
     </a>
     <div class="page-header">
-      <h1>${team.name}</h1>
+      <h1>${esc(team.name)}</h1>
       <div style="display:flex;gap:8px">
         <button class="btn btn-danger btn-sm" id="deleteTeamBtn">${t('team.delete_team')}</button>
       </div>
@@ -92,10 +93,10 @@ async function renderTeamDetail(container, teamId) {
         <div id="membersList">
           ${(team.members || []).map(m => `
             <div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
-              <div style="width:32px;height:32px;border-radius:50%;background:var(--bg-input);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:var(--text-secondary)">${(m.user_name || m.email)[0].toUpperCase()}</div>
+              <div style="width:32px;height:32px;border-radius:50%;background:var(--bg-input);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:var(--text-secondary)">${esc((m.user_name || m.email)[0].toUpperCase())}</div>
               <div style="flex:1;min-width:0">
-                <div style="font-size:13px;font-weight:500">${m.user_name || m.email}</div>
-                <div style="font-size:11px;color:var(--text-muted)">${m.email}</div>
+                <div style="font-size:13px;font-weight:500">${esc(m.user_name || m.email)}</div>
+                <div style="font-size:11px;color:var(--text-muted)">${esc(m.email)}</div>
               </div>
               <select class="input" style="max-width:100px;width:100%;background:var(--bg-input);font-size:12px;padding:4px 8px" data-member-id="${m.user_id}" ${m.role === 'owner' ? 'disabled' : ''}>
                 <option value="viewer" ${m.role === 'viewer' ? 'selected' : ''}>${t('team.role_viewer')}</option>
@@ -113,7 +114,7 @@ async function renderTeamDetail(container, teamId) {
           <h3 style="font-size:15px">${t('team.shared_devices', { n: devices.length })}</h3>
           <select id="addDeviceToTeam" class="input" style="max-width:200px;width:100%;background:var(--bg-input);font-size:12px">
             <option value="">${t('team.add_device')}</option>
-            ${unassignedDevices.map(d => `<option value="${d.id}">${d.name}</option>`).join('')}
+            ${unassignedDevices.map(d => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join('')}
           </select>
         </div>
         <div id="teamDevicesList">
@@ -121,8 +122,8 @@ async function renderTeamDetail(container, teamId) {
             <div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
               <span class="status-dot ${d.status}"></span>
               <div style="flex:1">
-                <div style="font-size:13px;font-weight:500">${d.name}</div>
-                <div style="font-size:11px;color:var(--text-muted)">${d.status}</div>
+                <div style="font-size:13px;font-weight:500">${esc(d.name)}</div>
+                <div style="font-size:11px;color:var(--text-muted)">${esc(d.status)}</div>
               </div>
               <button class="btn-icon" data-remove-device="${d.id}" style="color:var(--danger)" title="${t('team.remove_from_team')}">&#10005;</button>
             </div>

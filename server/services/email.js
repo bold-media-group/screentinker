@@ -87,10 +87,14 @@ function postSendMail(token, payload) {
   });
 }
 
-function buildSendMailPayload(to, subject, text, html) {
+// rawSubject: when true, the subject is sent verbatim (no "[ScreenTinker] "
+// prefix) — used by the signup emails which carry their own clean subjects.
+// fromName: overrides the default GRAPH_SENDER_NAME display name (the From
+// address is always graphSenderEmail, so replies still land in that mailbox).
+function buildSendMailPayload(to, subject, text, html, fromName, rawSubject) {
   return {
     message: {
-      subject: `[ScreenTinker] ${subject}`,
+      subject: rawSubject ? subject : `[ScreenTinker] ${subject}`,
       body: {
         contentType: 'HTML',
         content: html || `<pre style="font-family:sans-serif">${escapeHtml(text || '')}</pre>`,
@@ -99,7 +103,7 @@ function buildSendMailPayload(to, subject, text, html) {
       from: {
         emailAddress: {
           address: config.graphSenderEmail,
-          name: config.graphSenderName || 'ScreenTinker',
+          name: fromName || config.graphSenderName || 'ScreenTinker',
         },
       },
     },
@@ -117,7 +121,7 @@ function escapeHtml(s) {
 // caller. Graph errors are logged and the function returns sent:false so
 // app-level flow (e.g. the device-offline alert) keeps running even when
 // email delivery is broken.
-async function sendEmail({ to, subject, text, html }) {
+async function sendEmail({ to, subject, text, html, fromName, rawSubject }) {
   if (!isConfigured()) {
     console.log(`[EMAIL] not configured - would send to ${to}: ${subject}`);
     if (text) console.log(`  ${text.split('\n')[0]}`);
@@ -137,7 +141,7 @@ async function sendEmail({ to, subject, text, html }) {
   }
   try {
     const token = await getAccessToken();
-    await postSendMail(token, buildSendMailPayload(to, subject, text, html));
+    await postSendMail(token, buildSendMailPayload(to, subject, text, html, fromName, rawSubject));
     console.log(`[EMAIL] sent to ${to}: ${subject}`);
     return { sent: true };
   } catch (e) {

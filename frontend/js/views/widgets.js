@@ -114,7 +114,7 @@ function showPreviewModal(html) {
         <strong style="color:var(--text-primary)">${t('widget.preview_title')}</strong>
         <button class="btn btn-secondary btn-sm" id="pvClose">${t('widget.close')}</button>
       </div>
-      <iframe id="pvIframe" style="flex:1;width:100%;border:0;background:#000"></iframe>
+      <iframe id="pvIframe" sandbox="allow-scripts" style="flex:1;width:100%;border:0;background:#000"></iframe>
     </div>`;
   document.body.appendChild(overlay);
   // srcdoc resolves relative URLs against about:srcdoc, so inject <base> pointing to our origin

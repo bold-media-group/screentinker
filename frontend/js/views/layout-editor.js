@@ -1,6 +1,7 @@
 import { api } from '../api.js';
 import { showToast } from '../components/toast.js';
 import { t, tn } from '../i18n.js';
+import { esc } from '../utils.js';
 
 const API = (url, opts = {}) => fetch('/api' + url, { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}`, ...opts.headers }, ...opts }).then(r => r.json());
 
@@ -84,12 +85,12 @@ function renderLayoutCard(layout, isTemplate) {
           ${(layout.zones || []).map(z => `
             <div style="position:absolute;left:${z.x_percent}%;top:${z.y_percent}%;width:${z.width_percent}%;height:${z.height_percent}%;
               background:rgba(59,130,246,0.15);border:1px solid rgba(59,130,246,0.4);display:flex;align-items:center;justify-content:center;
-              font-size:9px;color:var(--text-muted);overflow:hidden">${z.name}</div>
+              font-size:9px;color:var(--text-muted);overflow:hidden">${esc(z.name)}</div>
           `).join('')}
         </div>
       </div>
       <div class="content-item-body">
-        <div class="content-item-name">${layout.name}</div>
+        <div class="content-item-name">${esc(layout.name)}</div>
         <div class="content-item-size">${zonesText}${isTemplate ? ' • ' + t('layout.template_label') : ''}</div>
       </div>
       <div class="content-item-actions">
@@ -97,7 +98,7 @@ function renderLayoutCard(layout, isTemplate) {
           ? `<button class="btn btn-primary btn-sm" data-use-template="${layout.id}">${t('layout.use_template')}</button>`
           : `<button class="btn btn-secondary btn-sm" data-edit-layout="${layout.id}">${t('common.edit')}</button>`
         }
-        <button class="btn btn-danger btn-sm" data-delete-layout="${layout.id}" data-layout-name="${layout.name}" style="margin-left:4px">${t('common.delete')}</button>
+        <button class="btn btn-danger btn-sm" data-delete-layout="${layout.id}" data-layout-name="${esc(layout.name)}" style="margin-left:4px">${t('common.delete')}</button>
       </div>
     </div>
   `;
@@ -115,7 +116,7 @@ async function renderEditor(container, layoutId) {
       ${t('layout.back')}
     </a>
     <div class="page-header">
-      <h1 id="layoutName">${layout.name}</h1>
+      <h1 id="layoutName">${esc(layout.name)}</h1>
       <div style="display:flex;gap:8px">
         <button class="btn btn-secondary btn-sm" id="addZoneBtn">${t('layout.add_zone')}</button>
         <button class="btn btn-primary btn-sm" id="saveLayoutBtn">${t('common.save')}</button>
@@ -228,8 +229,8 @@ async function renderEditor(container, layoutId) {
       <div style="padding:8px 10px;background:${selectedZone === i ? 'var(--bg-card-hover)' : 'var(--bg-secondary)'};
         border:1px solid ${selectedZone === i ? 'var(--accent)' : 'var(--border)'};border-radius:var(--radius);
         margin-bottom:4px;cursor:pointer;font-size:13px" data-zone-idx="${i}">
-        <div style="font-weight:500">${z.name}</div>
-        <div style="font-size:11px;color:var(--text-muted)">${Math.round(z.width_percent)}% x ${Math.round(z.height_percent)}% • ${z.zone_type}</div>
+        <div style="font-weight:500">${esc(z.name)}</div>
+        <div style="font-size:11px;color:var(--text-muted)">${Math.round(z.width_percent)}% x ${Math.round(z.height_percent)}% • ${esc(z.zone_type)}</div>
       </div>
     `).join('');
 

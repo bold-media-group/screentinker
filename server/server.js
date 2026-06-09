@@ -276,6 +276,19 @@ app.use('/api/contact', require('./routes/contact'));
 app.use('/api/player-debug', rateLimit(60000, 10));
 app.use('/api/player-debug', require('./routes/player-debug'));
 
+// Public branding resolver (#15). Pre-login / pre-workspace contexts (the login
+// page especially) need branding without a token. Resolves custom-domain match
+// -> platform default -> hardcoded ScreenTinker. Domain comes from ?domain= or
+// the request hostname (trust-proxy resolves the forwarded Host behind CF/Nginx).
+app.get('/api/branding', (req, res) => {
+  const { db } = require('./db/database');
+  const { resolveBranding, publicBranding } = require('./lib/branding');
+  const domain = (req.query.domain || req.hostname || '').toString();
+  // publicBranding strips internal columns (id/user_id/workspace_id/custom_domain
+  // /timestamps) so this unauthenticated endpoint only exposes presentational fields.
+  res.json(publicBranding(resolveBranding(db, { domain })));
+});
+
 // Stripe billing routes (checkout, portal)
 app.use('/api/stripe', stripeRouter);
 
@@ -338,6 +351,13 @@ app.get('/api/content/:id/thumbnail', (req, res) => {
   const { db } = require('./db/database');
   const content = db.prepare('SELECT * FROM content WHERE id = ?').get(req.params.id);
   if (!content || !content.thumbnail_path) return res.status(404).json({ error: 'Thumbnail not found' });
+  // Security: gate the same way as /file - only serve when the content is
+  // referenced by a playlist or by a widget IN THE CONTENT'S WORKSPACE. Without
+  // this, any anonymous caller holding a content UUID could pull any tenant's
+  // thumbnail (the /file route already had this check; the thumbnail route did not).
+  const inPlaylist = db.prepare('SELECT id FROM playlist_items WHERE content_id = ? LIMIT 1').get(req.params.id);
+  const inWidget = inPlaylist ? null : db.prepare('SELECT id FROM widgets WHERE workspace_id = ? AND config LIKE ? LIMIT 1').get(content.workspace_id, `%/api/content/${req.params.id}/%`);
+  if (!inPlaylist && !inWidget) return res.status(403).json({ error: 'Content not assigned to any playlist or widget' });
   const safePath = path.resolve(config.contentDir, path.basename(content.thumbnail_path));
   if (!safePath.startsWith(path.resolve(config.contentDir))) return res.status(403).json({ error: 'Invalid path' });
   res.sendFile(safePath);
@@ -364,6 +384,12 @@ app.use(activityLogger);
 // (URL param), not the caller's currently active one. Hence requireAuth only,
 // no resolveTenancy. Permission gated per-handler via canAdminWorkspace().
 app.use('/api/workspaces', requireAuth, require('./routes/workspaces'));
+
+// /api/admin: admin-provisioned user creation (#10). Like /api/workspaces it
+// targets a workspace by body param (not the caller's active one), so
+// requireAuth only - per-handler canAdminWorkspace() gates it. Mounted after
+// activityLogger so creations are auto-logged.
+app.use('/api/admin', requireAuth, require('./routes/admin'));
 
 app.use('/api/devices', requireAuth, resolveTenancy, require('./routes/devices'));
 app.use('/api/content', requireAuth, resolveTenancy, require('./routes/content'));
@@ -491,6 +517,10 @@ startScheduler(io);
 const { startAlertService } = require('./services/alerts');
 startAlertService(io);
 
+// Start activation-nudge sweep (T+3 onboarding nudge; gated on HOSTED_INSTANCE)
+const { startActivationNudge } = require('./services/activationNudge');
+startActivationNudge();
+
 // Handle provisioning via WebSocket notification
 const { db } = require('./db/database');
 const originalProvisionRoute = require('./routes/provisioning');
@@ -520,6 +550,7 @@ app.post('/api/provision/pair', requireAuth, resolveTenancy, checkDeviceLimit, (
   deviceNs.to(device.id).emit('device:paired', { device_id: device.id, name: deviceName });
 
   const updated = db.prepare('SELECT * FROM devices WHERE id = ?').get(device.id);
+  require('./lib/device-sanitize').stripDeviceSecrets(updated); // never leak device_token to clients
   // Phase 2.3: scope to the workspace the device was just claimed into.
   const { workspaceRoom, emitToWorkspace } = require('./lib/socket-rooms');
   emitToWorkspace(dashboardNs, workspaceRoom(updated.workspace_id), 'dashboard:device-added', updated);

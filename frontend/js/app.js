@@ -20,6 +20,8 @@ import * as adminPlayerDebug from './views/admin-player-debug.js';
 import * as designer from './views/designer.js';
 import * as playlists from './views/playlists.js';
 import * as workspaceMembers from './views/workspace-members.js';
+import * as forcePasswordChange from './views/force-password-change.js';
+import * as noWorkspace from './views/no-workspace.js';
 import { applyBranding } from './branding.js';
 import { t } from './i18n.js';
 import { isPlatformAdmin } from './utils.js';
@@ -210,6 +212,18 @@ function getCurrentUser() {
   } catch { return null; }
 }
 
+// #12: true when a signed-in user provably has zero accessible workspaces and
+// no platform-level reach. Requires accessible_workspaces to be present (only
+// /me populates it) - undefined means "not loaded yet", so we DON'T trigger and
+// fall through to the normal (workspace-empty-safe) views until /me resolves.
+function hasNoAccessibleWorkspace(u) {
+  return !!u
+    && Array.isArray(u.accessible_workspaces)
+    && u.accessible_workspaces.length === 0
+    && !u.current_workspace_id
+    && !isPlatformAdmin(u);
+}
+
 // Refresh the cached user from the server. The server reads plan_id fresh
 // from the DB on every request, but the frontend only wrote `user` into
 // localStorage at login — so plan/role changes made by an admin weren't
@@ -226,6 +240,16 @@ async function refreshCurrentUser() {
     // the dropdown in sync if a workspace was added/removed in another tab.
     renderWorkspaceSwitcher(fresh);
     window.dispatchEvent(new CustomEvent('user-refreshed', { detail: fresh }));
+    // #12: /me is the first place accessible_workspaces is known. If it resolves
+    // to zero (org-less user), send them to the empty state now - on a fresh
+    // load route() may have already rendered the dashboard before /me returned.
+    // Guard against the login / change-password / already-there screens to avoid
+    // a redirect loop.
+    const hash = window.location.hash || '#/';
+    if (hasNoAccessibleWorkspace(fresh)
+        && hash !== '#/no-workspace' && hash !== '#/login' && hash !== '#/change-password') {
+      window.location.hash = '#/no-workspace';
+    }
   } catch {}
 }
 
@@ -272,6 +296,56 @@ function route() {
     const stashedInviteId = readPendingInvite();
     if (stashedInviteId) {
       consumeAcceptInvite(stashedInviteId);
+      return;
+    }
+  }
+
+  // #10: forced first-login password change. An admin-provisioned user carries
+  // must_change_password until they set their own password. Block every other
+  // authenticated view and force them to the change-password screen; the server
+  // clears the flag on a successful PUT /api/auth/me. The screen itself is the
+  // one exception (so they can actually change it).
+  if (isAuthenticated()) {
+    const u = getCurrentUser();
+    if (u && u.must_change_password && hash !== '#/change-password') {
+      window.location.hash = '#/change-password';
+      return;
+    }
+    if (hash === '#/change-password') {
+      if (!u || !u.must_change_password) {
+        // Not (or no longer) required - don't strand the user on a dead screen.
+        window.location.hash = '#/';
+        return;
+      }
+      sidebar.style.display = 'none';
+      app.style.marginLeft = '0';
+      const mb = document.getElementById('mobileMenuBtn');
+      if (mb) mb.style.display = 'none';
+      currentView = forcePasswordChange;
+      forcePasswordChange.render(app);
+      return;
+    }
+  }
+
+  // #12: a signed-in user with zero accessible workspaces (org-less self-signup
+  // on an AUTO_CREATE_ORG_ON_SIGNUP=false deployment) lands on a "no workspaces
+  // yet" empty state instead of being bounced into onboarding (whose pairing
+  // step needs a workspace). Only fires once /me has populated
+  // accessible_workspaces; until then the workspace-empty-safe dashboard shows.
+  if (isAuthenticated()) {
+    const u = getCurrentUser();
+    if (hasNoAccessibleWorkspace(u) && hash !== '#/no-workspace') {
+      window.location.hash = '#/no-workspace';
+      return;
+    }
+    if (hash === '#/no-workspace') {
+      if (!hasNoAccessibleWorkspace(u)) { window.location.hash = '#/'; return; }
+      sidebar.style.display = 'none';
+      app.style.marginLeft = '0';
+      const mb = document.getElementById('mobileMenuBtn');
+      if (mb) mb.style.display = 'none';
+      currentView = noWorkspace;
+      noWorkspace.render(app);
       return;
     }
   }

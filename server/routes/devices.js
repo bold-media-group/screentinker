@@ -1,10 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const { db } = require('../db/database');
-const { PLATFORM_ROLES, ELEVATED_ROLES } = require('../middleware/auth');
+const { PLATFORM_ROLES, ELEVATED_ROLES, isPlatformStaff } = require('../middleware/auth');
 // Phase 2.2a: workspace-aware access. accessContext returns { workspaceRole, actingAs }
 // or null based on the caller's reach into a specific workspace.
 const { accessContext } = require('../lib/tenancy');
+const { stripDeviceSecrets } = require('../lib/device-sanitize');
 
 // List devices in the caller's current workspace.
 // Phase 2.2a: filter by workspace_id instead of user_id. The caller's current
@@ -39,12 +40,14 @@ router.get('/', (req, res) => {
     ORDER BY d.created_at ASC
     LIMIT ? OFFSET ?
   `).all(req.workspaceId, limit, offset);
-  res.json(devices);
+  res.json(devices.map(stripDeviceSecrets));
 });
 
-// List unclaimed provisioning devices (admin only)
+// List unclaimed provisioning devices (admin only).
+// #13: read-only, so platform_operator may view the pool too (cross-org staff
+// troubleshooting). Claiming a device is a separate workspace-scoped mutation.
 router.get('/unassigned', (req, res) => {
-  if (!ELEVATED_ROLES.includes(req.user.role)) {
+  if (!ELEVATED_ROLES.includes(req.user.role) && !isPlatformStaff(req.user.role)) {
     return res.status(403).json({ error: 'Admin access required' });
   }
   const devices = db.prepare(`
@@ -116,7 +119,7 @@ router.get('/:id', (req, res) => {
     'SELECT reported_at FROM device_telemetry WHERE device_id = ? AND reported_at > ? ORDER BY reported_at ASC'
   ).all(req.params.id, dayAgo).map(r => r.reported_at);
 
-  res.json({ ...device, telemetry, screenshot, assignments, playlist_status, playlist_has_published, uptimeData, statusLog });
+  res.json({ ...stripDeviceSecrets(device), telemetry, screenshot, assignments, playlist_status, playlist_has_published, uptimeData, statusLog });
 });
 
 // Helper: check device write access via the workspace the device belongs to.
@@ -160,7 +163,7 @@ router.put('/:id', (req, res) => {
   }
 
   const updated = db.prepare('SELECT * FROM devices WHERE id = ?').get(req.params.id);
-  res.json(updated);
+  res.json(stripDeviceSecrets(updated));
 });
 
 // Delete device

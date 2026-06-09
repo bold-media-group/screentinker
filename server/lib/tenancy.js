@@ -8,7 +8,8 @@
 //   req.organizationId   string | null   parent org of req.workspace
 //   req.workspaceRole    string | null   'workspace_admin' | 'workspace_editor' | 'workspace_viewer'
 //   req.orgRole          string | null   'org_owner' | 'org_admin'
-//   req.isPlatformAdmin  boolean         shortcut for req.user.role === 'platform_admin'
+//   req.isPlatformAdmin  boolean         true when req.user.role is a platform-owner role
+//                                        (isPlatformRole: platform_admin / legacy superadmin)
 //   req.actingAs         boolean         true when the user reached this workspace via
 //                                        org-level or platform-level access rather than
 //                                        a direct workspace_members row
@@ -26,6 +27,7 @@
 'use strict';
 
 const { db } = require('../db/database');
+const { isPlatformRole, isPlatformStaff } = require('../middleware/auth');
 
 function membershipOf(userId, workspaceId) {
   return db.prepare(
@@ -55,10 +57,9 @@ function firstAccessibleWorkspace(userId) {
 }
 
 // Check whether userId can access workspace via any path (member, org admin,
-// or platform admin). Returns the access context: { workspaceRole, actingAs }
+// or platform staff). Returns the access context: { workspaceRole, actingAs }
 // or null if no access.
 function accessContext(userId, role, workspace) {
-  const isPlatformAdmin = role === 'platform_admin';
   const wsMembership = membershipOf(userId, workspace.id);
   if (wsMembership) {
     return { workspaceRole: wsMembership.role, actingAs: false };
@@ -67,7 +68,13 @@ function accessContext(userId, role, workspace) {
   if (orgMembership && (orgMembership.role === 'org_owner' || orgMembership.role === 'org_admin')) {
     return { workspaceRole: null, actingAs: true };
   }
-  if (isPlatformAdmin) {
+  // #14: isPlatformRole (not a bare === 'platform_admin') so a legacy
+  // 'superadmin' can act-as too. #13: isPlatformStaff additionally lets
+  // platform_operator act-as into any org. actingAs:true (workspaceRole null)
+  // is what skips the viewer-deny on resource writes, so staff get read/write
+  // in any workspace - while canAdmin()/canAdminWorkspace() stay owner-gated,
+  // so operators still can't perform workspace-admin actions.
+  if (isPlatformStaff(role)) {
     return { workspaceRole: null, actingAs: true };
   }
   return null;
@@ -79,8 +86,15 @@ function resolveTenancy(req, res, next) {
     return next();
   }
 
-  const isPlatformAdmin = req.user.role === 'platform_admin';
+  // isPlatformAdmin = OWNER tier (drives canAdmin/canWrite owner short-circuits).
+  // isPlatformStaff = OWNER + platform_operator; drives cross-org visibility and
+  // act-as only. Operators get isPlatformStaff=true but isPlatformAdmin=false,
+  // so they can see/act-as everywhere yet hold no owner power (#13).
+  const isPlatformAdmin = isPlatformRole(req.user.role);
+  const isPlatformStaffUser = isPlatformStaff(req.user.role);
   req.isPlatformAdmin = isPlatformAdmin;
+  req.isPlatformOperator = isPlatformStaffUser && !isPlatformAdmin;
+  req.isPlatformStaff = isPlatformStaffUser;
 
   // Build the ordered candidate list of workspace_ids to try.
   const candidates = [];
@@ -108,8 +122,11 @@ function resolveTenancy(req, res, next) {
       workspace = first;
       const wm = membershipOf(req.user.id, first.id);
       context = { workspaceRole: wm.role, actingAs: false };
-    } else if (isPlatformAdmin) {
-      // Platform admin with no direct memberships: pick any workspace (acting-as).
+    } else if (isPlatformStaffUser) {
+      // Platform staff (admin or operator) with no direct memberships: pick any
+      // workspace (acting-as) so they land in a usable context. #13: operators
+      // included here too - they have no memberships of their own but must be
+      // able to act-as across orgs.
       const any = db.prepare('SELECT * FROM workspaces LIMIT 1').get();
       if (any) {
         workspace = any;
@@ -147,7 +164,9 @@ function resolveTenancy(req, res, next) {
 // rather than reusing this helper (different shape needs).
 function accessibleWorkspaceIds(userId, role) {
   if (!userId) return [];
-  if (role === 'platform_admin' || role === 'superadmin') {
+  // #13: platform staff (admin OR operator) see every workspace - visibility,
+  // not an owner power.
+  if (isPlatformStaff(role)) {
     return db.prepare('SELECT id FROM workspaces').all().map(r => r.id);
   }
   return db.prepare(`

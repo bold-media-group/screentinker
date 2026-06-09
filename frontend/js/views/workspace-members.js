@@ -12,6 +12,7 @@ import { api } from '../api.js';
 import { t } from '../i18n.js';
 import { showToast } from '../components/toast.js';
 import { openInviteMemberModal } from '../components/workspace-members-invite-modal.js';
+import { openAddUserModal } from '../components/workspace-members-add-user-modal.js';
 
 export async function render(container, workspaceId) {
   container.innerHTML = `
@@ -62,15 +63,29 @@ export async function render(container, workspaceId) {
     }
   }
 
-  // Invite button - admin only, opens modal.
+  // Invite + Add User buttons - admin only. Invite is self-service (emails a
+  // link); Add User (#10) provisions an account directly with an admin-set
+  // password (for instances with no outbound email). They coexist.
   if (canAdmin) {
     headerActions.innerHTML = `
-      <button class="btn btn-primary" id="inviteMemberBtn">${t('members.button.invite')}</button>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-secondary" id="addUserBtn">${t('members.button.add_user')}</button>
+        <button class="btn btn-primary" id="inviteMemberBtn">${t('members.button.invite')}</button>
+      </div>
     `;
     document.getElementById('inviteMemberBtn').addEventListener('click', () => {
       openInviteMemberModal({ id: workspaceId, name: workspaceName }, {
         onSuccess: (result) => {
           showToast(t('members.success.invite_sent', { email: result.email }), 'success');
+          render(container, workspaceId);
+        },
+        mapError: mapMutationError,
+      });
+    });
+    document.getElementById('addUserBtn').addEventListener('click', () => {
+      openAddUserModal({ id: workspaceId, name: workspaceName }, {
+        onSuccess: (result) => {
+          showToast(t('members.success.user_created', { email: result.email }), 'success');
           render(container, workspaceId);
         },
         mapError: mapMutationError,
@@ -264,6 +279,9 @@ export function mapMutationError(err) {
   if (/Cannot demote the last admin/i.test(msg)) return t('members.error.last_admin_demote');
   if (/Cannot remove the last admin/i.test(msg)) return t('members.error.last_admin_remove');
   if (/already a member/i.test(msg)) return t('members.error.already_member');
+  // #10 Add User: duplicate email + weak password.
+  if (/user with that email already exists/i.test(msg)) return t('members.error.user_exists');
+  if (/at least 8 characters/i.test(msg)) return t('members.error.password_min_8');
   if (/Valid email required/i.test(msg)) return t('members.error.invalid_email');
   if (/Cannot remove the organization owner/i.test(msg)) return t('members.error.org_owner_remove');
   if (/Email send failed/i.test(msg)) return t('members.error.email_send_failed');

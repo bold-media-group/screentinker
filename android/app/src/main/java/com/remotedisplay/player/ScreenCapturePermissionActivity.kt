@@ -6,7 +6,7 @@ import android.content.Intent
 import android.media.projection.MediaProjectionManager
 import android.os.Bundle
 import android.util.Log
-import com.remotedisplay.player.service.ScreenCaptureService
+import com.remotedisplay.player.service.MediaProjectionService
 
 /**
  * Transparent activity that requests MediaProjection permission.
@@ -50,8 +50,11 @@ class ScreenCapturePermissionActivity : Activity() {
                 Companion.resultData = data?.clone() as? Intent
                 Companion.hasPermission = true
 
-                // Tell the service to start the projection
-                ScreenCaptureService.startProjection(this, resultCode, data)
+                // #5: hand the consent to the dedicated mediaProjection foreground
+                // service. It must enter the foreground with the mediaProjection FGS
+                // type BEFORE getMediaProjection() on Android 14+ - an Activity can't
+                // do that, so we can't call getMediaProjection() directly here.
+                MediaProjectionService.start(this, resultCode, data)
 
                 getSharedPreferences("remote_display", MODE_PRIVATE)
                     .edit().putBoolean("screen_capture_granted", true).apply()

@@ -58,6 +58,11 @@ body {
   display: block; padding: 8px 10px;
   color: var(--text-muted); font-size: 12px; font-style: italic;
 }
+/* #19: single-workspace view - name + always-visible manage icons (no dropdown). */
+.workspace-switcher-single { display: flex; align-items: center; gap: 4px; }
+.workspace-switcher-single .workspace-switcher-static { flex: 1; min-width: 0; }
+.workspace-switcher-single .workspace-switcher-members,
+.workspace-switcher-single .workspace-switcher-pencil { visibility: visible; align-self: end; }
 .workspace-switcher-button .chev {
   flex-shrink: 0; margin-left: 8px; color: var(--text-muted);
   transition: transform var(--transition);
@@ -76,6 +81,21 @@ body {
   max-height: 360px; padding: 4px 0; overflow-y: auto; z-index: 100;
 }
 .workspace-switcher.open .workspace-switcher-menu { display: block; }
+/* #16: sticky type-to-filter search header inside the (scrolling) menu. */
+.workspace-switcher-search {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--bg-card); padding: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.workspace-switcher-search input {
+  width: 100%; box-sizing: border-box; padding: 6px 8px;
+  background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text-primary); font-size: 13px;
+}
+.workspace-switcher-search input:focus { outline: none; border-color: var(--accent); }
+.workspace-switcher-noresults {
+  padding: 12px; color: var(--text-muted); font-size: 13px; text-align: center;
+}
 .workspace-switcher-item {
   display: flex; align-items: center; gap: 8px;
   padding: 8px 12px; cursor: pointer;
@@ -84,6 +104,8 @@ body {
 }
 .workspace-switcher-item:last-child { border-bottom: none; }
 .workspace-switcher-item:hover { background: var(--bg-input); }
+/* keyboard-cursor highlight (arrow keys) - same surface as hover */
+.workspace-switcher-item.highlighted { background: var(--bg-input); }
 .workspace-switcher-item.current { font-weight: 600; }
 .workspace-switcher-item .check {
   flex-shrink: 0; color: var(--accent); width: 14px;
