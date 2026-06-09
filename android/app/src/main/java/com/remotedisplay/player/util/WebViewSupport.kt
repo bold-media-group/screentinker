@@ -23,6 +23,12 @@ import android.webkit.WebViewClient
 object WebViewSupport {
 
     const val YT_BASE = "https://www.youtube.com"
+    // Base URL the embed page is loaded under (its referrer to YouTube). It must be
+    // a normal embedding site, NOT youtube.com itself — a page claiming to be
+    // youtube.com embedding a youtube.com iframe is rejected as an invalid embed
+    // context ("This video is unavailable / Error 152"). A real third-party domain
+    // is what legitimate embeds use.
+    const val EMBED_BASE = "https://screentinker.com"
 
     fun configure(webView: WebView, tag: String) {
         webView.settings.apply {

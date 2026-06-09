@@ -59,7 +59,7 @@ class MediaPlayerManager(
             setBackgroundColor(android.graphics.Color.BLACK)
             // Load via an embed wrapper with a valid youtube.com origin (Error 153 fix).
             val html = com.remotedisplay.player.util.WebViewSupport.youtubeEmbedHtml(embedUrl)
-            if (html != null) loadDataWithBaseURL(com.remotedisplay.player.util.WebViewSupport.YT_BASE, html, "text/html", "UTF-8", null)
+            if (html != null) loadDataWithBaseURL(com.remotedisplay.player.util.WebViewSupport.EMBED_BASE, html, "text/html", "UTF-8", null)
             else loadUrl(embedUrl)
         }
     }

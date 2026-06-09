@@ -159,7 +159,7 @@ class ZoneManager(
             mimeType == "video/youtube" && !remoteUrl.isNullOrEmpty() -> {
                 val webView = createWebView()
                 val html = com.remotedisplay.player.util.WebViewSupport.youtubeEmbedHtml(remoteUrl)
-                if (html != null) webView.loadDataWithBaseURL(com.remotedisplay.player.util.WebViewSupport.YT_BASE, html, "text/html", "UTF-8", null)
+                if (html != null) webView.loadDataWithBaseURL(com.remotedisplay.player.util.WebViewSupport.EMBED_BASE, html, "text/html", "UTF-8", null)
                 else webView.loadUrl(remoteUrl)
                 webView.layoutParams = params
                 container.addView(webView); zoneViews[zone.id] = webView
