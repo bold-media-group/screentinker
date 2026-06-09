@@ -360,6 +360,9 @@ async function openAiSettings() {
           <input id="aiImageBaseUrl" class="input" value="${esc(cur.image_base_url || '')}" placeholder="http://localhost:8080/v1  ·  http://localhost:8188" style="width:100%"></div>
         <div class="form-group"><label>${t('designer.ai.image_model')}</label>
           <input id="aiImageModel" class="input" value="${esc(cur.image_model || '')}" placeholder="${t('designer.ai.image_model_ph')}" style="width:100%"></div>
+        <div class="form-group"><label>${t('designer.ai.image_api_key')}</label>
+          <input id="aiImageKey" class="input" type="password" autocomplete="off" placeholder="${cur.has_image_key ? t('designer.ai.key_set') : t('designer.ai.image_key_ph')}" style="width:100%">
+          <div style="font-size:11px;color:var(--text-muted);margin-top:4px">${t('designer.ai.image_key_hint')}</div></div>
         <div id="aiSettingsErr" style="display:none;color:var(--danger);font-size:13px;margin-top:8px"></div>
       </div>
       <div class="modal-footer">
@@ -406,6 +409,8 @@ async function openAiSettings() {
     };
     const key = overlay.querySelector('#aiKey').value;
     if (key) data.api_key = key;
+    const imgKey = overlay.querySelector('#aiImageKey').value;
+    if (imgKey) data.image_api_key = imgKey;
     try {
       await api.aiSaveSettings(data);
       showToast(t('designer.ai.saved'), 'success');

@@ -179,6 +179,8 @@ const migrations = [
   "ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0",
   // #41 Phase 2: which image backend the workspace's image endpoint speaks.
   "ALTER TABLE ai_settings ADD COLUMN image_provider TEXT",
+  // #41: optional separate key for the image endpoint (for local-LLM + cloud-image setups).
+  "ALTER TABLE ai_settings ADD COLUMN image_api_key_enc TEXT",
 ];
 // Apply each ALTER idempotently. A "duplicate column name" / "already exists"
 // error means the column is already present (expected on a migrated DB) - benign.

@@ -402,6 +402,7 @@ CREATE TABLE IF NOT EXISTS ai_settings (
     image_base_url  TEXT,
     image_model     TEXT,
     image_provider  TEXT,
+    image_api_key_enc TEXT,
     updated_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
 
