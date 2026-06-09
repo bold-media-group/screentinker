@@ -116,10 +116,32 @@ router.put('/:id', (req, res) => {
   if (!layout) return;
   if (layout.is_template && !PLATFORM_ROLES.includes(req.user.role)) return res.status(403).json({ error: 'Cannot edit templates' });
 
-  const { name, width, height } = req.body;
-  if (name) db.prepare('UPDATE layouts SET name = ?, updated_at = strftime(\'%s\',\'now\') WHERE id = ?').run(name, req.params.id);
-  if (width) db.prepare('UPDATE layouts SET width = ? WHERE id = ?').run(width, req.params.id);
-  if (height) db.prepare('UPDATE layouts SET height = ? WHERE id = ?').run(height, req.params.id);
+  const { name, width, height, zones } = req.body;
+  const txn = db.transaction(() => {
+    if (name) db.prepare('UPDATE layouts SET name = ?, updated_at = strftime(\'%s\',\'now\') WHERE id = ?').run(name, req.params.id);
+    if (width) db.prepare('UPDATE layouts SET width = ? WHERE id = ?').run(width, req.params.id);
+    if (height) db.prepare('UPDATE layouts SET height = ? WHERE id = ?').run(height, req.params.id);
+
+    // Atomic zone replace: the editor sends the FULL desired set, so the layout
+    // ends up with EXACTLY those zones - no accumulation from a per-zone
+    // delete/add loop. Reuse each zone's id when supplied so device->zone
+    // assignments survive an edit (a fresh uuid per save would orphan them).
+    if (Array.isArray(zones)) {
+      db.prepare('DELETE FROM layout_zones WHERE layout_id = ?').run(req.params.id);
+      const stmt = db.prepare(`
+        INSERT INTO layout_zones (id, layout_id, name, x_percent, y_percent, width_percent, height_percent, z_index, zone_type, fit_mode, background_color, sort_order)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      zones.forEach((z, i) => {
+        stmt.run(z.id || uuidv4(), req.params.id, z.name || `Zone ${i + 1}`,
+          z.x_percent || 0, z.y_percent || 0, z.width_percent || 100, z.height_percent || 100,
+          z.z_index || 0, z.zone_type || 'content', z.fit_mode || 'contain',
+          z.background_color || '#000000', i);
+      });
+      db.prepare('UPDATE layouts SET updated_at = strftime(\'%s\',\'now\') WHERE id = ?').run(req.params.id);
+    }
+  });
+  txn();
 
   const updated = db.prepare('SELECT * FROM layouts WHERE id = ?').get(req.params.id);
   updated.zones = db.prepare('SELECT * FROM layout_zones WHERE layout_id = ? ORDER BY sort_order').all(req.params.id);

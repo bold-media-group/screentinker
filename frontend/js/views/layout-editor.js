@@ -293,15 +293,21 @@ async function renderEditor(container, layoutId) {
 
   document.getElementById('saveLayoutBtn').onclick = async () => {
     try {
-      for (const z of layout.zones || []) {
-        await API(`/layouts/${layoutId}/zones/${z.id}`, { method: 'DELETE' });
-      }
-      for (const z of zones) {
-        await API(`/layouts/${layoutId}/zones`, { method: 'POST', body: JSON.stringify(z) });
-      }
+      // Single atomic update: send the full zone set and the server replaces them
+      // exactly. The old per-zone delete-then-add loop could accumulate zones
+      // (and regenerated every zone id each save). Keep each zone's id so
+      // device->zone assignments survive.
+      const updated = await API(`/layouts/${layoutId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ zones }),
+      });
+      if (updated && updated.error) { showToast(updated.error, 'error'); return; }
+      layout = updated;
+      zones = layout.zones || [];
+      selectedZone = null;
       showToast(t('layout.toast.saved'), 'success');
-      layout = await API(`/layouts/${layoutId}`);
-      zones = layout.zones;
+      renderZones();
+      updateProperties();
     } catch (err) {
       showToast(err.message, 'error');
     }

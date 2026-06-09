@@ -719,6 +719,40 @@ function pruneScreenshots(deviceId) {
   `).run(deviceId, deviceId);
 }
 
+// De-duplicate built-in template zones. A prior layout-editor save regenerated
+// every zone id on save; schema.sql's INSERT OR IGNORE then re-seeded the
+// canonical zone on the next boot, so template layouts accumulated positional
+// duplicates (e.g. a 2-zone split template grew to 4+). For each position in a
+// template, keep ONE zone, preferring the canonical seeded id (the built-in
+// template zones use 'z-...' ids; bug copies are uuids) so schema.sql's re-seed
+// stays an idempotent no-op; tiebreak by earliest rowid. One-time; the atomic
+// id-preserving save prevents recurrence.
+try {
+  const DEDUPE_ID = 'dedupe_template_zones_v1';
+  if (!db.prepare('SELECT 1 FROM schema_migrations WHERE id = ?').get(DEDUPE_ID)) {
+    const removed = db.prepare(`
+      DELETE FROM layout_zones WHERE id IN (
+        SELECT z.id FROM layout_zones z
+        JOIN layouts l ON l.id = z.layout_id
+        WHERE l.is_template = 1 AND EXISTS (
+          SELECT 1 FROM layout_zones z2
+          WHERE z2.layout_id = z.layout_id AND z2.id != z.id
+            AND z2.x_percent = z.x_percent AND z2.y_percent = z.y_percent
+            AND z2.width_percent = z.width_percent AND z2.height_percent = z.height_percent
+            AND (
+              -- z2 is canonical and z is not -> keep z2, drop z
+              (z2.id LIKE 'z-%' AND z.id NOT LIKE 'z-%')
+              -- same canonical-ness -> keep the earliest, drop the rest
+              OR ((CASE WHEN z2.id LIKE 'z-%' THEN 1 ELSE 0 END) = (CASE WHEN z.id LIKE 'z-%' THEN 1 ELSE 0 END) AND z2.rowid < z.rowid)
+            )
+        )
+      )
+    `).run().changes;
+    if (removed > 0) console.log(`[migrate] removed ${removed} duplicate template zone(s)`);
+    db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(DEDUPE_ID);
+  }
+} catch (e) { console.error('[migrate] template-zone dedupe failed:', e.message); }
+
 // #37: fail fast (loud) if migrations left the DB missing schema the code needs.
 const { verifyAndRepairSchema } = require('../lib/schema-check');
 verifyAndRepairSchema(db);
