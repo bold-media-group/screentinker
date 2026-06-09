@@ -8,6 +8,7 @@ import android.util.DisplayMetrics
 import android.util.Log
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 
 class PowerAccessibilityService : AccessibilityService() {
 
@@ -22,7 +23,53 @@ class PowerAccessibilityService : AccessibilityService() {
         Log.i(TAG, "Service connected")
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+    private var lastConfirm = 0L
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        val pkg = event?.packageName?.toString() ?: return
+        // Auto-confirm the system app-update dialog so OTA updates apply unattended
+        // on kiosk screens (no one is there to tap "Update"). Scoped to the package
+        // installer only, so this never touches anything else.
+        if (!pkg.contains("packageinstaller", ignoreCase = true)) return
+        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+            event.eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) return
+        autoConfirmInstall()
+    }
+
+    private fun autoConfirmInstall() {
+        val now = System.currentTimeMillis()
+        if (now - lastConfirm < 1500) return // debounce repeated content events
+        val root = rootInActiveWindow ?: return
+        // Positive button by resource id first (locale-independent), then by label.
+        val ids = listOf(
+            "com.google.android.packageinstaller:id/ok_button",
+            "com.android.packageinstaller:id/ok_button",
+            "android:id/button1"
+        )
+        for (id in ids) {
+            for (n in root.findAccessibilityNodeInfosByViewId(id)) {
+                if (clickButton(n)) { lastConfirm = now; Log.i(TAG, "Auto-confirmed install via $id"); return }
+            }
+        }
+        for (label in listOf("Update", "Install", "Reinstall", "Continue")) {
+            for (n in root.findAccessibilityNodeInfosByText(label)) {
+                if (clickButton(n)) { lastConfirm = now; Log.i(TAG, "Auto-confirmed install via '$label'"); return }
+            }
+        }
+    }
+
+    // Click the node or its nearest clickable+enabled ancestor (the button).
+    private fun clickButton(node: AccessibilityNodeInfo?): Boolean {
+        var cur = node
+        var depth = 0
+        while (cur != null && depth < 4) {
+            if (cur.isClickable && cur.isEnabled) return cur.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            cur = cur.parent
+            depth++
+        }
+        return false
+    }
+
     override fun onInterrupt() {}
 
     // Global actions

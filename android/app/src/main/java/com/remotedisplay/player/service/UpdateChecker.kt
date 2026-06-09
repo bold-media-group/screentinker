@@ -37,8 +37,45 @@ class UpdateChecker(private val context: Context) {
     // Check every 30 minutes
     private val CHECK_INTERVAL = 30 * 60 * 1000L
 
+    private var installReceiverRegistered = false
+
+    // The PackageInstaller session reports its status (incl. STATUS_PENDING_USER_ACTION,
+    // which Android 13+ returns for non-device-owner installers) via this broadcast.
+    // Without handling it the committed session just stalls and the update never
+    // installs. On the action prompt we launch the confirm dialog; the accessibility
+    // service auto-confirms it on kiosks.
+    private fun ensureInstallReceiver() {
+        if (installReceiverRegistered) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context, intent: Intent) {
+                when (intent.getIntExtra(android.content.pm.PackageInstaller.EXTRA_STATUS, -999)) {
+                    android.content.pm.PackageInstaller.STATUS_PENDING_USER_ACTION -> {
+                        val confirm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+                            intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
+                        else @Suppress("DEPRECATION") intent.getParcelableExtra(Intent.EXTRA_INTENT)
+                        if (confirm != null) {
+                            confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            try { context.startActivity(confirm); Log.i(TAG, "Launched install confirmation") }
+                            catch (e: Exception) { Log.e(TAG, "Confirm launch failed: ${e.message}") }
+                        }
+                    }
+                    android.content.pm.PackageInstaller.STATUS_SUCCESS -> Log.i(TAG, "Update installed successfully")
+                    else -> Log.w(TAG, "Install status: ${intent.getStringExtra(android.content.pm.PackageInstaller.EXTRA_STATUS_MESSAGE)}")
+                }
+            }
+        }
+        val filter = IntentFilter("com.remotedisplay.player.INSTALL_COMPLETE")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag") context.registerReceiver(receiver, filter)
+        }
+        installReceiverRegistered = true
+    }
+
     fun startPeriodicCheck() {
         stopPeriodicCheck()
+        ensureInstallReceiver()
         checkTimer = object : Runnable {
             override fun run() {
                 checkForUpdate()
