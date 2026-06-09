@@ -331,7 +331,12 @@ async function openAiSettings() {
         <div class="form-group"><label>${t('designer.ai.base_url')}</label>
           <input id="aiBaseUrl" class="input" value="${esc(cur.base_url || '')}" placeholder="https://api.openai.com/v1  ·  http://localhost:11434/v1" style="width:100%"></div>
         <div class="form-group"><label>${t('designer.ai.model')}</label>
-          <input id="aiModel" class="input" value="${esc(cur.model || '')}" placeholder="gpt-4o-mini  ·  llama3.1:8b" style="width:100%"></div>
+          <div style="display:flex;gap:6px">
+            <input id="aiModel" class="input" list="aiModelList" value="${esc(cur.model || '')}" placeholder="gpt-4o-mini  ·  llama3.1:8b" style="flex:1" autocomplete="off">
+            <button class="btn btn-secondary btn-sm" id="aiLoadModels" type="button" style="white-space:nowrap">${t('designer.ai.load_models')}</button>
+          </div>
+          <datalist id="aiModelList"></datalist>
+          <div id="aiModelMsg" style="font-size:11px;color:var(--text-muted);margin-top:4px"></div></div>
         <div class="form-group"><label>${t('designer.ai.api_key')}</label>
           <input id="aiKey" class="input" type="password" autocomplete="off" placeholder="${cur.has_key ? t('designer.ai.key_set') : t('designer.ai.key_placeholder')}" style="width:100%">
           <div style="font-size:11px;color:var(--text-muted);margin-top:4px">${t('designer.ai.key_hint')}</div></div>
@@ -346,6 +351,29 @@ async function openAiSettings() {
   const close = () => overlay.remove();
   overlay.querySelectorAll('[data-ai-close]').forEach(b => b.onclick = close);
   overlay.onclick = (e) => { if (e.target === overlay) close(); };
+
+  // Load the model list from the entered endpoint into the dropdown.
+  overlay.querySelector('#aiLoadModels').onclick = async () => {
+    const msg = overlay.querySelector('#aiModelMsg');
+    const base_url = overlay.querySelector('#aiBaseUrl').value.trim();
+    if (!base_url) { msg.style.color = 'var(--danger)'; msg.textContent = t('designer.ai.need_base_url'); return; }
+    const btn = overlay.querySelector('#aiLoadModels');
+    btn.disabled = true;
+    msg.style.color = 'var(--text-muted)'; msg.textContent = t('designer.ai.loading_models');
+    try {
+      const r = await api.aiListModels(base_url, overlay.querySelector('#aiKey').value || undefined);
+      const models = r.models || [];
+      overlay.querySelector('#aiModelList').innerHTML = models.map(m => `<option value="${esc(m)}"></option>`).join('');
+      const modelInput = overlay.querySelector('#aiModel');
+      if (models.length && !modelInput.value) modelInput.value = models[0];
+      msg.textContent = t('designer.ai.models_loaded', { n: models.length });
+    } catch (e2) {
+      msg.style.color = 'var(--danger)'; msg.textContent = (e2 && e2.message) || t('designer.ai.models_failed');
+    } finally {
+      btn.disabled = false;
+    }
+  };
+
   overlay.querySelector('#aiSaveSettings').onclick = async () => {
     const errEl = overlay.querySelector('#aiSettingsErr');
     errEl.style.display = 'none';

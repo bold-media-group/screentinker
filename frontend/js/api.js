@@ -184,6 +184,7 @@ export const api = {
   aiGetSettings: () => request('/ai/settings'),
   aiSaveSettings: (data) => request('/ai/settings', { method: 'PUT', body: JSON.stringify(data) }),
   aiGenerateDesign: (prompt) => request('/ai/generate-design', { method: 'POST', body: JSON.stringify({ prompt }) }),
+  aiListModels: (base_url, api_key) => request('/ai/models', { method: 'POST', body: JSON.stringify({ base_url, api_key }) }),
 
   // Instance-level default branding (#15, platform admin).
   adminGetBranding: () => request('/admin/branding'),

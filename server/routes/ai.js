@@ -110,6 +110,31 @@ router.put('/settings', (req, res) => {
   res.json({ ok: true });
 });
 
+// POST /api/ai/models — list the models the configured/entered endpoint offers,
+// for the settings dropdown. Admin only. Uses the posted key, or the saved one.
+router.post('/models', async (req, res) => {
+  if (!isWorkspaceAdmin(req)) return res.status(403).json({ error: 'Workspace admin required' });
+  const base_url = String(req.body && req.body.base_url || '').trim().replace(/\/+$/, '');
+  if (!base_url) return res.status(400).json({ error: 'Endpoint base URL required' });
+  if (!endpointAllowed(base_url)) return res.status(400).json({ error: 'Endpoint URL not allowed (private/internal addresses are blocked on this instance).' });
+  let key = (req.body && typeof req.body.api_key === 'string' && req.body.api_key.length) ? req.body.api_key : null;
+  if (!key) { const row = db.prepare('SELECT api_key_enc FROM ai_settings WHERE workspace_id = ?').get(req.workspaceId); key = (row && decrypt(row.api_key_enc)) || 'none'; }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  let r;
+  try {
+    r = await fetch(base_url + '/models', { headers: { Authorization: `Bearer ${key}` }, signal: controller.signal });
+  } catch (e) {
+    clearTimeout(timer);
+    return res.status(502).json({ error: 'Could not reach the endpoint: ' + (e.name === 'AbortError' ? 'timed out' : e.message) });
+  }
+  clearTimeout(timer);
+  if (!r.ok) { const t = await r.text().catch(() => ''); return res.status(502).json({ error: `Endpoint error ${r.status}: ${t.slice(0, 120)}` }); }
+  let j; try { j = await r.json(); } catch { return res.status(502).json({ error: 'Endpoint returned non-JSON.' }); }
+  const models = Array.isArray(j && j.data) ? j.data.map(m => m && m.id).filter(Boolean) : [];
+  res.json({ models: models.slice(0, 300) });
+});
+
 // POST /api/ai/generate-design — editor+; proxies the workspace's endpoint
 router.post('/generate-design', async (req, res) => {
   if (!canEdit(req)) return res.status(403).json({ error: 'Editor access required' });
@@ -123,7 +148,7 @@ router.post('/generate-design', async (req, res) => {
   const key = decrypt(row.api_key_enc) || 'none';
   const url = row.base_url.replace(/\/+$/, '') + '/chat/completions';
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 120000);
+  const timer = setTimeout(() => controller.abort(), 180000); // local models can be slow
   let aiRes;
   try {
     aiRes = await fetch(url, {
