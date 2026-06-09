@@ -117,6 +117,7 @@ class ZoneManager(
             val widgetConfig = if (firstAssignment.isNull("widget_config")) null else firstAssignment.optString("widget_config", null)
             val contentId = if (firstAssignment.isNull("content_id")) null else firstAssignment.optString("content_id", null)
             val filepath = firstAssignment.optString("filepath", "")
+            com.remotedisplay.player.util.DebugLog.i("Zone", "Zone '${zone.name}' (${zone.widthPercent.toInt()}x${zone.heightPercent.toInt()}%) -> ${widgetType?.let { "widget:$it" } ?: mimeType.ifEmpty { "empty" }}")
             val isMuted = firstAssignment.optInt("muted", 0) == 1
 
             when {

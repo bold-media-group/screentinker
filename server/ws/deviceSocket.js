@@ -529,6 +529,22 @@ module.exports = function setupDeviceSocket(io) {
       emitToDeviceWorkspace(dashboardNs, currentDeviceId, 'dashboard:playback-state', data);
     });
 
+    // Live debug log line from the player (only sent when debug logging is toggled
+    // on for this device). Relayed to the device's workspace dashboard room so the
+    // open device-detail screen can stream it. Not persisted.
+    socket.on('device:log', (data) => {
+      if (!requireDeviceAuth() || !currentDeviceId) return;
+      const message = typeof data?.message === 'string' ? data.message.slice(0, 2000) : '';
+      if (!message) return;
+      emitToDeviceWorkspace(dashboardNs, currentDeviceId, 'dashboard:device-log', {
+        device_id: currentDeviceId,
+        tag: typeof data?.tag === 'string' ? data.tag.slice(0, 64) : '',
+        level: typeof data?.level === 'string' ? data.level.slice(0, 8) : 'd',
+        message,
+        ts: Date.now(),
+      });
+    });
+
     // Play event logging (proof-of-play)
     socket.on('device:play-event', (data) => {
       if (!requireDeviceAuth()) return;

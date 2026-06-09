@@ -286,6 +286,8 @@ export default {
   'device.form.default_content_none': 'None (show "Waiting...")',
   'device.form.notes_label': 'Notes',
   'device.form.notes_placeholder': 'Location, setup details, etc.',
+  'device.debug.toggle': 'Debug logging (live)',
+  'device.debug.hint': 'Streams player/zone logs from this device in real time. Turns off on its own when the device reconnects.',
   'device.form.save_settings': 'Save Settings',
   // Control buttons
   'device.ctl.reboot_device': 'Reboot Device',

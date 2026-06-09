@@ -229,6 +229,7 @@ class MainActivity : AppCompatActivity() {
                 }.sorted().joinToString("|")
                 val changed = assignmentSig != zoneManager?.lastAssignmentSig
 
+                com.remotedisplay.player.util.DebugLog.i("Player", "Layout: MULTI-ZONE (${layoutZones.length()} zones, layout=$layoutId), ${assignments.length()} assignments")
                 if (zoneManager?.hasZones() != true || layoutId != currentLayoutId) {
                     Log.i("MainActivity", "Multi-zone layout with ${layoutZones.length()} zones (layout=$layoutId, was=$currentLayoutId)")
                     handler.post {
@@ -252,6 +253,7 @@ class MainActivity : AppCompatActivity() {
                 }
             } else {
                 // Single-zone mode - use PlaylistController (existing behavior)
+                com.remotedisplay.player.util.DebugLog.i("Player", "Layout: SINGLE/FULLSCREEN (${layoutZones?.length() ?: 0} zones), ${assignments.length()} assignments")
                 if (zoneManager?.hasZones() == true) handler.post { zoneManager?.cleanup() }
                 playlistController.updatePlaylist(assignments)
             }
@@ -420,6 +422,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun playItem(item: PlaylistItem) {
         hideStatus()
+        com.remotedisplay.player.util.DebugLog.i("Player", "playItem: ${item.filename} mime=${item.mimeType} widget=${item.widgetId ?: "-"} zone=fullscreen")
 
         // Widget content - render fullscreen in a WebView (single-zone / fullscreen
         // layouts; multi-zone widgets go through ZoneManager). Previously unhandled,
