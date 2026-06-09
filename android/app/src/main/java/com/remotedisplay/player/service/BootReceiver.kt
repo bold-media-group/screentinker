@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import android.app.NotificationManager
@@ -33,18 +34,31 @@ class BootReceiver : BroadcastReceiver() {
                 Log.e("BootReceiver", "Failed to start service: ${e.message}")
             }
 
-            // Use a full-screen intent to launch the activity (bypasses Android 12+ restrictions)
-            try {
-                val launchIntent = Intent(context, MainActivity::class.java).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                }
+            val launchIntent = Intent(context, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }
 
+            // Primary: with "display over other apps" granted, a direct background
+            // startActivity is permitted — the most reliable launch, and the one that
+            // works on Android TV where you can't set a home launcher.
+            if (Settings.canDrawOverlays(context)) {
+                try {
+                    context.startActivity(launchIntent)
+                    Log.i("BootReceiver", "Direct launch (overlay permission)")
+                } catch (e: Exception) {
+                    Log.e("BootReceiver", "Direct launch failed: ${e.message}")
+                }
+            }
+
+            // Fallback: full-screen-intent notification (covers a locked screen / when
+            // the overlay permission isn't granted).
+            try {
                 val pendingIntent = PendingIntent.getActivity(
                     context, 0, launchIntent,
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                 )
 
-                val notification = NotificationCompat.Builder(context, RemoteDisplayApp.CHANNEL_ID)
+                val notification = NotificationCompat.Builder(context, RemoteDisplayApp.BOOT_CHANNEL_ID)
                     .setContentTitle("ScreenTinker")
                     .setContentText("Starting display...")
                     .setSmallIcon(android.R.drawable.ic_media_play)

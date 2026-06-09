@@ -11,8 +11,8 @@ android {
         applicationId = "com.remotedisplay.player"
         minSdk = 26
         targetSdk = 34
-        versionCode = 13
-        versionName = "1.7.10"
+        versionCode = 14
+        versionName = "1.7.11"
     }
 
     signingConfigs {
