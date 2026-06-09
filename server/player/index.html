@@ -309,6 +309,16 @@
     function loadPlaylistCache() {
       try { return JSON.parse(localStorage.getItem(PLAYLIST_CACHE_KEY) || '[]'); } catch { return []; }
     }
+    // Cache the layout alongside the playlist so a cold start renders the correct
+    // zone layout on the FIRST pass, instead of rendering fullscreen and only
+    // switching to zones once the server payload arrives.
+    const LAYOUT_CACHE_KEY = 'rd_layout_cache';
+    function saveLayoutCache(l) {
+      try { localStorage.setItem(LAYOUT_CACHE_KEY, JSON.stringify(l || null)); } catch {}
+    }
+    function loadLayoutCache() {
+      try { return JSON.parse(localStorage.getItem(LAYOUT_CACHE_KEY) || 'null'); } catch { return null; }
+    }
 
     // ==================== State ====================
     let socket = null;
@@ -512,6 +522,9 @@
       if (cachedPlaylist.length > 0) {
         console.log('Restored cached playlist:', cachedPlaylist.length, 'items');
         playlist = cachedPlaylist;
+        // Restore the cached layout too, so the first render is already zoned
+        // (otherwise the cold start shows fullscreen until the payload arrives).
+        layout = loadLayoutCache();
         currentIndex = 0;
         isPlaying = true;
         document.getElementById('setupScreen').style.display = 'none';
@@ -1056,6 +1069,7 @@
       }
 
       layout = data.layout || null;
+      saveLayoutCache(layout);
 
       if (newFp === oldFp && playlist.length > 0 && !wallChanged) {
         console.log('Playlist unchanged');
@@ -1726,6 +1740,7 @@
         if (confirm('Reset player and return to setup?')) {
           localStorage.removeItem(STORAGE_KEY);
           localStorage.removeItem(PLAYLIST_CACHE_KEY);
+          localStorage.removeItem(LAYOUT_CACHE_KEY);
           location.reload();
         }
       }
