@@ -26,8 +26,9 @@ test('normalizeDesign: keeps valid text+shape, sets background', () => {
   ]});
   assert.equal(d.background, '#102030');
   assert.equal(d.elements.length, 2);
-  assert.equal(d.elements[0].text, 'HELLO');
-  assert.equal(d.elements[0].fontFamily, 'Arial');
+  const txt = d.elements.find((e) => e.type === 'text');
+  assert.equal(txt.text, 'HELLO');
+  assert.equal(txt.fontFamily, 'Arial');
 });
 
 test('normalizeDesign: converts pixel shape dims to %, clamps ranges', () => {
@@ -85,4 +86,17 @@ test('normalizeDesign: long/large text is shrunk + repositioned to fit canvas', 
   assert.ok(e.y + e.fontSize * 0.22 <= 96.5, 'fits vertically');
   assert.ok(e.fontSize < 160, 'fontSize was shrunk');
   assert.ok(e.x >= 4 && e.y >= 4, 'within margins');
+});
+
+test('normalizeDesign: separates overlapping text + orders shapes behind text', () => {
+  const d = normalizeDesign({ elements: [
+    { type: 'text', x: 5, y: 40, text: 'HEADLINE TEXT HERE', fontSize: 60, color: '#fff' },
+    { type: 'text', x: 5, y: 41, text: 'SUBTEXT OVERLAPPING IT', fontSize: 40, color: '#fff' },
+    { type: 'shape', x: 0, y: 0, width: 100, height: 100, color: '#000', opacity: 0.5 },
+  ]});
+  assert.equal(d.elements[0].type, 'shape', 'shape rendered behind (first in array)');
+  const texts = d.elements.filter((e) => e.type === 'text');
+  const hi = texts[0].y <= texts[1].y ? texts[0] : texts[1];
+  const lo = texts[0].y <= texts[1].y ? texts[1] : texts[0];
+  assert.ok(lo.y >= hi.y + hi.fontSize * 0.22, 'text lines no longer overlap vertically');
 });

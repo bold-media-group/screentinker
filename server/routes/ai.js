@@ -95,7 +95,43 @@ function normalizeDesign(raw) {
       });
     }
   }
+
+  // De-overlap text lines (models stack them at the same y) and order shapes
+  // behind text so accent bands never hide the words.
+  const shapes = out.elements.filter((e) => e.type === 'shape');
+  const texts = out.elements.filter((e) => e.type === 'text');
+  deoverlapTexts(texts);
+  out.elements = [...shapes, ...texts];
   return out;
+}
+
+// Push text lines apart so they don't sit on top of each other. Only nudges a
+// line down when it also overlaps horizontally (leaves side-by-side text alone),
+// then shifts the whole stack up if it ran past the bottom margin. CW/CH match
+// fitText's width/height estimates.
+function deoverlapTexts(texts) {
+  const M = 4, GAP = 2.5, CW = 0.075, CH = 0.26;
+  const widthOf = (el) => Math.max(1, el.text.length) * el.fontSize * CW;
+  const heightOf = (el) => el.fontSize * CH;
+  const ordered = texts.map((el, i) => ({ el, i })).sort((a, b) => a.el.y - b.el.y || a.i - b.i);
+  const placed = [];
+  for (const cur of ordered) {
+    const cw = widthOf(cur.el);
+    let minY = M;
+    for (const p of placed) {
+      const hOverlap = cur.el.x < p.el.x + widthOf(p.el) && p.el.x < cur.el.x + cw;
+      if (hOverlap) minY = Math.max(minY, p.el.y + heightOf(p.el) + GAP);
+    }
+    if (cur.el.y < minY) cur.el.y = Math.round(minY * 10) / 10;
+    placed.push(cur);
+  }
+  let maxBottom = 0;
+  for (const p of placed) maxBottom = Math.max(maxBottom, p.el.y + heightOf(p.el));
+  const overflow = maxBottom - (100 - M);
+  if (overflow > 0 && placed.length) {
+    const shift = Math.min(overflow, Math.min(...placed.map((p) => p.el.y)) - M);
+    if (shift > 0) for (const p of placed) p.el.y = Math.round((p.el.y - shift) * 10) / 10;
+  }
 }
 
 // GET /api/ai/settings — workspace members (never returns the key)
