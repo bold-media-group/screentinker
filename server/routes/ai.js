@@ -42,8 +42,28 @@ const clampN = (n, lo, hi, d) => { n = Number(n); return Number.isFinite(n) ? Ma
 const hex = (c, d) => (typeof c === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(c.trim())) ? c.trim() : d;
 const cleanText = (s) => String(s == null ? '' : s).replace(/<[^>]*>/g, '').trim().slice(0, 200);
 
+// Keep generated text on the canvas. The Designer renders text nowrap at
+// ~fontSize/10 % of the canvas width per em, so long/large text runs off the
+// edge. Estimate width = chars * fontSize * 0.06 (% of canvas width) and height
+// = fontSize * 0.18 (% of canvas height); shrink fontSize to fit within 4%
+// margins, then nudge x/y in-bounds. Deterministic, so it doesn't depend on the
+// model getting layout right.
+function fitText(el) {
+  // CW: width-% per (char * fontSize). 0.075 ~ bold/uppercase headlines (wider
+  // than mixed-case). CH: height-% per fontSize incl. line-height.
+  const M = 4, CW = 0.075, CH = 0.22;
+  const len = Math.max(1, el.text.length);
+  const maxByW = (100 - 2 * M) / (len * CW);
+  const maxByH = (100 - 2 * M) / CH;
+  el.fontSize = Math.floor(Math.max(8, Math.min(el.fontSize, maxByW, maxByH)));
+  const w = len * el.fontSize * CW;
+  const h = el.fontSize * CH;
+  el.x = Math.round(Math.min(Math.max(el.x, M), Math.max(M, 100 - M - w)) * 10) / 10;
+  el.y = Math.round(Math.min(Math.max(el.y, M), Math.max(M, 100 - M - h)) * 10) / 10;
+}
+
 // Never trust raw model output: cap count, clamp ranges, fix px-vs-% (models
-// often emit pixels), strip any HTML from text, validate colors.
+// often emit pixels), strip any HTML from text, validate colors, fit to canvas.
 function normalizeDesign(raw) {
   const out = { background: hex(raw && raw.background, '#111827'), elements: [] };
   const els = Array.isArray(raw && raw.elements) ? raw.elements.slice(0, 20) : [];
@@ -52,19 +72,25 @@ function normalizeDesign(raw) {
     if (e.type === 'text') {
       const text = cleanText(e.text);
       if (!text) continue;
-      out.elements.push({
+      const el = {
         type: 'text', x: clampN(e.x, 0, 95, 5), y: clampN(e.y, 0, 95, 5), text,
         fontSize: clampN(e.fontSize, 12, 200, 48), fontFamily: 'Arial',
         color: hex(e.color, '#FFFFFF'), bold: !!e.bold, shadow: !!e.shadow,
-      });
+      };
+      fitText(el);
+      out.elements.push(el);
     } else if (e.type === 'shape') {
       let w = Number(e.width), h = Number(e.height);
       if (w > 100) w = w / 19.2;  // px of 1920 -> %
       if (h > 100) h = h / 10.8;  // px of 1080 -> %
+      w = clampN(w, 1, 100, 30);
+      h = clampN(h, 1, 100, 20);
       out.elements.push({
         type: 'shape', shape: 'rect',
-        x: clampN(e.x, 0, 100, 0), y: clampN(e.y, 0, 100, 0),
-        width: clampN(w, 1, 100, 30), height: clampN(h, 1, 100, 20),
+        // keep the shape on-canvas: x+width <= 100, y+height <= 100
+        x: Math.min(clampN(e.x, 0, 100, 0), 100 - w),
+        y: Math.min(clampN(e.y, 0, 100, 0), 100 - h),
+        width: w, height: h,
         color: hex(e.color, '#3b82f6'), opacity: clampN(e.opacity, 0, 1, 0.85), radius: 0,
       });
     }

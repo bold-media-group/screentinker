@@ -45,7 +45,7 @@ export function render(container) {
       <!-- Preview -->
       <div style="flex:1">
         <div id="previewWrap" style="position:relative;border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;background:#000;aspect-ratio:16/9">
-          <div id="designPreview" style="position:relative;width:100%;height:100%;overflow:hidden"></div>
+          <div id="designPreview" style="position:relative;width:100%;height:100%;overflow:hidden;container-type:inline-size"></div>
         </div>
         <p style="font-size:11px;color:var(--text-muted);margin-top:8px">${t('designer.preview_hint')}</p>
       </div>
@@ -421,13 +421,13 @@ function redraw() {
 
     switch (el.type) {
       case 'text':
-        html += `<div style="position:absolute;left:${el.x}%;top:${el.y}%;font-size:${el.fontSize / 10}vw;font-family:${el.fontFamily};color:${el.color};font-weight:${el.bold ? 'bold' : 'normal'};${el.shadow ? 'text-shadow:2px 2px 4px rgba(0,0,0,0.5);' : ''}white-space:nowrap;${border}${cursor}" data-idx="${i}">${el.text}</div>`;
+        html += `<div style="position:absolute;left:${el.x}%;top:${el.y}%;font-size:${el.fontSize / 10}cqw;font-family:${el.fontFamily};color:${el.color};font-weight:${el.bold ? 'bold' : 'normal'};${el.shadow ? 'text-shadow:2px 2px 4px rgba(0,0,0,0.5);' : ''}white-space:nowrap;${border}${cursor}" data-idx="${i}">${el.text}</div>`;
         break;
       case 'clock':
-        html += `<div style="position:absolute;left:${el.x}%;top:${el.y}%;font-size:${el.fontSize / 10}vw;font-family:${el.fontFamily};color:${el.color};font-weight:bold;${el.shadow ? 'text-shadow:2px 2px 4px rgba(0,0,0,0.5);' : ''}${border}${cursor}" data-idx="${i}" id="clock_${i}"></div>`;
+        html += `<div style="position:absolute;left:${el.x}%;top:${el.y}%;font-size:${el.fontSize / 10}cqw;font-family:${el.fontFamily};color:${el.color};font-weight:bold;${el.shadow ? 'text-shadow:2px 2px 4px rgba(0,0,0,0.5);' : ''}${border}${cursor}" data-idx="${i}" id="clock_${i}"></div>`;
         break;
       case 'date':
-        html += `<div style="position:absolute;left:${el.x}%;top:${el.y}%;font-size:${el.fontSize / 10}vw;font-family:${el.fontFamily};color:${el.color};${el.shadow ? 'text-shadow:2px 2px 4px rgba(0,0,0,0.5);' : ''}${border}${cursor}" data-idx="${i}" id="date_${i}"></div>`;
+        html += `<div style="position:absolute;left:${el.x}%;top:${el.y}%;font-size:${el.fontSize / 10}cqw;font-family:${el.fontFamily};color:${el.color};${el.shadow ? 'text-shadow:2px 2px 4px rgba(0,0,0,0.5);' : ''}${border}${cursor}" data-idx="${i}" id="date_${i}"></div>`;
         break;
       case 'image':
         html += `<img src="${el.src}" style="position:absolute;left:${el.x}%;top:${el.y}%;width:${el.width}%;height:${el.height}%;object-fit:contain;${border}${cursor}" data-idx="${i}" draggable="false">`;
@@ -439,11 +439,11 @@ function redraw() {
         html += `<div style="position:absolute;left:${el.x}%;top:${el.y}%;width:${el.width}%;height:${el.height}%;background:${el.color};opacity:${el.opacity};border-radius:${el.radius || 0}px;${el.shape === 'circle' ? 'border-radius:50%;' : ''}${border}${cursor}" data-idx="${i}"></div>`;
         break;
       case 'weather':
-        html += `<div style="position:absolute;left:${el.x}%;top:${el.y}%;font-size:${el.fontSize / 10}vw;color:${el.color};${border}${cursor}" data-idx="${i}" id="weather_${i}">&#9925; ${t('common.loading')}</div>`;
+        html += `<div style="position:absolute;left:${el.x}%;top:${el.y}%;font-size:${el.fontSize / 10}cqw;color:${el.color};${border}${cursor}" data-idx="${i}" id="weather_${i}">&#9925; ${t('common.loading')}</div>`;
         break;
       case 'ticker':
         html += `<div style="position:absolute;left:${el.x}%;top:${el.y}%;width:${el.width}%;height:${el.height}%;background:${el.bgColor};overflow:hidden;display:flex;align-items:center;${border}" data-idx="${i}">
-          <div style="white-space:nowrap;animation:ticker ${el.speed || 30}s linear infinite;font-size:${el.fontSize / 10}vw;color:${el.color}" id="ticker_${i}">${t('designer.loading_news')}</div>
+          <div style="white-space:nowrap;animation:ticker ${el.speed || 30}s linear infinite;font-size:${el.fontSize / 10}cqw;color:${el.color}" id="ticker_${i}">${t('designer.loading_news')}</div>
         </div>`;
         break;
       case 'qr':
@@ -454,8 +454,8 @@ function redraw() {
         break;
       case 'countdown':
         html += `<div style="position:absolute;left:${el.x}%;top:${el.y}%;text-align:center;color:${el.color};${border}${cursor}" data-idx="${i}">
-          <div style="font-size:${el.fontSize / 15}vw;opacity:0.8">${el.label || ''}</div>
-          <div style="font-size:${el.fontSize / 10}vw;font-weight:bold" id="countdown_${i}"></div>
+          <div style="font-size:${el.fontSize / 15}cqw;opacity:0.8">${el.label || ''}</div>
+          <div style="font-size:${el.fontSize / 10}cqw;font-weight:bold" id="countdown_${i}"></div>
         </div>`;
         break;
       case 'webpage':

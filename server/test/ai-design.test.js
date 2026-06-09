@@ -35,8 +35,8 @@ test('normalizeDesign: converts pixel shape dims to %, clamps ranges', () => {
     { type: 'shape', x: -10, y: 200, width: 1920, height: 1080, color: 'red', opacity: 5 },
   ]});
   const s = d.elements[0];
-  assert.equal(s.x, 0, 'x clamped to 0');
-  assert.equal(s.y, 100, 'y clamped to 100');
+  assert.equal(s.x, 0, 'x clamped so full-width shape fits');
+  assert.equal(s.y, 0, 'y clamped so full-height shape fits (y+height<=100)');
   assert.ok(Math.abs(s.width - 100) < 0.01, '1920px -> 100%');
   assert.ok(Math.abs(s.height - 100) < 0.01, '1080px -> 100%');
   assert.equal(s.color, '#3b82f6', 'non-hex color -> default');
@@ -73,4 +73,16 @@ test('endpointAllowed: blocks private/internal when hosted, allows public https'
   assert.equal(endpointAllowed('http://172.16.5.5/v1'), false);
   assert.equal(endpointAllowed('ftp://example.com'), false, 'non-http blocked');
   assert.equal(endpointAllowed('not a url'), false);
+});
+
+test('normalizeDesign: long/large text is shrunk + repositioned to fit canvas', () => {
+  const d = normalizeDesign({ elements: [
+    { type: 'text', x: 30, y: 95, text: 'GRAND OPENING THIS FRIDAY EVERYONE WELCOME', fontSize: 160, color: '#fff' },
+  ]});
+  const e = d.elements[0];
+  const w = e.text.length * e.fontSize * 0.075;
+  assert.ok(e.x + w <= 96.5, `fits horizontally (x=${e.x} w=${w.toFixed(1)})`);
+  assert.ok(e.y + e.fontSize * 0.22 <= 96.5, 'fits vertically');
+  assert.ok(e.fontSize < 160, 'fontSize was shrunk');
+  assert.ok(e.x >= 4 && e.y >= 4, 'within margins');
 });
