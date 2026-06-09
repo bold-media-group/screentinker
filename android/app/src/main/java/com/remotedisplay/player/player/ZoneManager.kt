@@ -155,10 +155,13 @@ class ZoneManager(
                 container.addView(webView); zoneViews[zone.id] = webView
                 if (multi) scheduleZoneAdvance(zone.id, durationMs, advance)
             }
-            // YouTube - render in WebView
+            // YouTube - render via an embed wrapper with a valid origin (Error 153 fix)
             mimeType == "video/youtube" && !remoteUrl.isNullOrEmpty() -> {
                 val webView = createWebView()
-                webView.loadUrl(remoteUrl); webView.layoutParams = params
+                val html = com.remotedisplay.player.util.WebViewSupport.youtubeEmbedHtml(remoteUrl)
+                if (html != null) webView.loadDataWithBaseURL(com.remotedisplay.player.util.WebViewSupport.YT_BASE, html, "text/html", "UTF-8", null)
+                else webView.loadUrl(remoteUrl)
+                webView.layoutParams = params
                 container.addView(webView); zoneViews[zone.id] = webView
                 if (multi) scheduleZoneAdvance(zone.id, durationMs, advance)
             }
@@ -245,11 +248,7 @@ class ZoneManager(
 
     private fun createWebView(): WebView {
         return WebView(context).apply {
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            settings.mediaPlaybackRequiresUserGesture = false
-            setBackgroundColor(android.graphics.Color.TRANSPARENT)
-            webViewClient = WebViewClient()
+            com.remotedisplay.player.util.WebViewSupport.configure(this, "Zone")
         }
     }
 

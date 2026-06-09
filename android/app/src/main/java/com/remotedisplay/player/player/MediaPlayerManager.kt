@@ -55,13 +55,12 @@ class MediaPlayerManager(
         exoPlayer?.stop()
 
         youtubeWebView?.apply {
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            settings.mediaPlaybackRequiresUserGesture = false
-            webViewClient = WebViewClient()
-            webChromeClient = WebChromeClient()
+            com.remotedisplay.player.util.WebViewSupport.configure(this, "YouTube")
             setBackgroundColor(android.graphics.Color.BLACK)
-            loadUrl(embedUrl)
+            // Load via an embed wrapper with a valid youtube.com origin (Error 153 fix).
+            val html = com.remotedisplay.player.util.WebViewSupport.youtubeEmbedHtml(embedUrl)
+            if (html != null) loadDataWithBaseURL(com.remotedisplay.player.util.WebViewSupport.YT_BASE, html, "text/html", "UTF-8", null)
+            else loadUrl(embedUrl)
         }
     }
 
@@ -78,12 +77,7 @@ class MediaPlayerManager(
         exoPlayer?.stop()
 
         youtubeWebView?.apply {
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            settings.mediaPlaybackRequiresUserGesture = false
-            webViewClient = WebViewClient()
-            webChromeClient = WebChromeClient()
-            setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            com.remotedisplay.player.util.WebViewSupport.configure(this, "Widget")
             loadUrl(url)
         }
     }
