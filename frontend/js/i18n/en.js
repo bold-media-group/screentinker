@@ -1013,6 +1013,11 @@ export default {
   'layout.prop.type': 'Type',
   'layout.type_content': 'Content',
   'layout.type_widget': 'Widget',
+  'layout.prop.fit': 'Fit',
+  'layout.fit_contain': 'Contain (whole image, may letterbox)',
+  'layout.fit_cover': 'Cover (fill zone, may crop)',
+  'layout.fit_fill': 'Stretch (fill zone, may distort)',
+  'layout.fit_hint': 'How video/images scale to the zone. Contain shows the whole frame without cropping.',
 
   // Video walls
   'wall.title': 'Video Walls',

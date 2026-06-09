@@ -144,6 +144,14 @@ async function renderEditor(container, layoutId) {
               <option value="content">${t('layout.type_content')}</option><option value="widget">${t('layout.type_widget')}</option>
             </select>
           </div>
+          <div class="form-group"><label>${t('layout.prop.fit')}</label>
+            <select id="propFit" class="input" style="background:var(--bg-input)">
+              <option value="contain">${t('layout.fit_contain')}</option>
+              <option value="cover">${t('layout.fit_cover')}</option>
+              <option value="fill">${t('layout.fit_fill')}</option>
+            </select>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:4px">${t('layout.fit_hint')}</div>
+          </div>
           <button class="btn btn-danger btn-sm" id="deleteZoneBtn" style="width:100%;justify-content:center;margin-top:8px">${t('layout.delete_zone')}</button>
         </div>
       </div>
@@ -250,9 +258,10 @@ async function renderEditor(container, layoutId) {
     document.getElementById('propW').value = z.width_percent;
     document.getElementById('propH').value = z.height_percent;
     document.getElementById('propType').value = z.zone_type;
+    document.getElementById('propFit').value = z.fit_mode || 'cover';
   }
 
-  ['propName', 'propX', 'propY', 'propW', 'propH', 'propType'].forEach(id => {
+  ['propName', 'propX', 'propY', 'propW', 'propH', 'propType', 'propFit'].forEach(id => {
     document.getElementById(id).oninput = () => {
       if (selectedZone === null) return;
       const z = zones[selectedZone];
@@ -262,12 +271,13 @@ async function renderEditor(container, layoutId) {
       z.width_percent = parseFloat(document.getElementById('propW').value) || 10;
       z.height_percent = parseFloat(document.getElementById('propH').value) || 10;
       z.zone_type = document.getElementById('propType').value;
+      z.fit_mode = document.getElementById('propFit').value;
       renderZones();
     };
   });
 
   document.getElementById('addZoneBtn').onclick = () => {
-    zones.push({ id: null, name: t('layout.zone_n', { n: zones.length + 1 }), x_percent: 10, y_percent: 10, width_percent: 30, height_percent: 30, z_index: 0, zone_type: 'content', fit_mode: 'cover', background_color: '#000000', sort_order: zones.length });
+    zones.push({ id: null, name: t('layout.zone_n', { n: zones.length + 1 }), x_percent: 10, y_percent: 10, width_percent: 30, height_percent: 30, z_index: 0, zone_type: 'content', fit_mode: 'contain', background_color: '#000000', sort_order: zones.length });
     selectedZone = zones.length - 1;
     renderZones();
     updateProperties();

@@ -141,7 +141,7 @@ CREATE TABLE IF NOT EXISTS layout_zones (
     height_percent  REAL NOT NULL DEFAULT 100,
     z_index         INTEGER NOT NULL DEFAULT 0,
     zone_type       TEXT NOT NULL DEFAULT 'content',
-    fit_mode        TEXT NOT NULL DEFAULT 'cover',
+    fit_mode        TEXT NOT NULL DEFAULT 'contain',
     background_color TEXT DEFAULT '#000000',
     sort_order      INTEGER NOT NULL DEFAULT 0
 );

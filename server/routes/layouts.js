@@ -101,7 +101,7 @@ router.post('/', (req, res) => {
     zones.forEach((z, i) => {
       stmt.run(uuidv4(), id, z.name || `Zone ${i + 1}`, z.x_percent || 0, z.y_percent || 0,
         z.width_percent || 100, z.height_percent || 100, z.z_index || 0,
-        z.zone_type || 'content', z.fit_mode || 'cover', z.background_color || '#000000', i);
+        z.zone_type || 'content', z.fit_mode || 'contain', z.background_color || '#000000', i);
     });
   }
 
@@ -151,7 +151,7 @@ router.post('/:id/zones', (req, res) => {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(id, req.params.id, name || 'New Zone', x_percent || 0, y_percent || 0,
     width_percent || 50, height_percent || 50, z_index || 0,
-    zone_type || 'content', fit_mode || 'cover', background_color || '#000000', maxOrder + 1);
+    zone_type || 'content', fit_mode || 'contain', background_color || '#000000', maxOrder + 1);
 
   db.prepare("UPDATE layouts SET updated_at = strftime('%s','now') WHERE id = ?").run(req.params.id);
 
