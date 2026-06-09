@@ -183,6 +183,12 @@ router.get('/:id/render', (req, res) => {
   const widget = db.prepare('SELECT * FROM widgets WHERE id = ?').get(req.params.id);
   if (!widget) return res.status(404).send('Widget not found');
   const config = JSON.parse(widget.config || '{}');
+  // This page is DESIGNED to be embedded by the player, which frames it in a
+  // sandboxed (allow-scripts, no allow-same-origin) iframe = a null origin. The
+  // global helmet X-Frame-Options: SAMEORIGIN refuses that (null != same), so
+  // widgets render blank in the web player. Drop it here; the sandbox - not
+  // X-Frame-Options - is what isolates the widget (it can't read the dashboard JWT).
+  res.removeHeader('X-Frame-Options');
   res.setHeader('Content-Type', 'text/html');
   res.send(renderWidgetHtml(widget.widget_type, config));
 });
