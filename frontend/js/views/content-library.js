@@ -11,6 +11,36 @@ function formatFileSize(bytes) {
   return `${bytes} B`;
 }
 
+// Lazy-load authenticated thumbnails/previews. A plain <img> can't send the
+// Bearer token, and the content thumbnail/file endpoints require auth (or a
+// playlist/widget reference) - so a just-uploaded item's thumbnail 403'd. We fetch
+// with the token and swap in an object URL. IntersectionObserver keeps it lazy so
+// we stay under the /api/content rate limit; the object URL is revoked after load.
+let _authImgObserver = null;
+function loadAuthImage(img) {
+  const url = img.dataset.authSrc;
+  if (!url) return;
+  delete img.dataset.authSrc;
+  fetch(url, { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } })
+    .then(r => (r.ok ? r.blob() : Promise.reject(r.status)))
+    .then(blob => {
+      const obj = URL.createObjectURL(blob);
+      img.addEventListener('load', () => URL.revokeObjectURL(obj), { once: true });
+      img.src = obj;
+    })
+    .catch(() => { img.style.opacity = '0.25'; });
+}
+function hydrateAuthImages(root) {
+  const imgs = root.querySelectorAll('img[data-auth-src]');
+  if (typeof IntersectionObserver === 'undefined') { imgs.forEach(loadAuthImage); return; }
+  if (!_authImgObserver) {
+    _authImgObserver = new IntersectionObserver((entries, obs) => {
+      for (const e of entries) if (e.isIntersecting) { obs.unobserve(e.target); loadAuthImage(e.target); }
+    }, { rootMargin: '300px' });
+  }
+  imgs.forEach(img => _authImgObserver.observe(img));
+}
+
 export function render(container) {
   container.innerHTML = `
     <div class="page-header">
@@ -369,14 +399,14 @@ async function loadContent() {
                 <span style="font-size:10px;color:var(--text-muted)">${t('content.type_remote_short')}</span>
               </div>`
             : c.thumbnail_path
-              ? `<img src="/api/content/${c.id}/thumbnail" alt="${esc(c.filename)}" loading="lazy">`
+              ? `<img data-auth-src="/api/content/${c.id}/thumbnail" alt="${esc(c.filename)}" style="background:var(--bg-secondary)">`
               : c.mime_type?.startsWith('video/')
                 ? `<div class="video-icon">
                     <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                       <polygon points="5 3 19 12 5 21 5 3"/>
                     </svg>
                   </div>`
-                : `<img src="/api/content/${c.id}/file" alt="${esc(c.filename)}" loading="lazy">`
+                : `<img data-auth-src="/api/content/${c.id}/file" alt="${esc(c.filename)}" style="background:var(--bg-secondary)">`
           }
         </div>
         <div class="content-item-body">
@@ -406,6 +436,7 @@ async function loadContent() {
         </div>
       </div>
     `).join('');
+    hydrateAuthImages(grid);
 
     // Drag-to-move: each content item exposes its id; folder cards are the drop targets.
     grid.querySelectorAll('.content-item').forEach(item => {

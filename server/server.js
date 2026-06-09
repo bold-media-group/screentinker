@@ -327,6 +327,26 @@ app.get('/api/devices/:id/screenshot', (req, res) => {
   res.sendFile(safePath);
 });
 
+// A logged-in user who can access the content's workspace may view its file /
+// thumbnail even when it isn't referenced by a playlist/widget yet (e.g. the
+// content library showing a just-uploaded, not-yet-assigned item). <img> can't
+// send an Authorization header, so the dashboard fetches these with the Bearer
+// token; this verifies it and checks workspace membership. Anonymous players
+// (no token) still fall back to the playlist/widget reference gate. (#39)
+function requesterCanAccessContent(req, content) {
+  try {
+    const m = (req.headers.authorization || '').match(/^Bearer (.+)$/);
+    if (!m) return false;
+    const jwt = require('jsonwebtoken');
+    const decoded = jwt.verify(m[1], config.jwtSecret, { algorithms: ['HS256'] });
+    if (!decoded || !decoded.id) return false;
+    if (decoded.role === 'platform_admin') return true;
+    const { db } = require('./db/database');
+    return !!db.prepare('SELECT 1 FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+      .get(content.workspace_id, decoded.id);
+  } catch { return false; }
+}
+
 // Public content file serving (must be BEFORE protected routes)
 app.get('/api/content/:id/file', (req, res) => {
   const { db } = require('./db/database');
@@ -340,7 +360,7 @@ app.get('/api/content/:id/file', (req, res) => {
   // Perf note: LIKE scan on widgets.config is O(n) per request. Fine at current scale
   // (<100 widgets); revisit with a content_widget_refs join table if this grows.
   const inWidget = inPlaylist ? null : db.prepare('SELECT id FROM widgets WHERE workspace_id = ? AND config LIKE ? LIMIT 1').get(content.workspace_id, `%/api/content/${req.params.id}/%`);
-  if (!inPlaylist && !inWidget) return res.status(403).json({ error: 'Content not assigned to any playlist or widget' });
+  if (!inPlaylist && !inWidget && !requesterCanAccessContent(req, content)) return res.status(403).json({ error: 'Content not assigned to any playlist or widget' });
   const safePath = path.resolve(config.contentDir, path.basename(content.filepath));
   if (!safePath.startsWith(path.resolve(config.contentDir))) return res.status(403).json({ error: 'Invalid path' });
   res.sendFile(safePath);
@@ -357,7 +377,7 @@ app.get('/api/content/:id/thumbnail', (req, res) => {
   // thumbnail (the /file route already had this check; the thumbnail route did not).
   const inPlaylist = db.prepare('SELECT id FROM playlist_items WHERE content_id = ? LIMIT 1').get(req.params.id);
   const inWidget = inPlaylist ? null : db.prepare('SELECT id FROM widgets WHERE workspace_id = ? AND config LIKE ? LIMIT 1').get(content.workspace_id, `%/api/content/${req.params.id}/%`);
-  if (!inPlaylist && !inWidget) return res.status(403).json({ error: 'Content not assigned to any playlist or widget' });
+  if (!inPlaylist && !inWidget && !requesterCanAccessContent(req, content)) return res.status(403).json({ error: 'Content not assigned to any playlist or widget' });
   const safePath = path.resolve(config.contentDir, path.basename(content.thumbnail_path));
   if (!safePath.startsWith(path.resolve(config.contentDir))) return res.status(403).json({ error: 'Invalid path' });
   res.sendFile(safePath);
