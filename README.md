@@ -345,14 +345,28 @@ Your database, uploads, and configuration are preserved — only code files are 
 
 ### Backups
 
-The SQLite database is at `server/db/remote_display.db`. Back it up regularly:
+The SQLite database is at `server/db/remote_display.db` and uploaded content is in
+`server/uploads/`. For a one-off DB copy (safe while the server runs):
 
 ```bash
-# Safe backup (works even while the server is running)
 sqlite3 server/db/remote_display.db ".backup /path/to/backup.db"
 ```
 
-Uploaded content is in `server/uploads/`. Back that up too.
+**Recommended: nightly automated backups** via `scripts/backup.sh`. It takes an
+atomic DB snapshot plus a hard-linked, point-in-time copy of your content (durable
+images/videos; ephemeral per-device screenshots are excluded), with daily + monthly
+retention and an error log. Add a cron entry:
+
+```bash
+# as root (or your service user) — adjust the path to your install
+0 3 * * * /opt/screentinker/scripts/backup.sh
+```
+
+Override defaults with env vars if your layout differs:
+`SCREENTINKER_DIR` (default `/opt/screentinker`), `BACKUP_DIR`, `DB`, `UPLOADS`,
+`DAILY_KEEP` (7), `MONTHLY_KEEP` (12), `DB_KEEP_DAYS` (30). Backups land in
+`$BACKUP_DIR` (`remote_display-<ts>.db`, `content-latest/`, `content-<ts>/`,
+`content-monthly-<YYYYMM>/`) and each run appends to `$BACKUP_DIR/backup.log`.
 
 ### Admin Recovery
 
