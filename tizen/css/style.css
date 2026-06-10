@@ -1,0 +1,72 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+    width: 100%; height: 100%;
+    background: #000; color: #f1f5f9;
+    font-family: "Samsung One", "Tizen Sans", Arial, sans-serif;
+    overflow: hidden;
+    cursor: none;
+}
+
+.screen {
+    position: absolute; top: 0; left: 0;
+    width: 100%; height: 100%;
+    display: flex; align-items: center; justify-content: center;
+}
+.hidden { display: none !important; }
+
+/* Setup / pairing card */
+.card {
+    background: #111827;
+    border: 1px solid #1f2937;
+    border-radius: 18px;
+    padding: 48px 64px;
+    text-align: center;
+    max-width: 760px;
+}
+.card h1 { color: #3b82f6; font-size: 44px; margin-bottom: 6px; }
+.sub { color: #94a3b8; font-size: 22px; margin-bottom: 36px; }
+.card label { display: block; text-align: left; color: #94a3b8; font-size: 18px; margin-bottom: 8px; }
+
+#serverUrl {
+    width: 100%; font-size: 26px; padding: 16px 20px;
+    border-radius: 10px; border: 2px solid #334155;
+    background: #0b1220; color: #f1f5f9; margin-bottom: 24px;
+}
+#serverUrl:focus { outline: none; border-color: #3b82f6; }
+
+button {
+    font-size: 24px; font-weight: bold; color: #fff;
+    background: #3b82f6; border: none; border-radius: 10px;
+    padding: 16px 40px; cursor: pointer;
+}
+button:focus { outline: 3px solid #93c5fd; }
+button.ghost { background: transparent; color: #64748b; font-size: 18px; margin-top: 24px; padding: 8px; }
+
+.status { color: #64748b; font-size: 18px; margin-top: 20px; min-height: 24px; }
+.status.error { color: #ef4444; }
+
+/* Pairing code */
+.code {
+    font-size: 96px; font-weight: bold; letter-spacing: 16px;
+    color: #22c55e; margin: 24px 0; font-family: monospace;
+}
+.hint { color: #94a3b8; font-size: 20px; line-height: 1.5; }
+
+/* Playback stage */
+.stage { background: #000; }
+.stage img, .stage video, .stage iframe {
+    position: absolute; top: 0; left: 0;
+    width: 100%; height: 100%; border: 0;
+}
+.stage img.contain, .stage video.contain { object-fit: contain; }
+.stage img.cover,   .stage video.cover   { object-fit: cover; }
+.stage img.fill,    .stage video.fill    { object-fit: fill; }
+
+/* Toast */
+.toast {
+    position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: rgba(17,24,39,0.92); color: #f1f5f9;
+    padding: 12px 24px; border-radius: 10px; font-size: 18px;
+    border: 1px solid #334155;
+}

@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <title>ScreenTinker</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <!-- Setup: enter server URL -->
+    <div id="setup" class="screen">
+        <div class="card">
+            <h1>ScreenTinker</h1>
+            <p class="sub">Digital Signage Player</p>
+            <label for="serverUrl">Server URL</label>
+            <input id="serverUrl" type="url" value="https://screentinker.com" autocomplete="off"
+                   autocorrect="off" autocapitalize="off" spellcheck="false">
+            <button id="connectBtn">Connect</button>
+            <p id="setupStatus" class="status"></p>
+        </div>
+    </div>
+
+    <!-- Pairing: show the code -->
+    <div id="pairing" class="screen hidden">
+        <div class="card">
+            <h1>ScreenTinker</h1>
+            <p class="sub">Pair this display</p>
+            <div id="pairCode" class="code">------</div>
+            <p class="hint">Enter this code in your ScreenTinker dashboard<br>(Devices &rarr; Pair a display)</p>
+            <p id="pairStatus" class="status">Waiting to be paired&hellip;</p>
+            <button id="resetBtn" class="ghost">Change server</button>
+        </div>
+    </div>
+
+    <!-- Playback stage -->
+    <div id="stage" class="screen stage hidden"></div>
+
+    <!-- Tiny on-screen status (offline / errors), auto-hides -->
+    <div id="toast" class="toast hidden"></div>
+
+    <script src="js/socket.io.min.js"></script>
+    <script src="js/player.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

@@ -6,31 +6,42 @@
     android:gravity="center"
     android:orientation="vertical"
     android:background="#111827"
-    android:padding="48dp"
+    android:padding="12dp"
     android:keepScreenOn="true">
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:gravity="center_horizontal">
 
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="RemoteDisplay Setup"
         android:textColor="#3B82F6"
-        android:textSize="32sp"
+        android:textSize="12sp"
         android:textStyle="bold"
-        android:layout_marginBottom="8dp" />
+        android:layout_marginBottom="3dp" />
 
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="Enable these permissions for full remote control"
         android:textColor="#94A3B8"
-        android:textSize="16sp"
-        android:layout_marginBottom="40dp" />
+        android:textSize="9sp"
+        android:layout_marginBottom="8dp" />
 
     <LinearLayout
-        android:layout_width="500dp"
+        android:layout_width="420dp"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:layout_marginBottom="32dp">
+        android:layout_marginBottom="8dp">
 
         <!-- Accessibility Service -->
         <LinearLayout
@@ -38,7 +49,7 @@
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center_vertical"
-            android:layout_marginBottom="16dp">
+            android:layout_marginBottom="5dp">
 
             <LinearLayout
                 android:layout_width="0dp"
@@ -51,7 +62,7 @@
                     android:layout_height="wrap_content"
                     android:text="Accessibility Service"
                     android:textColor="#F1F5F9"
-                    android:textSize="18sp"
+                    android:textSize="11sp"
                     android:textStyle="bold" />
 
                 <TextView
@@ -59,7 +70,7 @@
                     android:layout_height="wrap_content"
                     android:text="Required for remote control (Home, Back, touch, gestures)"
                     android:textColor="#64748B"
-                    android:textSize="13sp" />
+                    android:textSize="8sp" />
             </LinearLayout>
 
             <TextView
@@ -68,20 +79,24 @@
                 android:layout_height="wrap_content"
                 android:text="OFF"
                 android:textColor="#EF4444"
-                android:textSize="14sp"
+                android:textSize="9sp"
                 android:textStyle="bold"
                 android:layout_marginEnd="12dp" />
 
             <Button
                 android:id="@+id/enableAccessibilityBtn"
                 android:layout_width="wrap_content"
-                android:layout_height="40dp"
+                android:layout_height="wrap_content"
+                android:minHeight="0dp"
+                android:minWidth="0dp"
                 android:text="Enable"
                 android:textColor="#FFFFFF"
-                android:textSize="14sp"
+                android:textSize="9sp"
                 android:background="@drawable/button_primary"
-                android:paddingStart="20dp"
-                android:paddingEnd="20dp" />
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:paddingTop="4dp"
+                android:paddingBottom="4dp" />
         </LinearLayout>
 
         <!-- Display Over Other Apps -->
@@ -90,7 +105,7 @@
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center_vertical"
-            android:layout_marginBottom="16dp">
+            android:layout_marginBottom="5dp">
 
             <LinearLayout
                 android:layout_width="0dp"
@@ -103,15 +118,15 @@
                     android:layout_height="wrap_content"
                     android:text="Install Unknown Apps"
                     android:textColor="#F1F5F9"
-                    android:textSize="18sp"
+                    android:textSize="11sp"
                     android:textStyle="bold" />
 
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Required for automatic OTA updates"
+                    android:text="OTA updates — only our signature-verified builds install"
                     android:textColor="#64748B"
-                    android:textSize="13sp" />
+                    android:textSize="8sp" />
             </LinearLayout>
 
             <TextView
@@ -120,20 +135,24 @@
                 android:layout_height="wrap_content"
                 android:text="OFF"
                 android:textColor="#EF4444"
-                android:textSize="14sp"
+                android:textSize="9sp"
                 android:textStyle="bold"
                 android:layout_marginEnd="12dp" />
 
             <Button
                 android:id="@+id/enableInstallBtn"
                 android:layout_width="wrap_content"
-                android:layout_height="40dp"
+                android:layout_height="wrap_content"
+                android:minHeight="0dp"
+                android:minWidth="0dp"
                 android:text="Enable"
                 android:textColor="#FFFFFF"
-                android:textSize="14sp"
+                android:textSize="9sp"
                 android:background="@drawable/button_primary"
-                android:paddingStart="20dp"
-                android:paddingEnd="20dp" />
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:paddingTop="4dp"
+                android:paddingBottom="4dp" />
         </LinearLayout>
 
         <!-- Notification Permission (Android 13+) -->
@@ -143,7 +162,7 @@
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center_vertical"
-            android:layout_marginBottom="16dp"
+            android:layout_marginBottom="5dp"
             android:visibility="gone">
 
             <LinearLayout
@@ -157,7 +176,7 @@
                     android:layout_height="wrap_content"
                     android:text="Notifications"
                     android:textColor="#F1F5F9"
-                    android:textSize="18sp"
+                    android:textSize="11sp"
                     android:textStyle="bold" />
 
                 <TextView
@@ -165,7 +184,7 @@
                     android:layout_height="wrap_content"
                     android:text="Required for background service"
                     android:textColor="#64748B"
-                    android:textSize="13sp" />
+                    android:textSize="8sp" />
             </LinearLayout>
 
             <TextView
@@ -174,33 +193,215 @@
                 android:layout_height="wrap_content"
                 android:text="OFF"
                 android:textColor="#EF4444"
-                android:textSize="14sp"
+                android:textSize="9sp"
                 android:textStyle="bold"
                 android:layout_marginEnd="12dp" />
 
             <Button
                 android:id="@+id/enableNotificationBtn"
                 android:layout_width="wrap_content"
-                android:layout_height="40dp"
+                android:layout_height="wrap_content"
+                android:minHeight="0dp"
+                android:minWidth="0dp"
                 android:text="Enable"
                 android:textColor="#FFFFFF"
-                android:textSize="14sp"
+                android:textSize="9sp"
                 android:background="@drawable/button_primary"
-                android:paddingStart="20dp"
-                android:paddingEnd="20dp" />
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:paddingTop="4dp"
+                android:paddingBottom="4dp" />
+        </LinearLayout>
+
+        <!-- Launch on boot / full-screen (Android 14+ restricts USE_FULL_SCREEN_INTENT) -->
+        <LinearLayout
+            android:id="@+id/fullscreenRow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="5dp"
+            android:visibility="visible">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Launch on Boot"
+                    android:textColor="#F1F5F9"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Required to auto-start the display after power-on"
+                    android:textColor="#64748B"
+                    android:textSize="8sp" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/fullscreenStatus"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="OFF"
+                android:textColor="#EF4444"
+                android:textSize="9sp"
+                android:textStyle="bold"
+                android:layout_marginEnd="12dp" />
+
+            <Button
+                android:id="@+id/enableFullscreenBtn"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minHeight="0dp"
+                android:minWidth="0dp"
+                android:text="Enable"
+                android:textColor="#FFFFFF"
+                android:textSize="9sp"
+                android:background="@drawable/button_primary"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:paddingTop="4dp"
+                android:paddingBottom="4dp" />
+        </LinearLayout>
+
+        <!-- Battery optimization exemption (boot + run reliability on OEM/TV boxes) -->
+        <LinearLayout
+            android:id="@+id/batteryRow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="5dp"
+            android:visibility="visible">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Background Activity"
+                    android:textColor="#F1F5F9"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Keep running and auto-start reliably"
+                    android:textColor="#64748B"
+                    android:textSize="8sp" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/batteryStatus"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="OFF"
+                android:textColor="#EF4444"
+                android:textSize="9sp"
+                android:textStyle="bold"
+                android:layout_marginEnd="12dp" />
+
+            <Button
+                android:id="@+id/enableBatteryBtn"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minHeight="0dp"
+                android:minWidth="0dp"
+                android:text="Enable"
+                android:textColor="#FFFFFF"
+                android:textSize="9sp"
+                android:background="@drawable/button_primary"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:paddingTop="4dp"
+                android:paddingBottom="4dp" />
+        </LinearLayout>
+
+        <!-- Display over other apps: alternate boot-launch path (works where you
+             can't set a launcher, e.g. Android TV). -->
+        <LinearLayout
+            android:id="@+id/overlayRow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="5dp"
+            android:visibility="visible">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Display Over Apps"
+                    android:textColor="#F1F5F9"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Lets the display launch itself on boot (TV boxes)"
+                    android:textColor="#64748B"
+                    android:textSize="8sp" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/overlayStatus"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="OFF"
+                android:textColor="#EF4444"
+                android:textSize="9sp"
+                android:textStyle="bold"
+                android:layout_marginEnd="12dp" />
+
+            <Button
+                android:id="@+id/enableOverlayBtn"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minHeight="0dp"
+                android:minWidth="0dp"
+                android:text="Enable"
+                android:textColor="#FFFFFF"
+                android:textSize="9sp"
+                android:background="@drawable/button_primary"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:paddingTop="4dp"
+                android:paddingBottom="4dp" />
         </LinearLayout>
 
     </LinearLayout>
 
     <Button
         android:id="@+id/continueBtn"
-        android:layout_width="500dp"
-        android:layout_height="48dp"
+        android:layout_width="420dp"
+        android:layout_height="wrap_content"
+        android:minHeight="0dp"
         android:text="Continue to Setup"
         android:textColor="#FFFFFF"
-        android:textSize="16sp"
+        android:textSize="11sp"
         android:textStyle="bold"
-        android:background="@drawable/button_primary" />
+        android:background="@drawable/button_primary"
+        android:paddingTop="10dp"
+        android:paddingBottom="10dp" />
 
     <TextView
         android:id="@+id/skipText"
@@ -208,8 +409,11 @@
         android:layout_height="wrap_content"
         android:text="Skip (remote control features will be limited)"
         android:textColor="#64748B"
-        android:textSize="13sp"
-        android:layout_marginTop="16dp"
+        android:textSize="8sp"
+        android:layout_marginTop="6dp"
         android:padding="8dp" />
+
+    </LinearLayout>
+    </ScrollView>
 
 </LinearLayout>

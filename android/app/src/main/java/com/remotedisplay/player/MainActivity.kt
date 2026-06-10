@@ -100,6 +100,9 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(R.layout.activity_main)
 
+        // The display is up now — clear the boot "Starting display…" notification.
+        (getSystemService(Context.NOTIFICATION_SERVICE) as? android.app.NotificationManager)?.cancel(999)
+
         // Fullscreen immersive
         @Suppress("DEPRECATION")
         window.decorView.systemUiVisibility = (

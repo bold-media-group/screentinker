@@ -2,11 +2,15 @@ package com.remotedisplay.player
 
 import android.Manifest
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.annotation.SuppressLint
+import android.app.NotificationManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
 import android.os.Bundle
 import android.provider.Settings
 import android.view.View
@@ -26,8 +30,15 @@ class SetupActivity : AppCompatActivity() {
     private lateinit var notificationStatus: TextView
     private lateinit var enableAccessibilityBtn: Button
     private lateinit var enableInstallBtn: Button
+    private lateinit var fullscreenStatus: TextView
+    private lateinit var enableFullscreenBtn: Button
+    private lateinit var batteryStatus: TextView
+    private lateinit var enableBatteryBtn: Button
+    private lateinit var overlayStatus: TextView
+    private lateinit var enableOverlayBtn: Button
     private lateinit var continueBtn: Button
 
+    @SuppressLint("BatteryLife")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -39,6 +50,9 @@ class SetupActivity : AppCompatActivity() {
         }
 
         setContentView(R.layout.activity_setup)
+
+        // App's UI is up — clear the boot "Starting display…" notification.
+        getSystemService(NotificationManager::class.java)?.cancel(999)
 
         @Suppress("DEPRECATION")
         window.decorView.systemUiVisibility = (
@@ -75,8 +89,57 @@ class SetupActivity : AppCompatActivity() {
         enableInstallBtn.setOnClickListener {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
-                    data = android.net.Uri.parse("package:$packageName")
+                    data = Uri.parse("package:$packageName")
                 })
+            }
+        }
+
+        fullscreenStatus = findViewById(R.id.fullscreenStatus)
+        enableFullscreenBtn = findViewById(R.id.enableFullscreenBtn)
+        batteryStatus = findViewById(R.id.batteryStatus)
+        enableBatteryBtn = findViewById(R.id.enableBatteryBtn)
+        overlayStatus = findViewById(R.id.overlayStatus)
+        enableOverlayBtn = findViewById(R.id.enableOverlayBtn)
+
+        // Display-over-other-apps: alternate boot-launch path. With this granted the
+        // boot receiver can directly start the activity from the background, which
+        // works where you can't set a launcher (e.g. Android TV).
+        enableOverlayBtn.setOnClickListener {
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION).apply {
+                data = Uri.parse("package:$packageName")
+            })
+        }
+
+        // Launch-on-boot needs USE_FULL_SCREEN_INTENT, which Android 14+ auto-revokes
+        // for non-calling apps — so the boot full-screen launcher silently fails until
+        // the user grants it. Older versions auto-grant it, so only show the row where
+        // it can actually be off.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            // USE_FULL_SCREEN_INTENT is auto-granted before Android 14 — hide the row.
+            findViewById<View>(R.id.fullscreenRow).visibility = View.GONE
+        } else {
+            enableFullscreenBtn.setOnClickListener {
+                try {
+                    startActivity(Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT).apply {
+                        data = Uri.parse("package:$packageName")
+                    })
+                } catch (e: Exception) {
+                    startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                        putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                    })
+                }
+            }
+        }
+
+        // Battery-optimization exemption keeps the boot receiver from being deferred
+        // and the app from being killed in standby (esp. on OEM / TV boxes).
+        enableBatteryBtn.setOnClickListener {
+            try {
+                startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:$packageName")
+                })
+            } catch (e: Exception) {
+                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
             }
         }
 
@@ -129,6 +192,27 @@ class SetupActivity : AppCompatActivity() {
             findViewById<Button>(R.id.enableNotificationBtn).visibility =
                 if (hasNotif) View.GONE else View.VISIBLE
         }
+
+        // Launch on boot (full-screen intent — only restrictable on Android 14+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val canFsi = getSystemService(NotificationManager::class.java).canUseFullScreenIntent()
+            fullscreenStatus.text = if (canFsi) "ON" else "OFF"
+            fullscreenStatus.setTextColor(if (canFsi) 0xFF22C55E.toInt() else 0xFFEF4444.toInt())
+            enableFullscreenBtn.visibility = if (canFsi) View.GONE else View.VISIBLE
+        }
+
+        // Battery optimization exemption
+        val ignoringBattery = (getSystemService(Context.POWER_SERVICE) as PowerManager)
+            .isIgnoringBatteryOptimizations(packageName)
+        batteryStatus.text = if (ignoringBattery) "ON" else "OFF"
+        batteryStatus.setTextColor(if (ignoringBattery) 0xFF22C55E.toInt() else 0xFFEF4444.toInt())
+        enableBatteryBtn.visibility = if (ignoringBattery) View.GONE else View.VISIBLE
+
+        // Display over other apps
+        val canOverlay = Settings.canDrawOverlays(this)
+        overlayStatus.text = if (canOverlay) "ON" else "OFF"
+        overlayStatus.setTextColor(if (canOverlay) 0xFF22C55E.toInt() else 0xFFEF4444.toInt())
+        enableOverlayBtn.visibility = if (canOverlay) View.GONE else View.VISIBLE
 
         // Update continue button text
         val allGood = accessibilityEnabled && canInstall
