@@ -26,6 +26,8 @@ android/local.properties
 android/release-key.jks
 *.apk
 *.aab
+*.wgt
+*.tar.gz
 
 # IDE / Editor
 .claude/

@@ -68,23 +68,24 @@ jobs:
           echo "prev=$PREV" >> "$GITHUB_OUTPUT"
           echo "Releasing ${GITHUB_REF_NAME} (version $(cat VERSION)); previous tag: ${PREV:-<none>}"
 
-      - name: Build source tarball
+      - name: Build Tizen .wgt (unsigned in CI)
+        run: |
+          chmod +x tizen/build-wgt.sh
+          ( cd tizen && ./build-wgt.sh )   # no Tizen CLI on the runner => unsigned zip
+          cp tizen/ScreenTinker.wgt ScreenTinker.wgt
+          ls -la ScreenTinker.wgt
+
+      - name: Build source tarball (bundles the .wgt; the signed apk is added by scripts/finalize-release.sh)
         run: |
           OUT="screentinker-${{ steps.ver.outputs.version }}.tar.gz"
           tar czf "$OUT" \
             --exclude='node_modules' --exclude='.git' --exclude='.github' \
             --exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' --exclude='*.db.*' \
             --exclude='server/uploads' --exclude='server/certs' --exclude='server/test' \
-            --exclude='*.apk' --exclude='*.wgt' \
-            server frontend scripts VERSION README.md LICENSE .env.example
+            --exclude='*.apk' \
+            server frontend scripts VERSION README.md LICENSE .env.example ScreenTinker.wgt
           echo "TARBALL=$OUT" >> "$GITHUB_ENV"
           ls -la "$OUT"
-
-      - name: Build Tizen .wgt (unsigned in CI)
-        run: |
-          chmod +x tizen/build-wgt.sh
-          ( cd tizen && ./build-wgt.sh )   # no Tizen CLI on the runner => unsigned zip
-          ls -la tizen/ScreenTinker.wgt
 
       - name: Generate release notes
         run: |
@@ -101,12 +102,13 @@ jobs:
             fi
             echo
             echo "### Artifacts"
-            echo "- \`${TARBALL}\` - server + frontend source tarball (Node 20; see the README to run)."
+            echo "- \`${TARBALL}\` - bundle: server + frontend source + the Tizen .wgt (the signed Android APK is added at the root during release finalization)."
             echo "- \`ScreenTinker.wgt\` - Tizen TV web app, **unsigned - for inspection only**."
             echo "  Sign it with your own Samsung certificate (Tizen Studio + a profile that includes"
             echo "  your TV's DUID) to install, or - easiest - point a Tizen TV browser / URL Launcher"
             echo "  at \`https://<your-instance>/player\` (no signing needed)."
             echo "- Docker image: \`ghcr.io/screentinker/screentinker:${{ steps.ver.outputs.version }}\` (also \`:latest\`)."
+            echo "- \`ScreenTinker.apk\` - signed Android player (attached during release finalization)."
           } > RELEASE_NOTES.md
           cat RELEASE_NOTES.md
 
