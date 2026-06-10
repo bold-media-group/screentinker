@@ -192,8 +192,30 @@
   // ---- playback ----
   var player = new PlaylistPlayer(elStage, function () { return serverUrl.replace(/\/+$/, ''); });
 
+  // Rotate the playback stage in software for portrait / flipped signage. Tizen TVs
+  // are fixed-landscape, so we rotate the CONTENT (not the panel). Values mirror the
+  // dashboard: landscape / portrait / landscape-flipped / portrait-flipped.
+  function applyOrientation(o) {
+    var s = elStage;
+    if (!o || o === 'landscape') {
+      s.style.position = ''; s.style.top = ''; s.style.left = '';
+      s.style.width = ''; s.style.height = ''; s.style.transform = ''; s.style.transformOrigin = '';
+      return;
+    }
+    var deg = o === 'portrait' ? 90 : o === 'portrait-flipped' ? 270 : o === 'landscape-flipped' ? 180 : 0;
+    var swap = (deg === 90 || deg === 270);
+    s.style.position = 'absolute';
+    s.style.top = '50%';
+    s.style.left = '50%';
+    s.style.width = swap ? '100vh' : '100vw';
+    s.style.height = swap ? '100vw' : '100vh';
+    s.style.transformOrigin = 'center center';
+    s.style.transform = 'translate(-50%, -50%) rotate(' + deg + 'deg)';
+  }
+
   function onPlaylist(payload) {
     if (!payload) return;
+    applyOrientation(payload.orientation || 'landscape');
     if (payload.suspended) {
       player.stop();
       elStage.innerHTML = '<div class="card" style="position:relative"><h1>' +

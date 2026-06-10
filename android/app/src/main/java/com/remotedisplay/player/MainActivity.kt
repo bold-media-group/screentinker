@@ -52,6 +52,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusOverlay: View
     private lateinit var statusText: TextView
     private lateinit var rootView: View
+    private var currentOrientation: String? = null
 
     private val handler = Handler(Looper.getMainLooper())
     private var remoteStreaming = false
@@ -198,9 +199,40 @@ class MainActivity : AppCompatActivity() {
 
     }
 
+    // Rotate the whole stage in software so portrait / flipped signage works even on
+    // fixed-landscape hardware (Fire TV, Android TV and most signage sticks ignore
+    // setRequestedOrientation - they can't physically rotate the panel). Resizes
+    // rootView to the rotated dimensions, recenters, and rotates. Covers single-zone
+    // (playerView/imageView/youtubeWebView) and multi-zone (ZoneManager renders into
+    // the same rootView). Values mirror the dashboard: landscape / portrait /
+    // landscape-flipped / portrait-flipped.
+    private fun applyOrientation(orientation: String) {
+        if (orientation == currentOrientation) return
+        currentOrientation = orientation
+        val m = resources.displayMetrics
+        val w = m.widthPixels.toFloat()
+        val h = m.heightPixels.toFloat()
+        val (rot, swap) = when (orientation) {
+            "portrait" -> 90f to true
+            "portrait-flipped" -> 270f to true
+            "landscape-flipped" -> 180f to false
+            else -> 0f to false   // landscape
+        }
+        val lp = rootView.layoutParams
+        lp.width = (if (swap) h else w).toInt()
+        lp.height = (if (swap) w else h).toInt()
+        rootView.layoutParams = lp
+        rootView.translationX = if (swap) (w - h) / 2f else 0f
+        rootView.translationY = if (swap) (h - w) / 2f else 0f
+        rootView.rotation = rot
+        rootView.requestLayout()
+        Log.i("MainActivity", "Applied orientation: $orientation (rotation=$rot, swap=$swap)")
+    }
+
     private fun setupServiceCallbacks() {
         wsService?.onPlaylistUpdate = { data ->
             try {
+            applyOrientation(data.optString("orientation", "landscape"))
             // Check if device is suspended (trial expired / over limit)
             if (data.optBoolean("suspended", false)) {
                 val message = data.optString("message", "Account Suspended")
