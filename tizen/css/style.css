@@ -24,7 +24,7 @@ html, body {
     text-align: center;
     max-width: 760px;
 }
-.card h1 { color: #3b82f6; font-size: 44px; margin-bottom: 6px; }
+.card h1 { color: #CD1F77; font-size: 44px; margin-bottom: 6px; }
 .sub { color: #94a3b8; font-size: 22px; margin-bottom: 36px; }
 .card label { display: block; text-align: left; color: #94a3b8; font-size: 18px; margin-bottom: 8px; }
 
@@ -33,14 +33,14 @@ html, body {
     border-radius: 10px; border: 2px solid #334155;
     background: #0b1220; color: #f1f5f9; margin-bottom: 24px;
 }
-#serverUrl:focus { outline: none; border-color: #3b82f6; }
+#serverUrl:focus { outline: none; border-color: #CD1F77; }
 
 button {
     font-size: 24px; font-weight: bold; color: #fff;
-    background: #3b82f6; border: none; border-radius: 10px;
+    background: #CD1F77; border: none; border-radius: 10px;
     padding: 16px 40px; cursor: pointer;
 }
-button:focus { outline: 3px solid #93c5fd; }
+button:focus { outline: 3px solid #CD1F77; }
 button.ghost { background: transparent; color: #64748b; font-size: 18px; margin-top: 24px; padding: 8px; }
 
 .status { color: #64748b; font-size: 18px; margin-top: 20px; min-height: 24px; }
@@ -49,7 +49,7 @@ button.ghost { background: transparent; color: #64748b; font-size: 18px; margin-
 /* Pairing code */
 .code {
     font-size: 96px; font-weight: bold; letter-spacing: 16px;
-    color: #22c55e; margin: 24px 0; font-family: monospace;
+    color: #CD1F77; margin: 24px 0; font-family: monospace;
 }
 .hint { color: #94a3b8; font-size: 20px; line-height: 1.5; }
 
