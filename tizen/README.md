@@ -42,20 +42,27 @@ No package needed. Host this folder on any web server (e.g. the ScreenTinker
 server itself) and point the display's **URL Launcher** at `…/index.html`.
 The TV runs it as a web app on boot. Best for Samsung B2B signage displays.
 
-### B) Signed `.wgt` (retail TVs / installed app)
-Retail Tizen TVs require a Samsung-signed package:
-1. Install **Tizen Studio** + the TV extension.
-2. **Certificate Manager** → create a Samsung author + distributor certificate
-   (needs a free Samsung account; distributor cert must include the TV's **DUID**).
-3. Create a signing **profile**, then:
-   ```bash
-   ./build-wgt.sh <profileName>     # uses `tizen package -t wgt -s <profileName>`
-   ```
-4. Put the TV in **Developer Mode** (Apps → 12345 → enter host IP), then install:
-   ```bash
-   sdb connect <tv-ip>
-   tizen install -n ScreenTinker.wgt -t <tv-device>
-   ```
+### B) Signed `.wgt` (installed app)
+A signing profile is already set up on the build box (Tizen Studio CLI 6.1):
+- **Profile `ScreenTinker`** = a self-signed **author** cert
+  (`~/tizen-studio-data/keystore/author/st_author.p12`) + the default Tizen
+  **distributor** cert. `./build-wgt.sh` auto-detects the CLI and signs with it,
+  producing a `.wgt` with `author-signature.xml` + `signature1.xml`.
+- This installs on **developer-mode** Samsung TVs and the **Tizen emulator** —
+  the right path for a **self-hosted fleet you control** (enable Developer Mode
+  on each TV once: Apps → enter `12345` → set the host IP).
+
+Install onto a dev-mode TV:
+```bash
+sdb connect <tv-ip>
+tizen install -n ScreenTinker.wgt -t <tv-device>
+```
+
+**Production / retail (no developer mode):** re-sign with a Samsung **Partner**
+or **Public** distributor certificate from the Tizen **Certificate Manager**
+(free Samsung account; distributor cert tied to each TV's **DUID**), then
+`./build-wgt.sh <thatProfile>`. The self-signed author cert is not committed (it
+lives in `~/tizen-studio-data`, password `screentinker`).
 
 ## Validated (2026-06-09)
 - **Protocol**: headless test against the live server passed end-to-end —
