@@ -5,6 +5,7 @@ const os = require('os');
 const path = require('path');
 const fs = require('fs');
 const config = require('../config');
+const VERSION = require('../version');
 const { PLATFORM_ROLES } = require('../middleware/auth');
 
 // Public status page
@@ -16,8 +17,7 @@ router.get('/', (req, res) => {
   const uptime = process.uptime();
 
   // Public status - minimal info only (no user counts, no server internals)
-  let version = '1.5.1';
-  try { version = require('fs').readFileSync(require('path').join(__dirname, '..', '..', 'VERSION'), 'utf8').trim(); } catch {}
+  const version = VERSION;
 
   res.json({
     status: 'ok',

@@ -1,0 +1,44 @@
+// Hard backward-compat guarantee: with DATA_DIR (and the per-path overrides)
+// UNSET, config must resolve to exactly the legacy in-repo locations, so existing
+// installs - including production - see zero behavior change. Also verifies the
+// overrides actually relocate state (the Docker /data case).
+const { test } = require('node:test');
+const assert = require('node:assert');
+const path = require('node:path');
+
+const PATH_ENV = ['DATA_DIR', 'DB_PATH', 'UPLOADS_DIR', 'CERTS_DIR'];
+const serverDir = path.join(__dirname, '..'); // config.js lives in server/
+
+function loadConfig(overrides) {
+  PATH_ENV.forEach((k) => delete process.env[k]);
+  process.env.JWT_SECRET = 'test-secret'; // short-circuits the secret-file-writing IIFE (no FS side effects)
+  Object.assign(process.env, overrides || {});
+  delete require.cache[require.resolve('../config')];
+  return require('../config');
+}
+
+test('UNSET -> exactly the legacy in-repo paths (zero change for existing installs)', () => {
+  const c = loadConfig();
+  assert.strictEqual(c.dataDir, serverDir);
+  assert.strictEqual(c.dbPath, path.join(serverDir, 'db', 'remote_display.db'));
+  assert.strictEqual(c.uploadsDir, path.join(serverDir, 'uploads'));
+  assert.strictEqual(c.contentDir, path.join(serverDir, 'uploads', 'content'));
+  assert.strictEqual(c.screenshotsDir, path.join(serverDir, 'uploads', 'screenshots'));
+  assert.strictEqual(c.certsDir, path.join(serverDir, 'certs'));
+});
+
+test('DATA_DIR relocates db / uploads / certs onto the volume', () => {
+  const c = loadConfig({ DATA_DIR: '/data' });
+  assert.strictEqual(c.dbPath, path.join('/data', 'db', 'remote_display.db'));
+  assert.strictEqual(c.uploadsDir, path.join('/data', 'uploads'));
+  assert.strictEqual(c.contentDir, path.join('/data', 'uploads', 'content'));
+  assert.strictEqual(c.screenshotsDir, path.join('/data', 'uploads', 'screenshots'));
+  assert.strictEqual(c.certsDir, path.join('/data', 'certs'));
+});
+
+test('individual overrides win over DATA_DIR', () => {
+  const c = loadConfig({ DATA_DIR: '/data', DB_PATH: '/custom/app.db', UPLOADS_DIR: '/media' });
+  assert.strictEqual(c.dbPath, '/custom/app.db');
+  assert.strictEqual(c.uploadsDir, '/media');
+  assert.strictEqual(c.contentDir, path.join('/media', 'content'));
+});

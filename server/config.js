@@ -1,12 +1,23 @@
 const path = require('path');
 
+// Data locations. Everything defaults to the in-repo layout, so existing installs
+// (including production) are byte-for-byte unchanged when these are unset. Set
+// DATA_DIR - or the individual *_PATH / *_DIR vars - to relocate state onto a
+// mounted volume (used by the Docker image). UNSET resolves to exactly the legacy
+// paths: server/db/remote_display.db, server/uploads/, server/certs/.
+const DATA_DIR = process.env.DATA_DIR || __dirname;
+const uploadsDir = process.env.UPLOADS_DIR || path.join(DATA_DIR, 'uploads');
+const certsDir = process.env.CERTS_DIR || path.join(DATA_DIR, 'certs');
+
 module.exports = {
   port: process.env.PORT || 3001,
   httpsPort: process.env.HTTPS_PORT || 3443,
-  dbPath: path.join(__dirname, 'db', 'remote_display.db'),
-  uploadsDir: path.join(__dirname, 'uploads'),
-  contentDir: path.join(__dirname, 'uploads', 'content'),
-  screenshotsDir: path.join(__dirname, 'uploads', 'screenshots'),
+  dataDir: DATA_DIR,
+  dbPath: process.env.DB_PATH || path.join(DATA_DIR, 'db', 'remote_display.db'),
+  uploadsDir,
+  contentDir: path.join(uploadsDir, 'content'),
+  screenshotsDir: path.join(uploadsDir, 'screenshots'),
+  certsDir,
   frontendDir: path.join(__dirname, '..', 'frontend'),
   // App-level heartbeat. Checker runs every heartbeatInterval and marks
   // devices offline if last_heartbeat is older than heartbeatTimeout.
@@ -29,11 +40,11 @@ module.exports = {
   screenshotQuality: 70,
   // SSL: drop your Cloudflare Origin cert + key in certs/ folder
   // or set env vars SSL_CERT and SSL_KEY to custom paths
-  sslCert: process.env.SSL_CERT || path.join(__dirname, 'certs', 'cert.pem'),
-  sslKey: process.env.SSL_KEY || path.join(__dirname, 'certs', 'key.pem'),
+  sslCert: process.env.SSL_CERT || path.join(certsDir, 'cert.pem'),
+  sslKey: process.env.SSL_KEY || path.join(certsDir, 'key.pem'),
   // Auth
   jwtSecret: process.env.JWT_SECRET || (() => {
-    const secretFile = path.join(__dirname, 'certs', '.jwt_secret');
+    const secretFile = path.join(certsDir, '.jwt_secret');
     const fs = require('fs');
     if (fs.existsSync(secretFile)) return fs.readFileSync(secretFile, 'utf8').trim();
     const secret = require('crypto').randomBytes(64).toString('hex');

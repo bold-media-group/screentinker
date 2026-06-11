@@ -1,10 +1,12 @@
 # Dependencies
 node_modules/
 
-# Database
-server/db/*.db
-server/db/*.db-wal
-server/db/*.db-shm
+# Databases: SQLite files, WAL/SHM sidecars, and any .db.<suffix> backups
+# (e.g. .db.devbak), anywhere in the tree - never commit a database.
+*.db
+*.db-wal
+*.db-shm
+*.db.*
 
 # Uploads (user content)
 server/uploads/
@@ -24,6 +26,8 @@ android/local.properties
 android/release-key.jks
 *.apk
 *.aab
+*.wgt
+*.tar.gz
 
 # IDE / Editor
 .claude/

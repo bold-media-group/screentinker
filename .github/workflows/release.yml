@@ -1,0 +1,152 @@
+name: Release
+
+# Fires when a version tag is pushed (e.g. v1.8.0). Builds + publishes artifacts
+# only - nothing here deploys to production.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # create the GitHub Release
+  packages: write   # push the image to ghcr.io
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false   # never cancel a release mid-publish
+
+jobs:
+  # Fail-fast: a hand-pushed tag that disagrees with VERSION must not publish
+  # anything (the artifacts would report the wrong version). Gates everything.
+  verify:
+    name: Verify tag matches VERSION
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Assert pushed tag equals VERSION
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          FILE="$(cat VERSION)"
+          echo "pushed tag: ${GITHUB_REF_NAME} (stripped: $TAG)   VERSION file: $FILE"
+          if [ "$TAG" != "$FILE" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match VERSION ($FILE) - refusing to publish."
+            exit 1
+          fi
+          echo "OK: tag matches VERSION ($FILE)"
+
+  test:
+    name: Tests
+    needs: verify
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+      - run: npm test
+
+  artifacts:
+    name: Tarball + Tizen .wgt + GitHub Release
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0   # full history, for release notes
+
+      - name: Resolve version + previous tag
+        id: ver
+        run: |
+          echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+          echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          PREV="$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)"
+          echo "prev=$PREV" >> "$GITHUB_OUTPUT"
+          echo "Releasing ${GITHUB_REF_NAME} (version $(cat VERSION)); previous tag: ${PREV:-<none>}"
+
+      - name: Build Tizen .wgt (unsigned in CI)
+        run: |
+          chmod +x tizen/build-wgt.sh
+          ( cd tizen && ./build-wgt.sh )   # no Tizen CLI on the runner => unsigned zip
+          cp tizen/ScreenTinker.wgt ScreenTinker.wgt
+          ls -la ScreenTinker.wgt
+
+      - name: Build source tarball (bundles the .wgt; the signed apk is added by scripts/finalize-release.sh)
+        run: |
+          OUT="screentinker-${{ steps.ver.outputs.version }}.tar.gz"
+          tar czf "$OUT" \
+            --exclude='node_modules' --exclude='.git' --exclude='.github' \
+            --exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' --exclude='*.db.*' \
+            --exclude='server/uploads' --exclude='server/certs' --exclude='server/test' \
+            --exclude='*.apk' \
+            server frontend scripts VERSION README.md LICENSE .env.example ScreenTinker.wgt
+          echo "TARBALL=$OUT" >> "$GITHUB_ENV"
+          ls -la "$OUT"
+
+      - name: Generate release notes
+        run: |
+          PREV="${{ steps.ver.outputs.prev }}"
+          {
+            echo "## ScreenTinker ${{ steps.ver.outputs.tag }}"
+            echo
+            echo "### Changes"
+            if [ -n "$PREV" ]; then
+              git log --no-merges --pretty='- %s' "${PREV}..${{ steps.ver.outputs.tag }}"
+            else
+              echo "_First tagged release. Most recent changes:_"
+              git log --no-merges --pretty='- %s' -n 30 "${{ steps.ver.outputs.tag }}"
+            fi
+            echo
+            echo "### Artifacts"
+            echo "- \`${TARBALL}\` - bundle: server + frontend source + the Tizen .wgt (the signed Android APK is added at the root during release finalization)."
+            echo "- \`ScreenTinker.wgt\` - Tizen TV web app, **unsigned - for inspection only**."
+            echo "  Sign it with your own Samsung certificate (Tizen Studio + a profile that includes"
+            echo "  your TV's DUID) to install, or - easiest - point a Tizen TV browser / URL Launcher"
+            echo "  at \`https://<your-instance>/player\` (no signing needed)."
+            echo "- Docker image: \`ghcr.io/screentinker/screentinker:${{ steps.ver.outputs.version }}\` (also \`:latest\`)."
+            echo "- \`ScreenTinker.apk\` - signed Android player (attached during release finalization)."
+          } > RELEASE_NOTES.md
+          cat RELEASE_NOTES.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.ver.outputs.tag }}" \
+            --title "ScreenTinker ${{ steps.ver.outputs.tag }}" \
+            --notes-file RELEASE_NOTES.md \
+            "${TARBALL}" \
+            tizen/ScreenTinker.wgt
+
+  docker:
+    name: Docker image (amd64 + arm64) -> ghcr
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - id: ver
+        run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/screentinker/screentinker:${{ steps.ver.outputs.version }}
+            ghcr.io/screentinker/screentinker:latest
+
+  # TODO (deferred): build + sign the Android APK in CI. Requires the release
+  # keystore + passwords as encrypted Actions secrets. For now the maintainer
+  # attaches a signed APK out-of-band (and self-hosters mount one at
+  # /data/ScreenTinker.apk).

@@ -1,0 +1,33 @@
+# Example docker-compose for self-hosting ScreenTinker.
+#   cp docker-compose.example.yml docker-compose.yml   # then edit to taste
+# The container serves plain HTTP on 3001 - front it with a TLS-terminating
+# reverse proxy or Cloudflare in production.
+services:
+  screentinker:
+    image: ghcr.io/screentinker/screentinker:latest
+    # ...or build from source instead of pulling:
+    # build: .
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      SELF_HOSTED: "true"            # first registered user becomes admin, no billing
+      # JWT_SECRET: "set-a-long-random-string"   # else one is generated under /data/certs
+      # DISABLE_HOMEPAGE: "true"     # redirect / to the app instead of the landing page
+    volumes:
+      - st-data:/data               # db, uploads, and the jwt secret persist here
+      # To enable OTA APK downloads, mount a built APK read-only:
+      # - ./ScreenTinker.apk:/data/ScreenTinker.apk:ro
+    healthcheck:
+      # image is node:20-slim (no curl) - use node's built-in fetch
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3001/api/status').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s             # first boot runs db migrations
+
+# Locked out of the admin account? Reset it with:
+#   docker exec -it screentinker node scripts/reset-admin.js
+
+volumes:
+  st-data:

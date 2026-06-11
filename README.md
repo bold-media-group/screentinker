@@ -314,29 +314,34 @@ To update a running instance to the latest version:
 ```bash
 cd /opt/screentinker
 
-# Back up the database first
-sqlite3 server/db/remote_display.db ".backup server/db/backup-$(date +%F).db"
+# Upgrade to the latest tagged release. Backs up the db (a .backup snapshot under
+# ./backups), checks out the tag, runs npm ci --omit=dev, restarts the service,
+# and reports the running version.
+scripts/upgrade.sh
 
-# Pull latest code
-git pull origin main
-
-# Install any new dependencies
-cd server && npm install --production
-
-# Restart the service
-sudo systemctl restart screentinker
+# ...or pin a specific release:
+scripts/upgrade.sh v1.8.0
 ```
 
-If you deployed without git, you can initialize it:
+Set `SERVICE_NAME` if your systemd unit is not named `screentinker`.
+
+If you deployed without git, initialize it once so `upgrade.sh` can resolve tags:
 
 ```bash
 cd /opt/screentinker
 git init
 git remote add origin https://github.com/screentinker/screentinker.git
-git fetch origin main
-git checkout origin/main -- .
+git fetch origin --tags
+git checkout -f main
 cd server && npm install --production
 sudo systemctl restart screentinker
+```
+
+**Track bleeding edge (`main`)** instead of tagged releases - newest code, less tested:
+
+```bash
+cd /opt/screentinker && git checkout main && git pull origin main
+cd server && npm install --production && sudo systemctl restart screentinker
 ```
 
 Your database, uploads, and configuration are preserved — only code files are updated.
@@ -414,6 +419,7 @@ keytool -genkey -v -keystore android/release-key.jks -keyalg RSA -keysize 2048 -
    - **Android TV / tablets**: Download the APK from your instance (`/download/apk`) or build it from source (see above)
    - **Raspberry Pi**: `curl -sSL https://your-instance/scripts/raspberry-pi-setup.sh | bash`
    - **Windows**: Run the setup script from `scripts/windows-setup.bat`
+   - **Samsung Tizen TV / signage**: point the TV's URL Launcher (or browser) at `https://your-instance/player` - no signing needed. For an installed native app, see [tizen/README.md](tizen/README.md)
    - **Any browser**: Open `https://your-instance/player` in kiosk/fullscreen mode
 4. Enter the pairing code shown on the device
 

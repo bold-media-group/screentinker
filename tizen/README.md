@@ -35,12 +35,20 @@ build-wgt.sh        package (signed if Tizen CLI present, else unsigned)
 ```
 Without the Tizen CLI this is an **unsigned** `.wgt`.
 
+> **Why the released `.wgt` is unsigned:** Samsung **distributor** certificates
+> are locked to the **DUID** of the signer's own TVs, so a `.wgt` we signed would
+> not install on your TV anyway. Releases therefore ship it unsigned (for
+> inspection only). To actually run it, use **path A** (no signing) or sign it
+> yourself with your own certificate (**path B**).
+
 ## Deploy — two paths
 
-### A) URL Launcher (easiest, no signing) — Samsung signage (SSSP)
-No package needed. Host this folder on any web server (e.g. the ScreenTinker
-server itself) and point the display's **URL Launcher** at `…/index.html`.
-The TV runs it as a web app on boot. Best for Samsung B2B signage displays.
+### A) URL Launcher / TV browser (easiest, no signing)
+No package, no Tizen Studio. Point the TV's **URL Launcher** (or just its web
+browser) at your server's built-in web player: `https://<your-instance>/player`.
+The TV runs it as a web app on boot, pairs with a 6-digit code, and plays - best
+for Samsung B2B signage (SSSP). (You can instead self-host this `tizen/` folder
+and point the URL Launcher at `…/index.html` for the Tizen-specific build.)
 
 ### B) Signed `.wgt` (installed app)
 A signing profile is already set up on the build box (Tizen Studio CLI 6.1):

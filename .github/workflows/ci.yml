@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# main gets frequent pushes - cancel an in-flight run when a newer commit
+# (or rerun) supersedes it, per ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Unit tests (node --test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+      - run: npm test
+
+  smoke:
+    name: Boot smoke + version check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install deps
+        working-directory: server
+        run: npm ci
+
+      # Boot against a fresh SQLite db (clean checkout = no db yet). SELF_HOSTED
+      # makes the first user an admin with no billing. No certs present, so the
+      # server listens on plain HTTP at :3001. Background it and wait until it
+      # answers.
+      - name: Boot server
+        working-directory: server
+        env:
+          SELF_HOSTED: 'true'
+        run: |
+          node server.js > "$RUNNER_TEMP/server.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/server.pid"
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:3001/api/status >/dev/null && exit 0
+            sleep 1
+          done
+          echo "server did not come up within 30s:"; cat "$RUNNER_TEMP/server.log"; exit 1
+
+      # Assert the public status endpoint is healthy and reports exactly the
+      # VERSION file - this is what proves the single-source-of-truth wiring.
+      - name: Assert /api/status ok and version matches VERSION
+        run: |
+          STATUS="$(curl -sf http://localhost:3001/api/status)"
+          echo "status: $STATUS"
+          EXPECTED="$(cat VERSION)"
+          REPORTED="$(echo "$STATUS" | jq -r .version)"
+          echo "VERSION file: $EXPECTED   reported: $REPORTED"
+          test "$(echo "$STATUS" | jq -r .status)" = "ok"
+          test "$REPORTED" = "$EXPECTED"
+          echo "OK: status ok, version $REPORTED matches VERSION"
+
+      - name: Stop server
+        if: always()
+        run: kill "$(cat "$RUNNER_TEMP/server.pid")" 2>/dev/null || true
+
+  # TODO (deferred - needs a tag earlier than HEAD, so meaningful from v1.8.0 on):
+  # upgrade-path job. Restore a db created by the previous tagged release, boot
+  # the current code against it, and assert migrations complete and /api/status
+  # is healthy. Add once a prior release tag exists.

@@ -1,6 +1,6 @@
 {
-  "name": "remote-display-server",
-  "version": "1.0.0",
+  "name": "screentinker",
+  "version": "1.8.1",
   "description": "ScreenTinker - Digital Signage Management Server",
   "main": "server.js",
   "scripts": {

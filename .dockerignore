@@ -1,0 +1,38 @@
+# git + CI
+.git
+.github
+.gitignore
+
+# deps - reinstalled fresh in the build
+node_modules
+**/node_modules
+
+# mutable state (lives on the /data volume, never baked into the image).
+# Note: the *.db* patterns drop the database FILES; we must NOT exclude the
+# server/db/ directory itself - it holds database.js + schema.sql.
+*.db
+*.db-wal
+*.db-shm
+*.db.*
+server/uploads
+server/certs
+
+# secrets
+.env
+**/.env
+
+# not needed at runtime (NOTE: scripts/ IS needed - database.js requires
+# scripts/migrate-multitenancy at boot - so it must stay in the image)
+server/test
+android
+tizen
+video
+*.apk
+*.wgt
+*.tar.gz
+
+# docs / editor cruft
+*.md
+.vscode
+.idea
+.DS_Store
