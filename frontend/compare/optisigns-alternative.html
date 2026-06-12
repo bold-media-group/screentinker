@@ -59,7 +59,7 @@
 
     <h2>The short answer</h2>
     <p><strong>OptiSigns</strong> is a well-marketed cloud signage product with a deep template library and good documentation. It targets non-technical buyers and works particularly well for restaurants and retail menus.</p>
-    <p><strong>ScreenTinker</strong> is open source (MIT licensed), self-hostable, supports more platforms natively, and is meaningfully cheaper at higher screen counts. It is a better fit if you have any technical capacity, you care about data sovereignty, or you operate at a scale where per-screen pricing hurts.</p>
+    <p><strong>ScreenTinker</strong> is open source (MIT licensed), self-hostable, runs on hardware you already own with no lock-in, and is meaningfully cheaper at higher screen counts. It is a better fit if you have any technical capacity, you care about data sovereignty, or you operate at a scale where per-screen pricing hurts.</p>
 
     <h2>Quick comparison</h2>
     <div class="compare-table-wrap">
@@ -70,21 +70,25 @@
         <tbody>
           <tr><td>Open source</td><td class="yes">Yes (MIT)</td><td class="no">No</td></tr>
           <tr><td>Self-host option</td><td class="yes">Yes</td><td class="no">No (cloud only)</td></tr>
-          <tr><td>Free plan</td><td class="yes">1 device, 500MB</td><td class="no">14-day trial only</td></tr>
+          <tr><td>Free plan</td><td class="yes">1 device, 500MB</td><td class="yes">Free, up to 3 screens</td></tr>
           <tr><td>Android TV / Fire TV</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
-          <tr><td>Raspberry Pi</td><td class="yes">Free setup script</td><td class="partial">Limited support</td></tr>
+          <tr><td>Raspberry Pi</td><td class="yes">Free setup script</td><td class="partial">Limited support<!-- VERIFY: OptiSigns markets 10+ platforms incl. Pi; exact Pi support level not confirmed --></td></tr>
           <tr><td>Windows / ChromeOS</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
           <tr><td>Web browser player</td><td class="yes">Yes</td><td class="partial">Limited</td></tr>
-          <tr><td>Video walls</td><td class="yes">Yes (with sync)</td><td class="yes">Yes</td></tr>
+          <tr><td>Video walls</td><td class="yes">Yes (with sync)</td><td class="partial">Paid add-on</td></tr>
           <tr><td>Multi-zone layouts</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
           <tr><td>Template library</td><td class="partial">Custom designer</td><td class="yes">Large library</td></tr>
-          <tr><td>Live remote control</td><td class="yes">Yes</td><td class="partial">Screenshot only</td></tr>
-          <tr><td>White-label / reseller</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
+          <tr><td>Live remote control*</td><td class="yes">Yes</td><td class="partial">Limited</td></tr>
+          <tr><td>White-label / reseller</td><td class="yes">Yes</td><td class="paid">Paid tier</td></tr>
           <tr><td>Pricing for 15 devices</td><td>$99/mo Pro</td><td>~$165/mo (11 USD/screen)</td></tr>
           <tr><td>Self-host cost</td><td>Free (your server)</td><td>Not available</td></tr>
         </tbody>
       </table>
     </div>
+    <p style="font-size:12px;color:var(--dim);line-height:1.6;margin-top:12px">
+      * Live remote control is Android only and requires granting the on-device accessibility permission.<br>
+      Comparison as of June 2026, based on each vendor's publicly listed pricing and documentation. Spot an error? <a href="https://github.com/screentinker/screentinker/issues" target="_blank" rel="noopener">Open an issue on GitHub</a> and we'll fix it.
+    </p>
 
     <h2>Where OptiSigns does well</h2>
     <ul>
@@ -99,7 +103,7 @@
       <li><strong>Self-hosting.</strong> If you cannot or will not put your signage data in a third-party cloud, ScreenTinker is one of the few real options. OptiSigns does not offer this.</li>
       <li><strong>Source access.</strong> MIT licensed on <a href="https://github.com/screentinker/screentinker" target="_blank" rel="noopener">GitHub</a>. Read the code, modify it, fork it.</li>
       <li><strong>Live remote control.</strong> Stream a live view of any display and inject taps or key events. Most cloud signage tools only show occasional screenshots.</li>
-      <li><strong>Built-in player on more platforms.</strong> Native Android APK, web player works on any browser, Pi setup script, Windows-friendly, macOS-friendly.</li>
+      <li><strong>Runs on hardware you already own.</strong> Native Android APK, web player works on any browser, Pi setup script, Windows-friendly, macOS-friendly - no proprietary player to buy.</li>
     </ul>
 
     <h2>Pricing example: 25 devices for one year</h2>

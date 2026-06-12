@@ -16,6 +16,16 @@
     } catch (e) { /* malformed token -> treat as no workspace */ }
 
     var wl = JSON.parse(localStorage.getItem('rd_branding_' + ws) || 'null');
+    if (!wl) {
+      // #76: no per-workspace cache yet (e.g. a never-visited org). Fall back to
+      // the server-injected instance / custom-domain branding so the page paints
+      // the configured brand instead of flashing the ScreenTinker default;
+      // branding.js then fetches and caches the workspace-specific brand.
+      try {
+        var ssr = document.querySelector('meta[name="ssr-brand"]');
+        if (ssr && ssr.content) wl = JSON.parse(ssr.content);
+      } catch (e) { /* ignore */ }
+    }
     if (!wl) return;
 
     var root = document.documentElement;

@@ -62,7 +62,7 @@
 
     /* Screenshot */
     .screenshot { max-width:1100px; margin:0 auto 80px; padding:0 24px; }
-    .screenshot img, .screenshot .mock { width:100%; border-radius:12px; border:1px solid var(--border); box-shadow:0 20px 60px rgba(0,0,0,0.5); }
+    .screenshot img, .screenshot .mock { width:100%; max-width:100%; height:auto; display:block; border-radius:12px; border:1px solid var(--border); box-shadow:0 20px 60px rgba(0,0,0,0.5); }
     .mock { background:var(--card); aspect-ratio:16/9; display:flex; align-items:center; justify-content:center; color:var(--dim); font-size:18px; }
 
     /* Features */
@@ -129,6 +129,7 @@
     .compare-table .yes { color:#22c55e; }
     .compare-table .no { color:#ef4444; }
     .compare-table .paid { color:#f59e0b; }
+    .compare-table .partial { color:#f59e0b; }
 
     /* CTA */
     .cta { text-align:center; padding:80px 24px; background:linear-gradient(135deg,rgba(59,130,246,0.1),rgba(139,92,246,0.1)); border-top:1px solid var(--border); border-bottom:1px solid var(--border); margin:80px 0; }
@@ -156,6 +157,7 @@
       .nav-logo-text { display:none; }
     }
 
+    @media (max-width:768px) {
       .feature-grid { grid-template-columns:1fr; }
       .pricing-grid { grid-template-columns:1fr; }
       .compare-table { font-size:12px; min-width:560px; }
@@ -286,19 +288,20 @@
       <tbody>
         <tr><td>Price (15 devices/yr)</td><td style="color:var(--accent);font-weight:600">$1,188</td><td>$1,440+</td><td>$3,600+</td><td>$1,800+</td></tr>
         <tr><td>Free tier</td><td class="yes">&#10003; 1 device</td><td class="yes">&#10003;</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
-        <tr><td>Platforms</td><td class="yes">9 platforms</td><td>2</td><td>2</td><td>3</td></tr>
-        <tr><td>Video Wall</td><td class="yes">&#10003; Included</td><td class="no">&#10007;</td><td class="no">&#10007;</td><td class="paid">Paid add-on</td></tr>
-        <tr><td>Remote Control</td><td class="yes">&#10003; All plans</td><td class="paid">Paid add-on</td><td class="no">&#10007;</td><td class="no">&#10007;</td></tr>
-        <tr><td>Content Designer</td><td class="yes">&#10003; Built-in</td><td class="no">&#10007;</td><td class="no">&#10007;</td><td class="no">&#10007;</td></tr>
-        <tr><td>Kiosk/Touchscreen</td><td class="yes">&#10003; Included</td><td class="no">&#10007;</td><td class="no">&#10007;</td><td class="no">&#10007;</td></tr>
+        <tr><td>Video Wall</td><td class="yes">&#10003; Included</td><td class="partial">Basic</td><td class="partial">Basic<!-- VERIFY: multi-screen confirmed; bezel-compensated video wall not confirmed --></td><td class="partial">Paid add-on</td></tr>
+        <tr><td>Live screen view + remote key presses*</td><td class="yes">&#10003; All plans</td><td class="partial">Limited</td><td class="partial">Limited</td><td class="partial">Limited</td></tr>
+        <tr><td>Kiosk/Touchscreen</td><td class="yes">&#10003; Included</td><td class="yes">&#10003;</td><td class="partial">Limited</td><td class="yes">&#10003;</td></tr>
         <tr><td>Proof-of-Play</td><td class="yes">&#10003; All plans</td><td class="paid">Paid tier</td><td class="paid">Paid</td><td class="paid">Paid</td></tr>
         <tr><td>Self-Hosted</td><td class="yes">&#10003; Only us</td><td class="no">&#10007;</td><td class="no">&#10007;</td><td class="no">&#10007;</td></tr>
-        <tr><td>White Label</td><td class="yes">&#10003; Included</td><td class="paid">Paid</td><td class="paid">Enterprise</td><td class="no">&#10007;</td></tr>
+        <tr><td>White Label</td><td class="yes">&#10003; Included</td><td class="paid">Paid</td><td class="paid">Enterprise</td><td class="paid">Paid tier</td></tr>
         <tr><td>Email Alerts</td><td class="yes">&#10003; All plans</td><td class="paid">Paid</td><td class="paid">Paid</td><td class="paid">Paid</td></tr>
-        <tr><td>Hardware Lock-in</td><td class="yes">None</td><td>RPi focused</td><td>Chromecast</td><td>Various</td></tr>
       </tbody>
     </table>
     </div>
+    <p style="max-width:1000px;margin:16px auto 0;font-size:12px;color:var(--dim);line-height:1.6">
+      * Live screen view + remote key presses is Android only and requires granting the on-device accessibility permission.<br>
+      Comparison as of June 2026, based on each vendor's publicly listed pricing and documentation. Spot an error? <a href="https://github.com/screentinker/screentinker/issues" target="_blank" rel="noopener" style="color:var(--accent)">Open an issue on GitHub</a> and we'll fix it.
+    </p>
   </section>
 
   <!-- Resources / internal linking for SEO -->

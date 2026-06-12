@@ -42,10 +42,12 @@ sed -i -E "s/(versionName[[:space:]]*=[[:space:]]*)\"[0-9.]+\"/\1\"$NEW\"/" andr
 CODE="$(grep -oE 'versionCode[[:space:]]*=[[:space:]]*[0-9]+' android/app/build.gradle.kts | grep -oE '[0-9]+$')"
 sed -i -E "s/(versionCode[[:space:]]*=[[:space:]]*)[0-9]+/\1$((CODE + 1))/" android/app/build.gradle.kts
 
-# 4) tizen widget version. Leading-space guard targets the widget's version="..."
-#    attribute and NOT tizen:application required_version="..." (no space before
-#    "version" there - it's "...d_version").
-sed -i -E "s/([[:space:]]version=\")[0-9][^\"]*(\")/\1${NEW}\2/" tizen/config.xml
+# 4) tizen widget version. Skip the <?xml ...?> declaration line - its
+#    version="1.0" is the XML FORMAT version, not the app version, and it also
+#    has a leading space before version= so the guard below would otherwise hit
+#    it (issue #77). The leading-space guard still excludes tizen:application
+#    required_version="..." (that's "...d_version", no preceding space).
+sed -i -E "/^<\?xml/! s/([[:space:]]version=\")[0-9][^\"]*(\")/\1${NEW}\2/" tizen/config.xml
 
 # 5) commit + annotated tag (no push)
 git add VERSION server/package.json server/package-lock.json android/app/build.gradle.kts tizen/config.xml
