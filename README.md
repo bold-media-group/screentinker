@@ -497,12 +497,13 @@ scripts/          Device setup scripts + admin recovery
 
 ScreenTinker is built and maintained by one developer. If the project is useful to you and you want to support continued development:
 
+- **[Donate via Wise](https://wise.com/pay/business/bytetinkerllc?utm_source=quick_pay)** — directly help fund continued development (ByteTinker LLC)
 - Star the repo on GitHub
 - Open [issues](https://github.com/screentinker/screentinker/issues) with feedback or bug reports
 - Drop into the [Discord](https://discord.gg/utTdsrqq4Z) and say hi
 - Contribute back if you've extended something useful
 
-GitHub Sponsors integration is planned. Direct contact: [dan@bytetinker.net](mailto:dan@bytetinker.net) or via Discord.
+GitHub Sponsors integration is also planned. Direct contact: [dan@bytetinker.net](mailto:dan@bytetinker.net) or via Discord.
 
 ## License
 
