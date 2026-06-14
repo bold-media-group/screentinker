@@ -121,6 +121,17 @@ function pushToDevices(playlistId, req) {
   } catch (e) { /* silent */ }
 }
 
+// #73: the shared publish path - snapshot current items into published_snapshot (what
+// devices actually consume) + push to devices. POST /:id/publish AND the agency
+// auto-publish path both call this, so they can never drift (a "published" playlist that
+// wasn't snapshotted would be live-on-no-screen).
+function publishPlaylist(playlistId, req) {
+  const snapshotItems = buildSnapshotItems(playlistId);
+  db.prepare("UPDATE playlists SET status = 'published', published_snapshot = ?, updated_at = strftime('%s','now') WHERE id = ?")
+    .run(JSON.stringify(snapshotItems), playlistId);
+  pushToDevices(playlistId, req);
+}
+
 // Phase 2.2k: list scoped to caller's current workspace. No platform_admin
 // bypass - cross-workspace view comes from switch-workspace, matching the
 // precedent established across all other migrated routes.
@@ -202,10 +213,7 @@ router.put('/:id', requirePlaylistWrite, (req, res) => {
 router.post('/:id/publish', requirePlaylistWrite, (req, res) => {
   // Snapshot shape (no pi.id) is intentional — published_snapshot is consumed
   // by devices and stored as JSON; row IDs there would be misleading.
-  const snapshotItems = buildSnapshotItems(req.params.id);
-  db.prepare("UPDATE playlists SET status = 'published', published_snapshot = ?, updated_at = strftime('%s','now') WHERE id = ?")
-    .run(JSON.stringify(snapshotItems), req.params.id);
-  pushToDevices(req.params.id, req);
+  publishPlaylist(req.params.id, req);
   // UI response shape must include pi.id so the post-publish render can wire
   // per-row delete/duration listeners. TODO: refactor to share this SELECT
   // with GET /:id (also duplicated in /discard and POST /:id/items/reorder).
@@ -541,3 +549,4 @@ router.post('/:id/assign', requirePlaylistWrite, (req, res) => {
 });
 
 module.exports = router;
+module.exports.publishPlaylist = publishPlaylist; // #73: shared with the agency auto-publish path
