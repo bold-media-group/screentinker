@@ -14,6 +14,7 @@ const upload = require('../middleware/upload');
 const { checkStorageLimit } = require('../middleware/subscription');
 const { ingestUploadedFile } = require('../lib/content-ingest');
 const { listDesignatedPlaylists } = require('../lib/agency-targets');
+const { listLayoutGeometry } = require('../lib/agency-layouts');
 const { publishPlaylist } = require('./playlists'); // #73: shared publish path for auto-publish
 
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -24,6 +25,13 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 // (own token + bound workspace only). Bite-tested in test/agency-list.test.js.
 router.get('/playlists', (req, res) => {
   res.json(listDesignatedPlaylists(db, req.apiToken.id, req.jwtWorkspaceId));
+});
+
+// Layout GEOMETRY (canvas size + zone positions/sizes + which zones are this token's) so the
+// agency can size/place content. DEVICE-FREE (lib/agency-layouts.js): never touches the fleet
+// tables, so no device names/locations/topology can leak. Bite-tested in agency-layouts.test.js.
+router.get('/layouts', (req, res) => {
+  res.json(listLayoutGeometry(db, req.apiToken.id, req.jwtWorkspaceId));
 });
 
 // #73 THE target seam. router.param fires for EVERY route with :playlistId, WITH the param,

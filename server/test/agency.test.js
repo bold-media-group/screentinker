@@ -56,6 +56,12 @@ test('#73 agency token: full bite-suite (happy path + 4 confinement assertions)'
   assert.equal(mine.status, 200, 'agency can list its targets');
   assert.deepEqual(mine.body.map(p => p.id), [pl1.id], 'GET /agency/playlists returns ONLY the designated playlist (not pl2)');
 
+  // GET layouts (real path through agencyGate): 200 + an array, and never any device fields
+  const lay = await jfetch('/api/agency/layouts', { headers: { Authorization: 'Bearer ' + atok } });
+  assert.equal(lay.status, 200, 'agency can read layout geometry');
+  assert.ok(Array.isArray(lay.body), 'layouts is an array');
+  assert.ok(!JSON.stringify(lay.body).includes('device'), 'layout response carries no device data');
+
   // HAPPY PATH: upload via the agency token (shared ingest -> first-class content)
   const fd = new FormData();
   fd.append('file', new Blob([Buffer.from('x')], { type: 'image/png' }), 't.png');
