@@ -28,6 +28,7 @@ async function request(url, options = {}) {
 export const api = {
   // Devices
   getDevices: () => request('/devices'),
+  reorderDevices: (order) => request('/devices/reorder', { method: 'POST', body: JSON.stringify({ order }) }),
   getDevice: (id) => request(`/devices/${id}`),
   updateDevice: (id, data) => request(`/devices/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteDevice: (id) => request(`/devices/${id}`, { method: 'DELETE' }),

@@ -37,10 +37,32 @@ router.get('/', (req, res) => {
       ON sc.device_id = latest.device_id AND sc.captured_at = latest.max_at
     ) s ON d.id = s.device_id
     WHERE d.workspace_id = ?
-    ORDER BY d.created_at ASC
+    ORDER BY d.sort_order ASC, d.created_at ASC
     LIMIT ? OFFSET ?
   `).all(req.workspaceId, limit, offset);
   res.json(devices.map(stripDeviceSecrets));
+});
+
+// #106: reorder display tiles (cosmetic, within-section). Writes devices.sort_order
+// = position in the given id array. Workspace-scoped: the UPDATE matches WHERE
+// workspace_id = the caller's current workspace, so a forged id from another
+// workspace is silently a no-op (can't reorder or probe devices you can't see).
+// Write-gated: workspace_viewer (non-acting) is read-only. Ordering affects ONLY the
+// dashboard listing — nothing the device/player reads (grouping/pairing/playback
+// are independent). Mirrors the playlist items reorder.
+router.post('/reorder', (req, res) => {
+  if (!req.workspaceId) return res.status(403).json({ error: 'No workspace' });
+  if (!req.actingAs && req.workspaceRole === 'workspace_viewer') {
+    return res.status(403).json({ error: 'Read-only access' });
+  }
+  const { order } = req.body;
+  if (!Array.isArray(order)) return res.status(400).json({ error: 'order must be an array of device IDs' });
+  const stmt = db.prepare("UPDATE devices SET sort_order = ?, updated_at = strftime('%s','now') WHERE id = ? AND workspace_id = ?");
+  const tx = db.transaction(() => {
+    order.forEach((id, index) => stmt.run(index, id, req.workspaceId));
+  });
+  tx();
+  res.json({ success: true });
 });
 
 // List unclaimed provisioning devices (admin only).
