@@ -30,6 +30,9 @@ COPY server/ /app/server/
 COPY --from=builder /app/server/node_modules /app/server/node_modules
 COPY frontend/ /app/frontend/
 COPY VERSION /app/VERSION
+# the /openapi.yaml route serves ../docs/openapi.yaml (the spec Redoc on /docs fetches);
+# without this it 404s in the image even though it serves fine from a dev checkout.
+COPY docs/openapi.yaml /app/docs/openapi.yaml
 # database.js requires scripts/migrate-multitenancy at boot
 COPY scripts/ /app/scripts/
 VOLUME ["/data"]

@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Agency Upload Portal</title>
+<style>
+  :root { --bg:#0f1115; --card:#1a1d24; --border:#2a2f3a; --text:#e8eaed; --muted:#9aa0aa; --accent:#4f8cff; --danger:#ff5c5c; --ok:#3ddc84; --radius:10px; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; background:var(--bg); color:var(--text); }
+  .wrap { max-width:640px; margin:0 auto; padding:32px 20px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:24px; margin-bottom:20px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  h2 { font-size:16px; margin:0 0 12px; }
+  .sub { color:var(--muted); font-size:13px; margin:0 0 16px; }
+  label { display:block; font-size:13px; margin:12px 0 4px; color:var(--muted); }
+  input, select { width:100%; padding:10px 12px; background:#0d0f13; border:1px solid var(--border); border-radius:8px; color:var(--text); font-size:14px; }
+  button { padding:10px 16px; background:var(--accent); color:#fff; border:0; border-radius:8px; font-size:14px; cursor:pointer; }
+  button:disabled { opacity:.45; cursor:default; }
+  button.secondary { background:transparent; border:1px solid var(--border); color:var(--muted); }
+  .row { display:flex; gap:12px; }
+  .row > * { flex:1; }
+  .msg { padding:10px 12px; border-radius:8px; font-size:13px; margin:12px 0; display:none; }
+  .msg.err { background:rgba(255,92,92,.12); color:var(--danger); border:1px solid rgba(255,92,92,.3); }
+  .msg.ok { background:rgba(61,220,132,.12); color:var(--ok); border:1px solid rgba(61,220,132,.3); }
+  .hidden { display:none; }
+  .topbar { display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; }
+  .pill { font-size:12px; color:var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <!-- ENTRY -->
+  <div id="entry" class="card">
+    <h1>Agency Upload Portal</h1>
+    <p class="sub">Paste the access key your contact gave you. It stays in this browser tab only and is cleared when you close it.</p>
+    <div id="entryMsg" class="msg err"></div>
+    <label for="keyInput">Access key</label>
+    <input id="keyInput" type="password" placeholder="st_…" autocomplete="off" spellcheck="false">
+    <div style="margin-top:16px"><button id="enterBtn">Continue</button></div>
+  </div>
+
+  <!-- PORTAL -->
+  <div id="portal" class="hidden">
+    <div class="topbar">
+      <h1>Agency Upload Portal</h1>
+      <button class="secondary" id="signOutBtn">Sign out</button>
+    </div>
+    <div id="portalMsg" class="msg"></div>
+
+    <div class="card">
+      <h2>1. Upload content</h2>
+      <p class="sub">An image or video — added to the workspace library, full quality.</p>
+      <input id="fileInput" type="file" accept="image/*,video/*">
+      <div style="margin-top:12px"><button id="uploadBtn" disabled>Upload</button></div>
+      <div id="uploadInfo" class="pill" style="margin-top:8px"></div>
+    </div>
+
+    <div class="card">
+      <h2>2. Schedule it on a playlist</h2>
+      <p class="sub">Pick one of your designated playlists and the dates it should run. It's added as a <strong>draft</strong> for your contact to publish.</p>
+      <label for="plSelect">Playlist</label>
+      <select id="plSelect"></select>
+      <div class="row">
+        <div><label for="startDate">Start date (optional)</label><input id="startDate" type="date"></div>
+        <div><label for="endDate">End date (optional)</label><input id="endDate" type="date"></div>
+      </div>
+      <div style="margin-top:16px"><button id="scheduleBtn" disabled>Add to playlist</button></div>
+    </div>
+
+    <div class="card" id="placementCard" style="display:none">
+      <h2>Where your content appears</h2>
+      <p class="sub">Your zone is highlighted on each screen layout below, with the size to design for. Other zones are shown for context only.</p>
+      <div id="layoutView"></div>
+    </div>
+  </div>
+</div>
+<script src="/js/agency-portal.js"></script>
+</body>
+</html>

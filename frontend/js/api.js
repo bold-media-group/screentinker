@@ -156,6 +156,12 @@ export const api = {
   // Device Groups - Playlist
   groupAssignPlaylist: (groupId, playlist_id) => request(`/groups/${groupId}/assign-playlist`, { method: 'POST', body: JSON.stringify({ playlist_id }) }),
 
+  // API Tokens (personal access tokens, workspace-scoped)
+  getTokens: () => request('/tokens'),
+  createToken: (data) => request('/tokens', { method: 'POST', body: JSON.stringify(data) }),
+  revokeToken: (id) => request('/tokens/' + id, { method: 'DELETE' }),
+  setTokenTargets: (id, target_playlist_ids) => request('/tokens/' + id + '/targets', { method: 'PUT', body: JSON.stringify({ target_playlist_ids }) }), // #73: re-designate agency token playlists
+
   // Current user
   getMe: () => request('/auth/me'),
   updateMe: (data) => request('/auth/me', { method: 'PUT', body: JSON.stringify(data) }),

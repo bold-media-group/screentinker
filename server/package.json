@@ -1,6 +1,6 @@
 {
   "name": "screentinker",
-  "version": "1.9.0",
+  "version": "1.9.1-beta2",
   "description": "ScreenTinker - Digital Signage Management Server",
   "main": "server.js",
   "scripts": {
@@ -20,10 +20,15 @@
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.3",
     "multer": "^1.4.5-lts.1",
+    "otplib": "^12.0.1",
     "sharp": "^0.33.2",
     "socket.io": "^4.7.2",
     "stripe": "^20.4.1",
     "unzipper": "^0.12.3",
     "uuid": "^14.0.0"
+  },
+  "devDependencies": {
+    "js-yaml": "^4.2.0",
+    "socket.io-client": "^4.8.3"
   }
 }

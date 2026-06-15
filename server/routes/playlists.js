@@ -121,13 +121,25 @@ function pushToDevices(playlistId, req) {
   } catch (e) { /* silent */ }
 }
 
+// #73: the shared publish path - snapshot current items into published_snapshot (what
+// devices actually consume) + push to devices. POST /:id/publish AND the agency
+// auto-publish path both call this, so they can never drift (a "published" playlist that
+// wasn't snapshotted would be live-on-no-screen).
+function publishPlaylist(playlistId, req) {
+  const snapshotItems = buildSnapshotItems(playlistId);
+  db.prepare("UPDATE playlists SET status = 'published', published_snapshot = ?, updated_at = strftime('%s','now') WHERE id = ?")
+    .run(JSON.stringify(snapshotItems), playlistId);
+  pushToDevices(playlistId, req);
+}
+
 // Phase 2.2k: list scoped to caller's current workspace. No platform_admin
 // bypass - cross-workspace view comes from switch-workspace, matching the
 // precedent established across all other migrated routes.
 router.get('/', (req, res) => {
   if (!req.workspaceId) return res.json([]);
   const playlists = db.prepare(`
-    SELECT p.*, COUNT(DISTINCT pi.id) as item_count, COUNT(DISTINCT d.id) as display_count
+    SELECT p.*, COUNT(DISTINCT pi.id) as item_count, COUNT(DISTINCT d.id) as display_count,
+           EXISTS(SELECT 1 FROM playlist_items z WHERE z.playlist_id = p.id AND z.zone_id IS NOT NULL) as zoned
     FROM playlists p
     LEFT JOIN playlist_items pi ON p.id = pi.playlist_id
     LEFT JOIN devices d ON d.playlist_id = p.id
@@ -202,10 +214,7 @@ router.put('/:id', requirePlaylistWrite, (req, res) => {
 router.post('/:id/publish', requirePlaylistWrite, (req, res) => {
   // Snapshot shape (no pi.id) is intentional — published_snapshot is consumed
   // by devices and stored as JSON; row IDs there would be misleading.
-  const snapshotItems = buildSnapshotItems(req.params.id);
-  db.prepare("UPDATE playlists SET status = 'published', published_snapshot = ?, updated_at = strftime('%s','now') WHERE id = ?")
-    .run(JSON.stringify(snapshotItems), req.params.id);
-  pushToDevices(req.params.id, req);
+  publishPlaylist(req.params.id, req);
   // UI response shape must include pi.id so the post-publish render can wire
   // per-row delete/duration listeners. TODO: refactor to share this SELECT
   // with GET /:id (also duplicated in /discard and POST /:id/items/reorder).
@@ -352,7 +361,7 @@ router.put('/:id/items/:itemId/schedules', requirePlaylistWrite, (req, res) => {
 //      playlist's workspace (or be a platform-template).
 router.post('/:id/items', requirePlaylistWrite, async (req, res) => {
   try {
-    const { content_id, widget_id, sort_order } = req.body;
+    const { content_id, widget_id, sort_order, zone_id } = req.body;
     let { duration_sec } = req.body;
 
     if (!content_id && !widget_id) return res.status(400).json({ error: 'content_id or widget_id required' });
@@ -380,6 +389,13 @@ router.post('/:id/items', requirePlaylistWrite, async (req, res) => {
       }
     }
 
+    // #public-api: optional multi-zone placement. Validate the zone belongs to a
+    // template or a layout in this playlist's workspace (the agency portal needs this).
+    if (zone_id) {
+      const zone = db.prepare('SELECT lz.id FROM layout_zones lz JOIN layouts l ON l.id = lz.layout_id WHERE lz.id = ? AND (l.is_template = 1 OR l.workspace_id = ?)').get(zone_id, req.playlist.workspace_id);
+      if (!zone) return res.status(400).json({ error: 'zone_id not found in this workspace' });
+    }
+
     // Auto-increment sort_order if not specified
     let order = sort_order;
     if (order === undefined || order === null) {
@@ -389,9 +405,9 @@ router.post('/:id/items', requirePlaylistWrite, async (req, res) => {
     }
 
     const result = db.prepare(`
-      INSERT INTO playlist_items (playlist_id, content_id, widget_id, sort_order, duration_sec)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(req.params.id, content_id || null, widget_id || null, order, duration_sec);
+      INSERT INTO playlist_items (playlist_id, content_id, widget_id, zone_id, sort_order, duration_sec)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(req.params.id, content_id || null, widget_id || null, zone_id || null, order, duration_sec);
 
     // Mark as draft (items changed since last publish)
     markDraft(req.params.id);
@@ -421,11 +437,19 @@ router.put('/:id/items/:itemId', requirePlaylistWrite, (req, res) => {
     .get(req.params.itemId, req.params.id);
   if (!item) return res.status(404).json({ error: 'item not found' });
 
-  const { sort_order, duration_sec } = req.body;
+  const { sort_order, duration_sec, zone_id } = req.body;
   const updates = [];
   const values = [];
 
   if (sort_order !== undefined) { updates.push('sort_order = ?'); values.push(sort_order); }
+  // #public-api: multi-zone placement (zone_id null clears it). Undefined = no change.
+  if (zone_id !== undefined) {
+    if (zone_id !== null) {
+      const zone = db.prepare('SELECT lz.id FROM layout_zones lz JOIN layouts l ON l.id = lz.layout_id WHERE lz.id = ? AND (l.is_template = 1 OR l.workspace_id = ?)').get(zone_id, req.playlist.workspace_id);
+      if (!zone) return res.status(400).json({ error: 'zone_id not found in this workspace' });
+    }
+    updates.push('zone_id = ?'); values.push(zone_id || null);
+  }
   if (duration_sec !== undefined) {
     if (typeof duration_sec !== 'number' || duration_sec < 1) {
       return res.status(400).json({ error: 'duration_sec must be a positive integer' });
@@ -526,3 +550,4 @@ router.post('/:id/assign', requirePlaylistWrite, (req, res) => {
 });
 
 module.exports = router;
+module.exports.publishPlaylist = publishPlaylist; // #73: shared with the agency auto-publish path

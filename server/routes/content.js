@@ -11,6 +11,8 @@ const { sanitizeString } = require('../middleware/sanitize');
 const { PLATFORM_ROLES, ELEVATED_ROLES } = require('../middleware/auth');
 // Phase 2.2b: workspace-aware access. Mirrors the pattern from devices.js.
 const { accessContext } = require('../lib/tenancy');
+// #73: the upload ingest (processing + insert) is now shared with the agency router.
+const { ingestUploadedFile } = require('../lib/content-ingest');
 
 // Multer captures file.originalname directly from the multipart filename header,
 // bypassing sanitizeBody. Apply the same HTML-escape here so a filename like
@@ -91,60 +93,8 @@ router.post('/', checkStorageLimit, upload.single('file'), async (req, res) => {
     if (!req.workspaceId) return res.status(403).json({ error: 'No workspace context. Switch to a workspace before uploading.' });
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
-    const id = uuidv4();
-    const filepath = req.file.filename;
-    let width = null, height = null, durationSec = null, thumbnailPath = null;
-
-    // Try to generate thumbnail, get dimensions, and detect duration
-    try {
-      if (req.file.mimetype.startsWith('image/')) {
-        const sharp = require('sharp');
-        const metadata = await sharp(req.file.path).metadata();
-        width = metadata.width;
-        height = metadata.height;
-
-        // Generate thumbnail
-        thumbnailPath = `thumb_${filepath}`;
-        await sharp(req.file.path)
-          .resize(config.thumbnailWidth)
-          .jpeg({ quality: 70 })
-          .toFile(path.join(config.contentDir, thumbnailPath));
-      } else if (req.file.mimetype.startsWith('video/')) {
-        // Extract video duration and dimensions with ffprobe
-        try {
-          const { execFileSync } = require('child_process');
-          // Use execFileSync (not execSync) to prevent shell injection - args are NOT passed through shell
-          const probe = execFileSync('ffprobe', ['-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', req.file.path],
-            { timeout: 15000 }
-          ).toString();
-          const info = JSON.parse(probe);
-          if (info.format?.duration) durationSec = parseFloat(info.format.duration);
-          const videoStream = info.streams?.find(s => s.codec_type === 'video');
-          if (videoStream) {
-            width = videoStream.width;
-            height = videoStream.height;
-          }
-          // Generate video thumbnail at 2 second mark
-          thumbnailPath = `thumb_${filepath.replace(/\.[^.]+$/, '.jpg')}`;
-          try {
-            execFileSync('ffmpeg', ['-y', '-i', req.file.path, '-ss', '2', '-vframes', '1', '-vf', `scale=${config.thumbnailWidth}:-1`, path.join(config.contentDir, thumbnailPath)],
-              { timeout: 15000 }
-            );
-          } catch { thumbnailPath = null; }
-        } catch (e) {
-          console.warn('ffprobe failed:', e.message);
-        }
-      }
-    } catch (e) {
-      console.warn('Thumbnail/metadata generation failed:', e.message);
-    }
-
-    db.prepare(`
-      INSERT INTO content (id, user_id, workspace_id, filename, filepath, mime_type, file_size, duration_sec, thumbnail_path, width, height)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, req.user.id, req.workspaceId, safeFilename(req.file.originalname), filepath, req.file.mimetype, req.file.size, durationSec, thumbnailPath, width, height);
-
-    const content = db.prepare('SELECT * FROM content WHERE id = ?').get(id);
+    // #73: shared ingest - identical processing + insert for dashboard and agency uploads.
+    const content = await ingestUploadedFile({ file: req.file, userId: req.user.id, workspaceId: req.workspaceId });
     res.status(201).json(content);
   } catch (err) {
     console.error('Upload error:', err);

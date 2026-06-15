@@ -187,6 +187,22 @@ const migrations = [
   "ALTER TABLE ai_settings ADD COLUMN image_provider TEXT",
   // #41: optional separate key for the image endpoint (for local-LLM + cloud-image setups).
   "ALTER TABLE ai_settings ADD COLUMN image_api_key_enc TEXT",
+  // #100: TOTP MFA. Columns default to "off" so every existing account is unaffected.
+  "ALTER TABLE users ADD COLUMN totp_secret_enc TEXT",
+  "ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE users ADD COLUMN totp_last_step INTEGER NOT NULL DEFAULT 0",
+  "CREATE TABLE IF NOT EXISTS totp_recovery_codes (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, code_hash TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')), used_at INTEGER)",
+  "CREATE INDEX IF NOT EXISTS idx_totp_recovery_user ON totp_recovery_codes(user_id)",
+  // #73: agency-token target allowlist (capability-restricted tokens).
+  "CREATE TABLE IF NOT EXISTS api_token_targets (token_id TEXT NOT NULL REFERENCES api_tokens(id) ON DELETE CASCADE, playlist_id TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')), PRIMARY KEY (token_id, playlist_id))",
+  // #73: per-agency-token auto-publish (DEFAULT 0 = draft, the fail-safe).
+  "ALTER TABLE api_tokens ADD COLUMN auto_publish INTEGER NOT NULL DEFAULT 0",
+  // #73: agency-upload notification queue (batched digest).
+  "CREATE TABLE IF NOT EXISTS agency_notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id TEXT NOT NULL, token_id TEXT NOT NULL, playlist_id TEXT NOT NULL, action TEXT NOT NULL, content_id TEXT, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')), sent_at INTEGER)",
+  "CREATE INDEX IF NOT EXISTS idx_agency_notifications_unsent ON agency_notifications(sent_at)",
+  // #73: zone-binding was reverted (placement belongs to the device, not the playlist - see
+  // the agency-tokens history). Drop the table on DBs where the short-lived migration ran.
+  "DROP TABLE IF EXISTS api_token_target_zones",
 ];
 // Apply each ALTER idempotently. A "duplicate column name" / "already exists"
 // error means the column is already present (expected on a migrated DB) - benign.
@@ -215,6 +231,9 @@ if (_migApplied > 0) console.log(`[migrate] applied ${_migApplied} new column mi
 // idempotently by schema.sql (CREATE TABLE IF NOT EXISTS, run every boot, so it
 // self-applies on upgrade). Record it in schema_migrations for observability.
 try { db.prepare("INSERT OR IGNORE INTO schema_migrations (id) VALUES ('phase7_playlist_item_schedules')").run(); } catch { /* schema_migrations not ready yet */ }
+
+// Public API tokens: api_tokens table is created idempotently by schema.sql.
+try { db.prepare("INSERT OR IGNORE INTO schema_migrations (id) VALUES ('phase8_api_tokens')").run(); } catch { /* schema_migrations not ready yet */ }
 
 // Fix assignments table: make content_id nullable (SQLite requires table rebuild)
 try {

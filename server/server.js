@@ -99,6 +99,7 @@ app.use(helmet({
 app.use((req, res, next) => {
   if (req.path === '/' || req.path === '/landing.html') return next();
   if (req.path.startsWith('/player')) return next();
+  if (req.path === '/docs') return next(); // Redoc API reference needs a relaxed CSP
   if (req.path.startsWith('/api/widgets/') && req.path.endsWith('/render')) return next();
   if (req.path.startsWith('/api/kiosk/') && req.path.endsWith('/render')) return next();
   return dashboardCsp(req, res, next);
@@ -188,6 +189,24 @@ app.get('/robots.txt', (req, res) => {
   res.sendFile(path.join(config.frontendDir, 'robots.txt'));
 });
 
+// Public API reference. /openapi.yaml is the machine-readable contract (served from
+// docs/); /docs is the Redoc viewer (frontend/api-docs.html + the vendored standalone
+// bundle under /vendor, no CDN so it works air-gapped). /docs is CSP-exempt above
+// because Redoc needs a relaxed policy.
+app.get('/openapi.yaml', (req, res) => {
+  res.type('text/yaml');
+  res.setHeader('Cache-Control', 'public, max-age=300');
+  res.sendFile(path.join(__dirname, '..', 'docs', 'openapi.yaml'));
+});
+app.get('/docs', (req, res) => {
+  res.sendFile(path.join(config.frontendDir, 'api-docs.html'));
+});
+// #73: the standalone agency portal (token-auth, NOT the JWT dashboard SPA). Served as its
+// own page so the agency never touches the dashboard login.
+app.get('/agency', (req, res) => {
+  res.sendFile(path.join(config.frontendDir, 'agency.html'));
+});
+
 // Serve frontend static files
 // JS/CSS/HTML: no-cache (always revalidate, uses ETag/304)
 // Images/fonts/icons: long cache for Cloudflare + browser
@@ -257,7 +276,12 @@ app.use('/socket.io-client', express.static(
 const rateLimits = new Map();
 function rateLimit(windowMs, maxRequests) {
   return (req, res, next) => {
-    const key = getClientIp(req) + req.path;
+    // #100: key on the FULL path, not req.path. These limiters are mounted via
+    // app.use('/api/auth/login', ...) etc., and Express strips the mount path, so
+    // req.path was '/' for ALL of them - i.e. /login, /register, /totp/verify shared
+    // ONE per-IP counter (coupled limits; the /totp/verify brute-force limit wasn't
+    // actually independent). originalUrl keeps each endpoint's limit separate.
+    const key = getClientIp(req) + (req.originalUrl || req.url || req.path).split('?')[0];
     const now = Date.now();
     const windowStart = now - windowMs;
     let hits = rateLimits.get(key) || [];
@@ -278,13 +302,21 @@ function rateLimit(windowMs, maxRequests) {
 // Auth routes (public, rate limited)
 app.use('/api/auth/login', rateLimit(60000, 10)); // 10 attempts per minute
 app.use('/api/auth/register', rateLimit(60000, 5)); // 5 registrations per minute
+// #100 (tightening #2): the TOTP verify endpoint is the brute-force surface for a
+// 6-digit code. Cap attempts/min here; the per-user lockout (lib/totp-lockout) sits
+// on top in the handler.
+app.use('/api/auth/totp/verify', rateLimit(60000, 10));
 // Admin password-reset endpoint: even if an admin's session is compromised,
 // cap the blast radius to 20 resets/min/IP. Express matches the longest
 // path prefix first, so this fires before /api/auth catches the request.
 app.use('/api/auth/users', rateLimit(60000, 20));
 app.use('/api/auth', require('./routes/auth'));
-// Rate limit pairing to prevent brute force (5 attempts per minute per IP)
-app.use('/api/provision/pair', rateLimit(60000, 5));
+// Rate limit pairing to prevent brute force (5 attempts per minute per IP).
+// #88: bind this to the whole /api/provision surface, not just /pair - the bare
+// POST /api/provision (routes/provisioning.js) is a second pairing endpoint that
+// was unthrottled, letting an authed user brute-force pairing codes. /api/provision
+// matches both /api/provision and /api/provision/pair.
+app.use('/api/provision', rateLimit(60000, 5));
 // Rate limit expensive operations
 app.use('/api/status/export', rateLimit(60000, 5)); // 5 exports per minute
 app.use('/api/status/import', rateLimit(60000, 3)); // 3 imports per minute
@@ -418,6 +450,8 @@ app.get('/api/content/:id/thumbnail', (req, res) => {
 // yet (they still filter by user_id); 2.2 will migrate them one route at a time.
 const { requireAuth } = require('./middleware/auth');
 const { resolveTenancy } = require('./lib/tenancy');
+// Public API token front door (Phase 1). Attached ONLY to the public routers below.
+const { bearerAuth, tokenScopeGate, agencyGate } = require('./middleware/apiToken');
 
 // activityLogger wraps res.json on every subsequent route to auto-log
 // successful POST/PUT/DELETE mutations. Mount it BEFORE the workspace routes
@@ -428,47 +462,40 @@ const { resolveTenancy } = require('./lib/tenancy');
 const { activityLogger } = require('./services/activity');
 app.use(activityLogger);
 
-// /api/workspaces: management endpoints that operate on a target workspace
-// (URL param), not the caller's currently active one. Hence requireAuth only,
-// no resolveTenancy. Permission gated per-handler via canAdminWorkspace().
-app.use('/api/workspaces', requireAuth, require('./routes/workspaces'));
+// #public-api Phase 1: the router partition is data-driven from config/api-surface.js
+// so server.js and the partition firewall test (test/api.test.js) read the SAME list
+// and cannot drift. PUBLIC routers get the token front door (bearerAuth + resolveTenancy
+// + tokenScopeGate); JWT-ONLY routers keep requireAuth, so a Bearer st_... token fails
+// their jwt.verify and is unreachable (secure by exclusion). Tokens act as a workspace
+// member with platform powers stripped, so in-handler ELEVATED/PLATFORM checks (e.g.
+// GET /api/devices/unassigned) still deny.
+const { PUBLIC_ROUTERS, JWT_ONLY_ROUTERS, AGENCY_ROUTERS } = require('./config/api-surface');
 
-// /api/admin: admin-provisioned user creation (#10). Like /api/workspaces it
-// targets a workspace by body param (not the caller's active one), so
-// requireAuth only - per-handler canAdminWorkspace() gates it. Mounted after
-// activityLogger so creations are auto-logged.
-app.use('/api/admin', requireAuth, require('./routes/admin'));
-
-app.use('/api/devices', requireAuth, resolveTenancy, require('./routes/devices'));
-app.use('/api/content', requireAuth, resolveTenancy, require('./routes/content'));
-app.use('/api/ai', requireAuth, resolveTenancy, require('./routes/ai')); // #41 AI design (BYOK)
-app.use('/api/folders', requireAuth, resolveTenancy, require('./routes/folders'));
-app.use('/api/assignments', requireAuth, resolveTenancy, require('./routes/assignments'));
-app.use('/api/provision', requireAuth, resolveTenancy, require('./routes/provisioning'));
-app.use('/api/layouts', requireAuth, resolveTenancy, require('./routes/layouts'));
-// Widget render is public (accessed by devices)
+// Public device-render endpoints + the memory-heavy preview limiter must be registered
+// BEFORE their parent router mount so the _skipAuth bypass / the limiter fire first.
 app.get('/api/widgets/:id/render', (req, res, next) => { req._skipAuth = true; next(); });
-// Rate limit preview endpoint — it inlines user content as base64 which is memory-intensive
-app.use('/api/widgets/preview', rateLimit(60000, 30));
-app.use('/api/widgets', (req, res, next) => { if (req._skipAuth) return next(); requireAuth(req, res, next); }, resolveTenancy, require('./routes/widgets'));
-app.use('/api/schedules', requireAuth, resolveTenancy, require('./routes/schedules'));
-app.use('/api/walls', requireAuth, resolveTenancy, require('./routes/video-walls'));
-app.use('/api/teams', requireAuth, resolveTenancy, require('./routes/teams'));
-app.use('/api/reports', requireAuth, resolveTenancy, require('./routes/reports'));
-app.use('/api/groups', requireAuth, resolveTenancy, require('./routes/device-groups'));
-app.use('/api/playlists', requireAuth, resolveTenancy, require('./routes/playlists'));
-app.use('/api/activity', requireAuth, resolveTenancy, require('./routes/activity'));
-app.use('/api/white-label', requireAuth, resolveTenancy, require('./routes/white-label'));
-// Kiosk render is public (accessed by devices), CRUD is protected
-app.get('/api/kiosk/:id/render', (req, res, next) => {
-  // Let it through to the kiosk route without auth
-  req._skipAuth = true;
-  next();
-});
-app.use('/api/kiosk', (req, res, next) => {
-  if (req._skipAuth) return next();
-  requireAuth(req, res, next);
-}, resolveTenancy, require('./routes/kiosk'));
+app.use('/api/widgets/preview', rateLimit(60000, 30)); // base64 inline = memory-intensive
+app.get('/api/kiosk/:id/render', (req, res, next) => { req._skipAuth = true; next(); });
+
+for (const r of PUBLIC_ROUTERS) {
+  // renderBypass routers let the public /:id/render through (req._skipAuth) before bearerAuth.
+  const front = r.renderBypass
+    ? (req, res, next) => { if (req._skipAuth) return next(); bearerAuth(req, res, next); }
+    : bearerAuth;
+  app.use(r.path, front, resolveTenancy, tokenScopeGate, require(r.mod));
+}
+for (const r of JWT_ONLY_ROUTERS) {
+  // tenancy routers act on the caller's active workspace; the rest (workspaces, admin)
+  // target a workspace by URL/body param and are gated per-handler (canAdminWorkspace).
+  if (r.tenancy) app.use(r.path, requireAuth, resolveTenancy, require(r.mod));
+  else app.use(r.path, requireAuth, require(r.mod));
+}
+for (const r of AGENCY_ROUTERS) {
+  // #73: capability-restricted token surface. bearerAuth + resolveTenancy + agencyGate
+  // (NOT tokenScopeGate). 'agency' is off the read/write/full ladder, so these tokens
+  // reach ONLY here; agencyGate enforces the playlist allowlist + bound workspace.
+  app.use(r.path, bearerAuth, resolveTenancy, agencyGate, require(r.mod));
+}
 
 // Frontend version hash (changes when files are modified, triggers soft reload)
 const crypto = require('crypto');
@@ -513,6 +540,11 @@ app.get('/api/update/check', (req, res) => {
 
   const latestVersion = VERSION;
   const updateAvailable = currentVersion && currentVersion !== latestVersion;
+
+  // #96: log every version check so the OTA is observable - which devices check in, their
+  // version, and whether they'll update. This diagnosability gap is part of why the 1.9.0
+  // relaunch failure went unseen.
+  console.log(`[ota] update check from ${getClientIp(req)}: client=${currentVersion || 'unknown'} latest=${latestVersion} update_available=${!!updateAvailable} apk=${apkExists ? 'present' : 'MISSING'}`);
 
   res.json({
     latest_version: latestVersion,
@@ -562,13 +594,24 @@ startAlertService(io);
 const { startActivationNudge } = require('./services/activationNudge');
 startActivationNudge();
 
+// #73: agency-upload digest flush (batched draft/published notifications to admins + owner)
+const { startAgencyDigest } = require('./services/agency-digest');
+startAgencyDigest();
+
 // Handle provisioning via WebSocket notification
 const { db } = require('./db/database');
 const originalProvisionRoute = require('./routes/provisioning');
 
 // Override provision to also notify device via WS
 const { checkDeviceLimit } = require('./middleware/subscription');
+const pairLockout = require('./lib/pair-lockout');
 app.post('/api/provision/pair', requireAuth, resolveTenancy, checkDeviceLimit, (req, res) => {
+  // #87: lock out an IP after repeated failed pairing-code guesses (brute-force defense
+  // beyond the 5/min rate-limit on /api/provision).
+  const ip = getClientIp(req);
+  if (pairLockout.isLocked(ip)) {
+    return res.status(429).json({ error: 'Too many failed pairing attempts. Try again in a few minutes.' });
+  }
   const { pairing_code, name } = req.body;
   if (!pairing_code) return res.status(400).json({ error: 'pairing_code required' });
   // Phase 2.2a: pair into the caller's current workspace. Refusing on no
@@ -577,7 +620,18 @@ app.post('/api/provision/pair', requireAuth, resolveTenancy, checkDeviceLimit, (
   if (!req.workspaceId) return res.status(403).json({ error: 'No workspace context. Switch to a workspace before pairing.' });
 
   const device = db.prepare('SELECT * FROM devices WHERE pairing_code = ?').get(pairing_code);
-  if (!device) return res.status(404).json({ error: 'No device found with that pairing code' });
+  // #87: an UNKNOWN code is a brute-force guess - count it toward the per-IP lockout.
+  if (!device) {
+    pairLockout.recordFailure(ip);
+    return res.status(404).json({ error: 'No device found with that pairing code' });
+  }
+  // An EXPIRED code is a legitimate-but-stale code (a slow rollout, not an attack), so it
+  // does NOT count toward the lockout - it just asks the display to regenerate. This keeps
+  // a bulk rollout from one office/NAT IP from locking itself out on expired codes.
+  if (pairLockout.isCodeExpired(device.created_at)) {
+    return res.status(410).json({ error: 'Pairing code expired - restart the display to get a new code' });
+  }
+  pairLockout.reset(ip); // a valid claim forgives prior failed attempts from this IP
 
   const deviceName = name || 'Display ' + (db.prepare('SELECT COUNT(*) as count FROM devices WHERE user_id = ?').get(req.user.id).count + 1);
   db.prepare("UPDATE devices SET pairing_code = NULL, name = ?, user_id = ?, workspace_id = ?, status = 'online', updated_at = strftime('%s','now') WHERE id = ?")
@@ -613,11 +667,15 @@ function resolveApkPath() {
 app.get('/download/apk', (req, res) => {
   const apkPath = resolveApkPath();
   if (apkPath) {
+    // #96: an APK download means a device is actually applying an OTA - log it so the
+    // update is observable end to end (check -> download -> [relaunch]).
+    console.log(`[ota] APK download by ${getClientIp(req)} (${fs.statSync(apkPath).size} bytes) - OTA update in progress`);
     res.setHeader('Content-Type', 'application/vnd.android.package-archive');
     res.setHeader('Content-Disposition', 'attachment; filename="ScreenTinker.apk"');
     res.setHeader('Cache-Control', 'no-cache');
     res.sendFile(apkPath);
   } else {
+    console.warn(`[ota] APK download requested by ${getClientIp(req)} but no APK is available (404)`);
     res.status(404).send(`<!DOCTYPE html><html><head><title>APK Not Found</title><style>body{font-family:-apple-system,system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#0f172a;color:#e2e8f0}div{text-align:center;max-width:500px;padding:24px}h1{color:#f87171;font-size:24px}code{background:#1e293b;padding:2px 8px;border-radius:4px;font-size:14px}p{line-height:1.6;color:#94a3b8}</style></head><body><div><h1>APK Not Available</h1><p>The Android APK has not been compiled yet. To build it from source:</p><p><code>cd android</code><br><code>./gradlew assembleDebug</code><br><code>cp app/build/outputs/apk/debug/app-debug.apk ../ScreenTinker.apk</code></p><p>See the <a href="/" style="color:#3b82f6">README</a> for full build instructions.</p><p>In Docker, mount a built APK at <code>/data/ScreenTinker.apk</code> (the data dir).</p><p>Alternatively, use the <a href="/player" style="color:#3b82f6">web player</a> in any browser.</p></div></body></html>`);
   }
 });
