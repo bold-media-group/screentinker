@@ -210,6 +210,7 @@ export default {
   'device.back': 'Torna a Schermi',
   'device.owner_label': 'Proprietario: {owner}',
   'device.rename': 'Rinomina',
+  'device.preview_btn': 'Anteprima',
   'device.screenshot_btn': 'Screenshot',
   'device.remove': 'Rimuovi',
   'device.click_to_confirm': 'Clicca di nuovo per confermare',

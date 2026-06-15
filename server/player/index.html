@@ -522,8 +522,8 @@
     // pairing and NO socket. Gated here, before the normal boot, so the unpaired
     // auto-connect timer below can never fire underneath a preview.
     const _previewQS = new URLSearchParams(location.search);
-    if (_previewQS.get('preview') === '1' && _previewQS.get('playlist')) {
-      bootPreview(_previewQS.get('playlist'), _previewQS.get('orientation'));
+    if (_previewQS.get('preview') === '1' && (_previewQS.get('playlist') || _previewQS.get('device'))) {
+      bootPreview(_previewQS);
     } else {
 
     // Auto-detect server URL from origin since player is served from the same server
@@ -642,22 +642,40 @@
     document.getElementById('connectBtn').onclick = connectBtnFunc;
 
     // ==================== #104 Device-free preview ====================
-    // Fetch a draft playlist's preview payload (same shape the device socket sends)
-    // and hand it straight to the UNMODIFIED renderer. No socket, no pairing.
-    async function bootPreview(playlistId, orientation) {
+    // #104: device-free dashboard preview. Renders EITHER a draft playlist
+    // (?playlist=ID — layout DERIVED from the playlist's zones, orientation togglable)
+    // OR a device exactly as it shows now (?device=ID — layout/orientation from the
+    // DEVICE row). Both produce the same payload shape and feed the UNMODIFIED renderer.
+    function bootPreview(qs) {
+      const playlistId = qs.get('playlist');
+      const deviceId = qs.get('device');
+      let url;
+      if (playlistId) {
+        const orientation = qs.get('orientation');
+        const q = orientation ? ('?orientation=' + encodeURIComponent(orientation)) : '';
+        url = '/api/playlists/' + encodeURIComponent(playlistId) + '/preview-payload' + q;
+      } else {
+        // Device preview: the device's own layout/orientation come from the server; no
+        // orientation override (we show what the device actually shows).
+        url = '/api/devices/' + encodeURIComponent(deviceId) + '/preview-payload';
+      }
+      return renderPreviewFromUrl(url);
+    }
+
+    // Shared: fetch a preview payload (same shape the device socket sends) and hand it
+    // straight to the UNMODIFIED renderer. No socket, no pairing.
+    async function renderPreviewFromUrl(url) {
       PREVIEW_MODE = true;
       config.serverUrl = window.location.origin; // same-origin -> /uploads + /api/widgets resolve
       const setup = document.getElementById('setupScreen');
       if (setup) setup.style.display = 'none';
       try {
         const token = localStorage.getItem('token'); // same-origin: shares the dashboard's Bearer token
-        const q = orientation ? ('?orientation=' + encodeURIComponent(orientation)) : '';
-        const res = await fetch('/api/playlists/' + encodeURIComponent(playlistId) + '/preview-payload' + q, {
-          headers: token ? { Authorization: 'Bearer ' + token } : {},
-        });
+        const res = await fetch(url, { headers: token ? { Authorization: 'Bearer ' + token } : {} });
         if (!res.ok) return showPreviewError(res.status);
         const payload = await res.json();
-        // #104: items span >1 layout (rare) — server picked the dominant one; say so.
+        // playlist-only: items span >1 layout (rare) — server picked the dominant one.
+        // Device payloads never carry this flag (layout is device-bound, unambiguous).
         if (payload.layout && payload.layout._preview_ambiguous) {
           const b = document.createElement('div');
           b.textContent = 'Previewing layout: ' + (payload.layout.name || '—');

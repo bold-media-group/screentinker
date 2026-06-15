@@ -199,6 +199,7 @@ export default {
   'device.back': 'Retour aux écrans',
   'device.owner_label': 'Propriétaire : {owner}',
   'device.rename': 'Renommer',
+  'device.preview_btn': 'Aperçu',
   'device.screenshot_btn': 'Capture',
   'device.remove': 'Retirer',
   'device.click_to_confirm': 'Cliquez à nouveau pour confirmer',

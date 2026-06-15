@@ -214,6 +214,7 @@ export default {
   'device.back': 'Back to Displays',
   'device.owner_label': 'Owner: {owner}',
   'device.rename': 'Rename',
+  'device.preview_btn': 'Preview',
   'device.screenshot_btn': 'Screenshot',
   'device.remove': 'Remove',
   'device.click_to_confirm': 'Click again to confirm',

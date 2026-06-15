@@ -141,6 +141,27 @@ function checkDeviceOwnership(req, res) {
   return device;
 }
 
+// #104: device-manager preview payload. Returns the device's CURRENT payload exactly
+// as the device renders it — its OWN layout/orientation/wall from the device row and
+// its published items — built by the same buildPlaylistPayload the device socket uses.
+// Device-bound layout (the correct side of the layout seam); derivePreviewLayout is
+// playlist-only and never touches this path. wall_config is forced null in v1: a wall
+// FOLLOWER would otherwise freeze waiting for leader wall:sync that a socket-free
+// preview can't deliver, so wall members preview full-frame. Device-READ gated
+// (mirrors GET /:id — viewers allowed); NOT requirePlaylistRead, NOT the write gate.
+router.get('/:id/preview-payload', (req, res) => {
+  const device = db.prepare('SELECT id, workspace_id FROM devices WHERE id = ?').get(req.params.id);
+  if (!device) return res.status(404).json({ error: 'Device not found' });
+  if (!device.workspace_id) return res.status(403).json({ error: 'Device not assigned to a workspace' });
+  const ws = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(device.workspace_id);
+  const ctx = ws && accessContext(req.user.id, req.user.role, ws);
+  if (!ctx) return res.status(403).json({ error: 'Access denied' });
+  const { buildPlaylistPayload } = require('../ws/deviceSocket');
+  const payload = buildPlaylistPayload(req.params.id);
+  payload.wall_config = null; // v1: wall members preview full-frame (no socket-free follower freeze)
+  res.json(payload);
+});
+
 // Update device
 router.put('/:id', (req, res) => {
   const device = checkDeviceOwnership(req, res);

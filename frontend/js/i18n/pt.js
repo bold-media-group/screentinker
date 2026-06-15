@@ -199,6 +199,7 @@ export default {
   'device.back': 'Voltar para Telas',
   'device.owner_label': 'Proprietário: {owner}',
   'device.rename': 'Renomear',
+  'device.preview_btn': 'Pré-visualização',
   'device.screenshot_btn': 'Captura',
   'device.remove': 'Remover',
   'device.click_to_confirm': 'Clique novamente para confirmar',

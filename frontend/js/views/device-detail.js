@@ -153,6 +153,7 @@ async function loadDevice(deviceId, activeTab = null) {
           ${device.owner_name || device.owner_email ? `<span style="font-size:12px;color:var(--text-muted)">${t('device.owner_label', { owner: device.owner_name || device.owner_email })}</span>` : ''}
         </div>
         <div style="display:flex;gap:8px">
+          <button class="btn btn-secondary btn-sm" id="devicePreviewBtn">${t('device.preview_btn')}</button>
           <button class="btn btn-secondary btn-sm" id="renameBtn">${t('device.rename')}</button>
           <button class="btn btn-secondary btn-sm" id="screenshotBtn">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -581,7 +582,37 @@ function setupTabs() {
   });
 }
 
+// #104: device preview — reuse the player in device-free preview mode, iframed
+// same-origin (dashboard CSP frame-src 'self' allows it). Shows the device's CURRENT
+// playlist in the device's OWN layout/orientation (server payload). wall members
+// preview full-frame (server forces wall_config:null in v1).
+function showDevicePreview(device) {
+  const portrait = (device.orientation || '').includes('portrait');
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:10000;padding:16px';
+  overlay.innerHTML = `
+    <div style="background:var(--bg-card);border-radius:8px;display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--border);max-width:95vw;max-height:92vh">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 16px;border-bottom:1px solid var(--border);gap:12px">
+        <strong style="color:var(--text-primary)">${t('device.preview_btn')} — ${esc(device.name)}</strong>
+        <button class="btn btn-secondary btn-sm" id="dpvClose">${t('widget.close')}</button>
+      </div>
+      <div style="padding:16px;display:flex;align-items:center;justify-content:center;background:#000">
+        <iframe style="height:78vh;max-width:92vw;aspect-ratio:${portrait ? '9 / 16' : '16 / 9'};border:0;background:#000" src="/player?preview=1&device=${encodeURIComponent(device.id)}&t=${Date.now()}"></iframe>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.querySelector('#dpvClose').onclick = close;
+  overlay.onclick = (e) => { if (e.target === overlay) close(); };
+  document.addEventListener('keydown', function esc2(ev) {
+    if (ev.key === 'Escape') { close(); document.removeEventListener('keydown', esc2); }
+  });
+}
+
 async function setupActions(device) {
+  // #104 Preview button
+  document.getElementById('devicePreviewBtn')?.addEventListener('click', () => showDevicePreview(device));
+
   // Screenshot button
   document.getElementById('screenshotBtn')?.addEventListener('click', () => {
     requestScreenshot(device.id);

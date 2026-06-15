@@ -198,6 +198,7 @@ export default {
   'device.back': 'Volver a Pantallas',
   'device.owner_label': 'Propietario: {owner}',
   'device.rename': 'Renombrar',
+  'device.preview_btn': 'Vista previa',
   'device.screenshot_btn': 'Captura',
   'device.remove': 'Eliminar',
   'device.click_to_confirm': 'Haz clic de nuevo para confirmar',
