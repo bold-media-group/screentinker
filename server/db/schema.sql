@@ -530,13 +530,41 @@ CREATE TABLE IF NOT EXISTS api_tokens (
     name            TEXT NOT NULL,                            -- user-given label
     user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     workspace_id    TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    scope           TEXT NOT NULL DEFAULT 'read',             -- 'read' | 'write' | 'full'
+    scope           TEXT NOT NULL DEFAULT 'read',             -- 'read' | 'write' | 'full' | 'agency'
+    auto_publish    INTEGER NOT NULL DEFAULT 0,                -- #73: agency only. 0 = items land DRAFT (default, fail-safe); 1 = admin opted this agency out of approval
     created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')),
     last_used_at    INTEGER,
     revoked_at      INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_api_tokens_hash ON api_tokens(token_hash);
+
+-- #73: target allowlist for capability-restricted ('agency') tokens. An agency token
+-- (scope='agency', OFF the read/write/full ladder so tokenScopeGate rejects it on every
+-- other router) may act ONLY on the playlists listed here, enforced at the single
+-- agencyGate seam. FK cascade both ways: revoke the token or delete the playlist and the
+-- grant disappears.
+CREATE TABLE IF NOT EXISTS api_token_targets (
+    token_id    TEXT NOT NULL REFERENCES api_tokens(id) ON DELETE CASCADE,
+    playlist_id TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+    created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    PRIMARY KEY (token_id, playlist_id)
+);
 CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id);
+
+-- #73: agency-upload notification queue. The agency endpoint enqueues one row per item added
+-- (only when email is configured); a 15-min flush job groups per token+playlist+action and
+-- sends one digest per group, stamping sent_at ONLY after a successful send (failed -> retry).
+CREATE TABLE IF NOT EXISTS agency_notifications (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id TEXT NOT NULL,
+    token_id     TEXT NOT NULL,
+    playlist_id  TEXT NOT NULL,
+    action       TEXT NOT NULL,                            -- 'draft' | 'published'
+    content_id   TEXT,
+    created_at   INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    sent_at      INTEGER                                   -- NULL = unsent
+);
+CREATE INDEX IF NOT EXISTS idx_agency_notifications_unsent ON agency_notifications(sent_at);
 
 -- ===================== SCHEMA MIGRATIONS =====================
 

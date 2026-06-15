@@ -69,7 +69,9 @@ function apiTokenAuth(req, res, next) {
   req.jwtWorkspaceId = row.workspace_id;   // resolveTenancy scopes to the bound workspace
   req.viaToken = true;
   req.tokenScope = row.scope;
-  req.apiToken = { id: row.id, prefix: row.prefix, name: row.name, workspace_id: row.workspace_id };
+  // #73: auto_publish read from the TOKEN ROW (admin-set), so the agency endpoint can
+  // never take it from the request body. `|| 0` keeps it fail-safe for any row predating it.
+  req.apiToken = { id: row.id, prefix: row.prefix, name: row.name, workspace_id: row.workspace_id, auto_publish: row.auto_publish || 0 };
   touchLastUsed(row.id);
   next();
 }
@@ -112,7 +114,22 @@ function requireScope(need) {
   };
 }
 
+// #73: mount seam for capability-restricted ('agency') tokens. SCOPE/off-ladder check ONLY:
+// only an agency token reaches the agency router (a read/write/full token or a JWT is
+// rejected). The PER-TARGET check CANNOT live here - Express doesn't populate req.params at
+// app.use-level middleware (params land at route match, inside the router), so a mount-level
+// target check is silently bypassed (the integration bite-suite caught exactly this). The
+// target check is router.param('playlistId') in routes/agency.js - it fires WITH the param
+// before the handler and can't be skipped by any :playlistId route. Two single-registration,
+// drift-proof seams: scope (here) + target (router.param).
+function agencyGate(req, res, next) {
+  if (!req.viaToken || req.tokenScope !== 'agency') {
+    return res.status(403).json({ error: 'agency token required' });
+  }
+  next();
+}
+
 module.exports = {
-  bearerAuth, apiTokenAuth, tokenScopeGate, requireScope,
+  bearerAuth, apiTokenAuth, tokenScopeGate, requireScope, agencyGate,
   hashToken, generateToken, displayPrefix, TOKEN_PREFIX,
 };

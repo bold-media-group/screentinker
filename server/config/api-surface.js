@@ -48,4 +48,13 @@ const JWT_ONLY_ROUTERS = [
   { path: '/api/tokens',      mod: './routes/tokens',       tenancy: true },
 ];
 
-module.exports = { PUBLIC_ROUTERS, JWT_ONLY_ROUTERS };
+// #73: AGENCY_ROUTERS - capability-restricted ('agency' scope) surface. Mounted with
+// bearerAuth + resolveTenancy + agencyGate (NOT tokenScopeGate). An 'agency' token is
+// OFF the read/write/full ladder, so tokenScopeGate rejects it on every PUBLIC_ROUTER -
+// it can reach ONLY this router, and only its allowlisted playlists in its bound
+// workspace (agencyGate enforces both). read/write/full tokens and JWTs are rejected here.
+const AGENCY_ROUTERS = [
+  { path: '/api/agency', mod: './routes/agency' },
+];
+
+module.exports = { PUBLIC_ROUTERS, JWT_ONLY_ROUTERS, AGENCY_ROUTERS };

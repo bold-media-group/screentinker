@@ -201,6 +201,11 @@ app.get('/openapi.yaml', (req, res) => {
 app.get('/docs', (req, res) => {
   res.sendFile(path.join(config.frontendDir, 'api-docs.html'));
 });
+// #73: the standalone agency portal (token-auth, NOT the JWT dashboard SPA). Served as its
+// own page so the agency never touches the dashboard login.
+app.get('/agency', (req, res) => {
+  res.sendFile(path.join(config.frontendDir, 'agency.html'));
+});
 
 // Serve frontend static files
 // JS/CSS/HTML: no-cache (always revalidate, uses ETag/304)
@@ -446,7 +451,7 @@ app.get('/api/content/:id/thumbnail', (req, res) => {
 const { requireAuth } = require('./middleware/auth');
 const { resolveTenancy } = require('./lib/tenancy');
 // Public API token front door (Phase 1). Attached ONLY to the public routers below.
-const { bearerAuth, tokenScopeGate } = require('./middleware/apiToken');
+const { bearerAuth, tokenScopeGate, agencyGate } = require('./middleware/apiToken');
 
 // activityLogger wraps res.json on every subsequent route to auto-log
 // successful POST/PUT/DELETE mutations. Mount it BEFORE the workspace routes
@@ -464,7 +469,7 @@ app.use(activityLogger);
 // their jwt.verify and is unreachable (secure by exclusion). Tokens act as a workspace
 // member with platform powers stripped, so in-handler ELEVATED/PLATFORM checks (e.g.
 // GET /api/devices/unassigned) still deny.
-const { PUBLIC_ROUTERS, JWT_ONLY_ROUTERS } = require('./config/api-surface');
+const { PUBLIC_ROUTERS, JWT_ONLY_ROUTERS, AGENCY_ROUTERS } = require('./config/api-surface');
 
 // Public device-render endpoints + the memory-heavy preview limiter must be registered
 // BEFORE their parent router mount so the _skipAuth bypass / the limiter fire first.
@@ -484,6 +489,12 @@ for (const r of JWT_ONLY_ROUTERS) {
   // target a workspace by URL/body param and are gated per-handler (canAdminWorkspace).
   if (r.tenancy) app.use(r.path, requireAuth, resolveTenancy, require(r.mod));
   else app.use(r.path, requireAuth, require(r.mod));
+}
+for (const r of AGENCY_ROUTERS) {
+  // #73: capability-restricted token surface. bearerAuth + resolveTenancy + agencyGate
+  // (NOT tokenScopeGate). 'agency' is off the read/write/full ladder, so these tokens
+  // reach ONLY here; agencyGate enforces the playlist allowlist + bound workspace.
+  app.use(r.path, bearerAuth, resolveTenancy, agencyGate, require(r.mod));
 }
 
 // Frontend version hash (changes when files are modified, triggers soft reload)
@@ -582,6 +593,10 @@ startAlertService(io);
 // Start activation-nudge sweep (T+3 onboarding nudge; gated on HOSTED_INSTANCE)
 const { startActivationNudge } = require('./services/activationNudge');
 startActivationNudge();
+
+// #73: agency-upload digest flush (batched draft/published notifications to admins + owner)
+const { startAgencyDigest } = require('./services/agency-digest');
+startAgencyDigest();
 
 // Handle provisioning via WebSocket notification
 const { db } = require('./db/database');

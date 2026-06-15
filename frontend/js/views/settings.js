@@ -62,7 +62,8 @@ export async function render(container) {
 
     <div class="settings-section">
       <h3>${t('apitoken.title')}</h3>
-      <p style="color:var(--text-muted);font-size:12px;margin-bottom:16px">${t('apitoken.desc')}</p>
+      <p style="color:var(--text-muted);font-size:12px;margin-bottom:8px">${t('apitoken.desc')}</p>
+      <p style="font-size:13px;margin-bottom:16px"><a href="/docs" target="_blank" rel="noopener" style="color:var(--accent)">${t('apitoken.docs_link')}</a></p>
       <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:16px">
         <div class="form-group" style="margin-bottom:0;flex:1;min-width:180px">
           <label>${t('apitoken.col_name')}</label>
@@ -74,12 +75,23 @@ export async function render(container) {
             <option value="read">${esc(t('apitoken.scope_read'))}</option>
             <option value="write">${esc(t('apitoken.scope_write'))}</option>
             <option value="full">${esc(t('apitoken.scope_full'))}</option>
+            <option value="agency">${esc(t('apitoken.scope_agency'))}</option>
           </select>
         </div>
         <button class="btn btn-primary btn-sm" id="createTokenBtn">${t('apitoken.create')}</button>
       </div>
+      <div id="agencyPlaylistPicker" style="display:none;margin-bottom:16px;padding:12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-secondary)">
+        <label style="display:block;font-weight:500;margin-bottom:4px">${t('apitoken.agency_playlists_label')}</label>
+        <p style="color:var(--text-muted);font-size:12px;margin-bottom:8px">${t('apitoken.agency_playlists_hint')}</p>
+        <div id="agencyPlaylistList" style="display:flex;flex-direction:column;gap:6px;max-height:200px;overflow:auto"></div>
+        <label style="display:flex;gap:8px;align-items:center;margin-top:12px;font-weight:500">
+          <input type="checkbox" id="tokAutoPublish"> ${t('apitoken.auto_publish_label')}
+        </label>
+        <p style="color:var(--text-muted);font-size:12px;margin:4px 0 0">${t('apitoken.auto_publish_hint')}</p>
+      </div>
       <div id="tokenSecretBox" style="display:none"></div>
       <div id="tokenList"><p style="color:var(--text-muted);font-size:13px">${t('settings.loading_users')}</p></div>
+      <div id="tokenEditPanel" style="display:none"></div>
     </div>
 
     ${isAdmin ? `
@@ -329,6 +341,7 @@ export async function render(container) {
     read: t('apitoken.scope_read'),
     write: t('apitoken.scope_write'),
     full: t('apitoken.scope_full'),
+    agency: t('apitoken.scope_agency'),
   }[s] || s);
 
   async function loadTokens() {
@@ -357,13 +370,16 @@ export async function render(container) {
             <tr style="border-bottom:1px solid var(--border)${tok.revoked_at ? ';opacity:0.55' : ''}">
               <td style="padding:10px 12px;font-family:monospace">${esc(tok.prefix)}&hellip;</td>
               <td style="padding:10px 12px">${esc(tok.name || '')}</td>
-              <td style="padding:10px 12px">${esc(scopeLabel(tok.scope))}</td>
+              <td style="padding:10px 12px">${esc(scopeLabel(tok.scope))}${
+                tok.scope === 'agency' && Array.isArray(tok.targets)
+                  ? `<div style="font-size:11px;color:var(--text-muted);margin-top:2px">${t('apitoken.targets_label')} ${tok.targets.length ? tok.targets.map(p => esc(p.name)).join(', ') : '—'}${tok.auto_publish ? ' · ' + esc(t('apitoken.auto_publish_on')) : ''}</div>`
+                  : ''}</td>
               <td style="padding:10px 12px">${esc(fmtTokenDate(tok.created_at))}</td>
               <td style="padding:10px 12px">${tok.last_used_at ? esc(fmtTokenDate(tok.last_used_at)) : t('apitoken.never')}</td>
               <td style="padding:10px 12px;white-space:nowrap;text-align:right">
                 ${tok.revoked_at
                   ? `<span style="color:var(--text-muted);font-size:12px">${t('apitoken.revoked')}</span>`
-                  : `<button class="btn btn-secondary btn-sm revoke-token-btn" data-id="${esc(String(tok.id))}">${t('apitoken.revoke')}</button>`}
+                  : `${tok.scope === 'agency' ? `<button class="btn btn-secondary btn-sm edit-targets-btn" data-id="${esc(String(tok.id))}" data-targets="${esc((tok.targets || []).map(p => p.id).join(','))}">${t('apitoken.edit_targets')}</button> ` : ''}<button class="btn btn-secondary btn-sm revoke-token-btn" data-id="${esc(String(tok.id))}">${t('apitoken.revoke')}</button>`}
               </td>
             </tr>
           `).join('')}
@@ -384,19 +400,83 @@ export async function render(container) {
         }
       });
     });
+
+    // #73: edit an agency token's playlist designations -> PUT /:id/targets (atomic re-designate).
+    el.querySelectorAll('.edit-targets-btn').forEach(btn => btn.addEventListener('click', async () => {
+      const id = btn.dataset.id;
+      const current = new Set((btn.dataset.targets || '').split(',').filter(Boolean));
+      const panel = document.getElementById('tokenEditPanel');
+      const pls = await api.getPlaylists().catch(() => []);
+      panel.style.display = 'block';
+      panel.innerHTML = `
+        <div style="border:1px solid var(--accent);border-radius:var(--radius);padding:16px;margin-top:12px">
+          <h4 style="font-size:14px;margin-bottom:8px">${t('apitoken.edit_targets')}</h4>
+          <div style="display:flex;flex-direction:column;gap:6px;max-height:200px;overflow:auto;margin-bottom:12px">
+            ${pls.length
+              ? pls.map(p => p.zoned
+                  ? `<label style="display:flex;gap:8px;align-items:center;font-size:13px;opacity:.5"><input type="checkbox" disabled> ${esc(p.name)} <span style="font-size:11px;color:var(--text-muted)">— ${esc(t('apitoken.zoned_playlist_reason'))}</span></label>`
+                  : `<label style="display:flex;gap:8px;align-items:center;font-size:13px"><input type="checkbox" class="edit-pl" value="${esc(String(p.id))}"${current.has(String(p.id)) ? ' checked' : ''}> ${esc(p.name)}</label>`).join('')
+              : `<p style="color:var(--text-muted);font-size:12px">${t('apitoken.agency_no_playlists')}</p>`}
+          </div>
+          <button class="btn btn-primary btn-sm" id="saveTargetsBtn">${t('common.save')}</button>
+          <button class="btn btn-secondary btn-sm" id="cancelTargetsBtn">${t('common.cancel')}</button>
+        </div>`;
+      document.getElementById('saveTargetsBtn').onclick = async () => {
+        const ids = [...panel.querySelectorAll('.edit-pl:checked')].map(c => c.value);
+        if (!ids.length) return showToast(t('apitoken.agency_needs_playlists'), 'error');
+        try {
+          await api.setTokenTargets(id, ids);
+          showToast(t('apitoken.targets_updated'), 'success');
+          panel.style.display = 'none';
+          loadTokens();
+        } catch (err) { showToast(err.message, 'error'); }
+      };
+      document.getElementById('cancelTargetsBtn').onclick = () => { panel.style.display = 'none'; };
+    }));
   }
 
   loadTokens();
 
+  // #73: agency scope reveals a playlist picker (the token's allowlist). Loaded lazily once.
+  const tokScopeSel = document.getElementById('tokScope');
+  let agencyPlaylistsLoaded = false;
+  tokScopeSel?.addEventListener('change', async () => {
+    const picker = document.getElementById('agencyPlaylistPicker');
+    const isAgency = tokScopeSel.value === 'agency';
+    picker.style.display = isAgency ? 'block' : 'none';
+    if (isAgency && !agencyPlaylistsLoaded) {
+      agencyPlaylistsLoaded = true;
+      const list = document.getElementById('agencyPlaylistList');
+      const pls = await api.getPlaylists().catch(() => []);
+      list.innerHTML = pls.length
+        ? pls.map(p => p.zoned
+            ? `<label style="display:flex;gap:8px;align-items:center;font-size:13px;opacity:.5"><input type="checkbox" disabled> ${esc(p.name)} <span style="font-size:11px;color:var(--text-muted)">— ${esc(t('apitoken.zoned_playlist_reason'))}</span></label>`
+            : `<label style="display:flex;gap:8px;align-items:center;font-size:13px"><input type="checkbox" class="agency-pl" value="${esc(String(p.id))}"> ${esc(p.name)}</label>`).join('')
+        : `<p style="color:var(--text-muted);font-size:12px">${t('apitoken.agency_no_playlists')}</p>`;
+    }
+  });
+
   document.getElementById('createTokenBtn')?.addEventListener('click', async () => {
     const name = document.getElementById('tokName').value.trim();
     const scope = document.getElementById('tokScope').value;
+    const payload = { name, scope };
+    if (scope === 'agency') {
+      const ids = [...document.querySelectorAll('#agencyPlaylistList .agency-pl:checked')].map(c => c.value);
+      if (!ids.length) return showToast(t('apitoken.agency_needs_playlists'), 'error');
+      payload.target_playlist_ids = ids;
+      payload.auto_publish = !!document.getElementById('tokAutoPublish')?.checked;
+    }
     const btn = document.getElementById('createTokenBtn');
     btn.disabled = true;
     try {
-      const r = await api.createToken({ name, scope });
+      const r = await api.createToken(payload);
       const box = document.getElementById('tokenSecretBox');
       box.style.display = 'block';
+      // #73: for agency tokens, surface the handoff (portal URL + a copyable invite). The key
+      // is in the invite TEXT, never in a URL (Cloudflare logs query strings + chat apps unfurl
+      // links). window.location.origin is the real public host the admin is on (correct behind CF).
+      const portalUrl = window.location.origin + '/agency';
+      const inviteText = t('apitoken.invite_text', { url: portalUrl, key: r.token });
       box.innerHTML = `
         <div style="background:var(--bg-secondary);border:1px solid var(--accent);border-radius:var(--radius);padding:16px;margin-bottom:16px">
           <h4 style="font-size:14px;margin-bottom:8px">${t('apitoken.secret_title')}</h4>
@@ -405,6 +485,14 @@ export async function render(container) {
             <input type="text" class="input" readonly value="${esc(r.token)}" style="font-family:monospace;flex:1" onclick="this.select()">
             <button class="btn btn-secondary btn-sm" id="copyTokenBtn">${t('apitoken.copy')}</button>
           </div>
+          ${scope === 'agency' ? `
+          <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
+            <label style="font-size:12px;color:var(--text-muted)">${t('apitoken.portal_url_label')}</label>
+            <input type="text" class="input" readonly value="${esc(portalUrl)}" style="width:100%;margin-top:4px" onclick="this.select()">
+            <label style="font-size:12px;color:var(--text-muted);display:block;margin-top:10px">${t('apitoken.invite_label')}</label>
+            <textarea class="input" readonly rows="2" style="width:100%;margin-top:4px;font-size:13px;font-family:inherit" onclick="this.select()">${esc(inviteText)}</textarea>
+            <button class="btn btn-secondary btn-sm" id="copyInviteBtn" style="margin-top:8px">${t('apitoken.copy_invite')}</button>
+          </div>` : ''}
         </div>
       `;
       document.getElementById('copyTokenBtn')?.addEventListener('click', async () => {
@@ -412,6 +500,12 @@ export async function render(container) {
           await navigator.clipboard.writeText(r.token);
           showToast(t('apitoken.copied'), 'success');
         } catch { /* clipboard may be unavailable; the field is selectable */ }
+      });
+      document.getElementById('copyInviteBtn')?.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(inviteText); // full "go here + paste key" text
+          showToast(t('apitoken.copied'), 'success');
+        } catch { /* field is selectable as a fallback */ }
       });
       document.getElementById('tokName').value = '';
       showToast(t('apitoken.created_toast'), 'success');
