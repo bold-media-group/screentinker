@@ -8,6 +8,26 @@ const fs = require('fs');
 const config = require('./config');
 const VERSION = require('./version');
 
+// #114: last-resort crash safety net. better-sqlite3 is SYNCHRONOUS, so a constraint
+// violation (e.g. a FK write) inside a socket.io handler with no local try/catch
+// propagates to uncaughtException; Node's default then prints a bare message and exits
+// with NO stack — which is exactly why #114's "FOREIGN KEY constraint failed" couldn't
+// be root-caused. This handler logs the FULL STACK (the file:line of the offending
+// write) then exits(1) so systemd restarts a fresh process. It is NOT catch-and-
+// continue: after an uncaught throw the process state is undefined, so we never keep
+// serving. Registered before everything else so it's in place during startup too.
+// (Verified: uncaughtException does catch a synchronous socket.io-handler throw.)
+function logFatalAndExit(kind, err) {
+  try {
+    const e = err instanceof Error ? err : new Error('Non-error thrown: ' + require('util').inspect(err));
+    process.stderr.write(`\n[FATAL ${kind}] ${new Date().toISOString()}\n${e.stack || e.message}\n`);
+  } catch (_) { /* the death handler must never throw */ }
+  try { require('./db/database').db.close(); } catch (_) { /* best-effort WAL flush */ }
+  process.exit(1);
+}
+process.on('uncaughtException', (err) => logFatalAndExit('uncaughtException', err));
+process.on('unhandledRejection', (reason) => logFatalAndExit('unhandledRejection', reason));
+
 // Ensure upload directories exist
 [config.contentDir, config.screenshotsDir].forEach(dir => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
