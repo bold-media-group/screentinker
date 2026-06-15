@@ -33,12 +33,15 @@ echo "Bumping $CURRENT -> $NEW"
 printf '%s\n' "$NEW" > VERSION
 
 # 2) server/package.json version + lockfile (only the top-level "version" key;
-#    dependency entries are "name": "^x.y.z" and won't match "version": "x.y.z")
-sed -i -E "s/(\"version\"[[:space:]]*:[[:space:]]*)\"[0-9]+\.[0-9]+\.[0-9]+\"/\1\"$NEW\"/" server/package.json
+#    dependency entries are "name": "^x.y.z" and won't match "version": "x.y.z").
+#    The [^"]* tail also matches a pre-release CURRENT value (e.g. 1.9.1-beta1) so a
+#    beta1->beta2 bump replaces it instead of silently no-op'ing (issue: stale package.json).
+sed -i -E "s/(\"version\"[[:space:]]*:[[:space:]]*)\"[0-9]+\.[0-9]+\.[0-9]+[^\"]*\"/\1\"$NEW\"/" server/package.json
 ( cd server && npm install --package-lock-only >/dev/null )
 
-# 3) android versionName + versionCode (+1)
-sed -i -E "s/(versionName[[:space:]]*=[[:space:]]*)\"[0-9.]+\"/\1\"$NEW\"/" android/app/build.gradle.kts
+# 3) android versionName + versionCode (+1). [0-9][^"]* matches a pre-release current
+#    value too (e.g. 1.9.1-beta1), so beta1->beta2 actually replaces it.
+sed -i -E "s/(versionName[[:space:]]*=[[:space:]]*)\"[0-9][^\"]*\"/\1\"$NEW\"/" android/app/build.gradle.kts
 CODE="$(grep -oE 'versionCode[[:space:]]*=[[:space:]]*[0-9]+' android/app/build.gradle.kts | grep -oE '[0-9]+$')"
 sed -i -E "s/(versionCode[[:space:]]*=[[:space:]]*)[0-9]+/\1$((CODE + 1))/" android/app/build.gradle.kts
 
