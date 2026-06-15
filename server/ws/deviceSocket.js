@@ -154,22 +154,32 @@ function buildPlaylistPayload(deviceId) {
     }
   }
 
-  // Zone reset: if the device isn't in a real multi-zone layout (single zone or
-  // no layout), strip any leftover zone_id from assignments. Otherwise, after
-  // switching a device from a multi-zone layout back to single/fullscreen, the
-  // content stays bound to a now-gone left/right zone_id and never plays. With
-  // zone_id nulled, both players fall back to the default fullscreen renderer.
-  const zoneCount = layout?.zones?.length || 0;
-  if (zoneCount < 2 && Array.isArray(assignments)) {
-    assignments = assignments.map(a => (a && a.zone_id != null ? { ...a, zone_id: null } : a));
-  }
-
   // #74/#75: the effective IANA timezone the player evaluates schedule blocks in.
   // An explicit (non-default) devices.timezone override wins; otherwise the player's
   // last OS-reported zone; otherwise null = the player trusts its own OS clock.
   const tzOverride = (device?.timezone && device.timezone !== 'UTC') ? device.timezone : null;
   const timezone = tzOverride || device?.reported_timezone || null;
-  return { assignments, layout, orientation: device?.orientation || 'landscape', wall_config, timezone };
+  // #104: shared shape + zone-reset tail so the device payload and the dashboard
+  // preview payload (GET /api/playlists/:id/preview-payload) can never drift.
+  return assemblePayload({ assignments, layout, orientation: device?.orientation || 'landscape', wall_config, timezone });
+}
+
+// #104: the canonical player payload shape, shared by the device path
+// (buildPlaylistPayload) and the device-free dashboard preview.
+// Zone reset: if this isn't a real multi-zone layout (single zone or no layout),
+// strip any leftover zone_id so content falls back to the fullscreen renderer
+// instead of binding to a now-gone left/right zone and never playing.
+function assemblePayload({ assignments, layout, orientation, wall_config, timezone }) {
+  let a = Array.isArray(assignments) ? assignments : [];
+  const zoneCount = layout?.zones?.length || 0;
+  if (zoneCount < 2) a = a.map(x => (x && x.zone_id != null ? { ...x, zone_id: null } : x));
+  return {
+    assignments: a,
+    layout: layout || null,
+    orientation: orientation || 'landscape',
+    wall_config: wall_config || null,
+    timezone: timezone || null,
+  };
 }
 
 // Check if a device should show trial expired screen
@@ -219,6 +229,7 @@ module.exports = function setupDeviceSocket(io) {
   // Expose helpers for use by route handlers
   module.exports.lastScreenshots = lastScreenshots;
   module.exports.buildPlaylistPayload = buildPlaylistPayload;
+  module.exports.assemblePayload = assemblePayload;
   module.exports.generateDeviceToken = generateDeviceToken;
   const deviceNs = io.of('/device');
   const dashboardNs = io.of('/dashboard');

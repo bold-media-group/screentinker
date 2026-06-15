@@ -105,9 +105,15 @@ function openContentPicker({ multiple = false, title } = {}) {
   });
 }
 
-function showPreviewModal(html) {
+function showPreviewModal(html, widgetType) {
   const overlay = document.createElement('div');
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:10000;padding:16px';
+  // #104: webpage widgets pointing at frame-denying sites (X-Frame-Options) can't be
+  // embedded in a browser preview — and an XFO refusal is provably indistinguishable
+  // client-side from a working embed, so we don't guess. Always show the honest note.
+  const webpageNote = widgetType === 'webpage'
+    ? `<div style="padding:8px 16px;border-top:1px solid var(--border);color:var(--text-secondary);font-size:13px;text-align:center">${t('widget.webpage_blocked_note')}</div>`
+    : '';
   overlay.innerHTML = `
     <div style="width:100%;max-width:1400px;height:90vh;background:var(--bg-card);border-radius:8px;display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--border)">
       <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 16px;border-bottom:1px solid var(--border)">
@@ -115,6 +121,7 @@ function showPreviewModal(html) {
         <button class="btn btn-secondary btn-sm" id="pvClose">${t('widget.close')}</button>
       </div>
       <iframe id="pvIframe" sandbox="allow-scripts" style="flex:1;width:100%;border:0;background:#000"></iframe>
+      ${webpageNote}
     </div>`;
   document.body.appendChild(overlay);
   // srcdoc resolves relative URLs against about:srcdoc, so inject <base> pointing to our origin
@@ -551,7 +558,7 @@ export async function render(container) {
       });
       if (!res.ok) throw new Error(t('widget.toast.preview_failed'));
       const html = await res.text();
-      showPreviewModal(html);
+      showPreviewModal(html, type);
     } catch (err) { showToast(err.message, 'error'); }
   };
 

@@ -203,6 +203,9 @@ const migrations = [
   // #73: zone-binding was reverted (placement belongs to the device, not the playlist - see
   // the agency-tokens history). Drop the table on DBs where the short-lived migration ran.
   "DROP TABLE IF EXISTS api_token_target_zones",
+  // #106: cosmetic per-workspace display ordering for the Displays view (drag-to-
+  // reorder). Default 0 -> existing devices fall back to the created_at tiebreak.
+  "ALTER TABLE devices ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
 ];
 // Apply each ALTER idempotently. A "duplicate column name" / "already exists"
 // error means the column is already present (expected on a migrated DB) - benign.

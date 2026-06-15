@@ -28,6 +28,7 @@ async function request(url, options = {}) {
 export const api = {
   // Devices
   getDevices: () => request('/devices'),
+  reorderDevices: (order) => request('/devices/reorder', { method: 'POST', body: JSON.stringify({ order }) }),
   getDevice: (id) => request(`/devices/${id}`),
   updateDevice: (id, data) => request(`/devices/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteDevice: (id) => request(`/devices/${id}`, { method: 'DELETE' }),
@@ -145,6 +146,7 @@ export const api = {
   addPlaylistItem: (id, data) => request(`/playlists/${id}/items`, { method: 'POST', body: JSON.stringify(data) }),
   updatePlaylistItem: (id, itemId, data) => request(`/playlists/${id}/items/${itemId}`, { method: 'PUT', body: JSON.stringify(data) }),
   deletePlaylistItem: (id, itemId) => request(`/playlists/${id}/items/${itemId}`, { method: 'DELETE' }),
+  duplicatePlaylistItem: (id, itemId) => request(`/playlists/${id}/items/${itemId}/duplicate`, { method: 'POST' }),
   reorderPlaylistItems: (id, order) => request(`/playlists/${id}/items/reorder`, { method: 'POST', body: JSON.stringify({ order }) }),
   // #74/#75 per-item schedule blocks
   getItemSchedules: (id, itemId) => request(`/playlists/${id}/items/${itemId}/schedules`),

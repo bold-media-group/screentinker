@@ -88,6 +88,35 @@ function buildSnapshotItems(playlistId) {
   return items;
 }
 
+// #104: a playlist isn't bound to a device, so it has no intrinsic layout. Derive
+// one from the playlist's own zone-bound items via the FK chain
+// playlist_items.zone_id -> layout_zones.id -> layout_zones.layout_id. 0 zoned items
+// -> fullscreen (null); 1 distinct layout -> use it; >1 (rare/legacy: zones from
+// different layouts) -> the layout covering the MOST items, flagged ambiguous so the
+// dashboard can caption it. Never throws.
+function derivePreviewLayout(assignments) {
+  const zoneIds = [...new Set((assignments || []).map(a => a && a.zone_id).filter(Boolean))];
+  if (zoneIds.length === 0) return null;
+  const ph = zoneIds.map(() => '?').join(',');
+  const zoneRows = db.prepare(`SELECT id, layout_id FROM layout_zones WHERE id IN (${ph})`).all(...zoneIds);
+  if (zoneRows.length === 0) return null; // dangling zone_ids -> fullscreen
+  const layoutIds = [...new Set(zoneRows.map(r => r.layout_id))];
+  let layoutId = layoutIds[0];
+  let ambiguous = false;
+  if (layoutIds.length > 1) {
+    ambiguous = true;
+    const z2l = new Map(zoneRows.map(r => [r.id, r.layout_id]));
+    const tally = {};
+    for (const a of assignments) { const l = z2l.get(a && a.zone_id); if (l) tally[l] = (tally[l] || 0) + 1; }
+    layoutId = Object.entries(tally).sort((x, y) => y[1] - x[1])[0][0];
+  }
+  const layout = db.prepare('SELECT * FROM layouts WHERE id = ?').get(layoutId);
+  if (!layout) return null;
+  layout.zones = db.prepare('SELECT * FROM layout_zones WHERE layout_id = ? ORDER BY sort_order').all(layoutId);
+  if (ambiguous) layout._preview_ambiguous = true;
+  return layout;
+}
+
 // Map an item's schedule rows into the evaluator's block shape.
 function schedulesForItem(itemId) {
   return db.prepare(
@@ -186,6 +215,20 @@ router.get('/:id', requirePlaylistRead, (req, res) => {
   `).all(req.params.id);
   const displayCount = db.prepare('SELECT COUNT(*) as count FROM devices WHERE playlist_id = ?').get(req.params.id).count;
   res.json({ ...req.playlist, items, item_count: items.length, display_count: displayCount });
+});
+
+// #104: device-free draft preview payload. Same shape the device player consumes
+// (via assemblePayload, so it can't drift), but built from LIVE items (draft-aware,
+// not published_snapshot) with a layout derived from the playlist's own zones. JWT-
+// gated + workspace-scoped by requirePlaylistRead. The dashboard iframes /player
+// with ?preview=1&playlist=:id and renders this with the unmodified player renderer.
+const PREVIEW_ORIENTATIONS = new Set(['landscape', 'portrait', 'landscape-flipped', 'portrait-flipped']);
+router.get('/:id/preview-payload', requirePlaylistRead, (req, res) => {
+  const { assemblePayload } = require('../ws/deviceSocket');
+  const assignments = buildSnapshotItems(req.params.id);
+  const layout = derivePreviewLayout(assignments);
+  const orientation = PREVIEW_ORIENTATIONS.has(req.query.orientation) ? req.query.orientation : 'landscape';
+  res.json(assemblePayload({ assignments, layout, orientation, wall_config: null, timezone: null }));
 });
 
 // Update playlist
@@ -458,6 +501,37 @@ router.put('/:id/items/:itemId', requirePlaylistWrite, (req, res) => {
     values.push(duration_sec);
   }
 
+  // #105 replace: swap the item's content/widget in place while preserving zone_id,
+  // duration, sort_order and schedule rows. playlist_items is normalized (no
+  // type-specific columns — mime_type/remote_url/filepath/widget_type are JOINed at
+  // read time), so this is a clean FK swap across ANY content type (image<->video<->
+  // youtube<->widget). Exactly one of content_id/widget_id ends up set; the other is
+  // nulled. Only acts when the request explicitly carries content_id or widget_id, so
+  // partial PUTs (duration/zone/sort) are unaffected.
+  const replacingContent = Object.prototype.hasOwnProperty.call(req.body, 'content_id');
+  const replacingWidget = Object.prototype.hasOwnProperty.call(req.body, 'widget_id');
+  if (replacingContent || replacingWidget) {
+    const newContentId = replacingContent ? req.body.content_id : null;
+    const newWidgetId = replacingWidget ? req.body.widget_id : null;
+    if (!newContentId && !newWidgetId) return res.status(400).json({ error: 'content_id or widget_id required to replace' });
+    if (newContentId && newWidgetId) return res.status(400).json({ error: 'provide only one of content_id / widget_id' });
+    if (newContentId) {
+      const content = db.prepare('SELECT id, workspace_id FROM content WHERE id = ?').get(newContentId);
+      if (!content) return res.status(404).json({ error: 'Content not found' });
+      if (content.workspace_id && content.workspace_id !== req.playlist.workspace_id) {
+        return res.status(403).json({ error: 'Content is not in this playlist\'s workspace' });
+      }
+    } else {
+      const widget = db.prepare('SELECT id, workspace_id FROM widgets WHERE id = ?').get(newWidgetId);
+      if (!widget) return res.status(404).json({ error: 'Widget not found' });
+      if (widget.workspace_id && widget.workspace_id !== req.playlist.workspace_id) {
+        return res.status(403).json({ error: 'Widget is not in this playlist\'s workspace' });
+      }
+    }
+    updates.push('content_id = ?'); values.push(newContentId || null);
+    updates.push('widget_id = ?'); values.push(newWidgetId || null);
+  }
+
   if (updates.length > 0) {
     updates.push("updated_at = strftime('%s','now')");
     values.push(req.params.itemId);
@@ -488,6 +562,43 @@ router.delete('/:id/items/:itemId', requirePlaylistWrite, (req, res) => {
   db.prepare('DELETE FROM playlist_items WHERE id = ?').run(req.params.itemId);
   markDraft(req.params.id);
   res.json({ success: true });
+});
+
+// #105 duplicate: append a copy of an item (same content/widget + zone + duration)
+// plus its schedule rows (new ids). One transaction so a half-copied item can't exist.
+router.post('/:id/items/:itemId/duplicate', requirePlaylistWrite, (req, res) => {
+  const item = db.prepare('SELECT * FROM playlist_items WHERE id = ? AND playlist_id = ?')
+    .get(req.params.itemId, req.params.id);
+  if (!item) return res.status(404).json({ error: 'item not found' });
+
+  const copy = db.transaction(() => {
+    const max = db.prepare('SELECT MAX(sort_order) as m FROM playlist_items WHERE playlist_id = ?').get(req.params.id);
+    const order = (max.m || 0) + 1;
+    const result = db.prepare(`
+      INSERT INTO playlist_items (playlist_id, content_id, widget_id, zone_id, sort_order, duration_sec)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(req.params.id, item.content_id, item.widget_id, item.zone_id, order, item.duration_sec);
+    const newId = result.lastInsertRowid;
+    const scheds = db.prepare('SELECT active_days, start_time, end_time, start_date, end_date, sort_order FROM playlist_item_schedules WHERE playlist_item_id = ?').all(req.params.itemId);
+    const insSched = db.prepare('INSERT INTO playlist_item_schedules (id, playlist_item_id, active_days, start_time, end_time, start_date, end_date, sort_order) VALUES (?,?,?,?,?,?,?,?)');
+    for (const s of scheds) insSched.run(uuidv4(), newId, s.active_days, s.start_time, s.end_time, s.start_date, s.end_date, s.sort_order);
+    return newId;
+  });
+  const newId = copy();
+  markDraft(req.params.id);
+
+  const newItem = db.prepare(`
+    SELECT pi.*,
+           COALESCE(c.filename, w.name) as filename,
+           c.mime_type, c.filepath, c.thumbnail_path,
+           c.duration_sec as content_duration, c.file_size, c.remote_url,
+           w.name as widget_name, w.widget_type, w.config as widget_config
+    FROM playlist_items pi
+    LEFT JOIN content c ON pi.content_id = c.id
+    LEFT JOIN widgets w ON pi.widget_id = w.id
+    WHERE pi.id = ?
+  `).get(newId);
+  res.status(201).json(newItem);
 });
 
 // Reorder items

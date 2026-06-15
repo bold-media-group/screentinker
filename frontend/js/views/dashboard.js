@@ -622,11 +622,64 @@ function attachGroupHandlers(groupsWithDevices, allDevices) {
     });
   }
 
+  // #106: within-section drag-to-reorder. Tracks the in-flight drag (which device,
+  // and which section it started in) so a CARD-level drop can tell reorder (same
+  // section) from group-assign (different section / section background).
+  let dragDeviceId = null;
+  let dragSectionKey = null;
+  const sectionKeyOf = (el) => {
+    const g = el.closest('.group-section');
+    if (g && g.dataset.groupId) return 'g:' + g.dataset.groupId;
+    if (el.closest('[data-ungrouped="1"]')) return 'ungrouped';
+    return null;
+  };
+  const clearDropIndicators = () => document.querySelectorAll('.device-card').forEach(c => { c.style.boxShadow = ''; });
+
   document.querySelectorAll('.device-card').forEach(card => {
     card.addEventListener('dragstart', (e) => {
       e.dataTransfer.setData('text/device-id', card.dataset.deviceId);
       e.dataTransfer.setData('text/device-name', card.dataset.deviceName || '');
       e.dataTransfer.effectAllowed = 'move';
+      dragDeviceId = card.dataset.deviceId;   // #106
+      dragSectionKey = sectionKeyOf(card);    // #106
+    });
+    card.addEventListener('dragend', () => { dragDeviceId = null; dragSectionKey = null; clearDropIndicators(); });
+
+    // #106 within-section reorder. Engages ONLY when the target is another card in the
+    // SAME section; otherwise it no-ops and the event bubbles to the section handler
+    // (group-assign), leaving the existing behavior untouched.
+    card.addEventListener('dragover', (e) => {
+      if (!dragDeviceId || dragDeviceId === card.dataset.deviceId) return;
+      if (sectionKeyOf(card) !== dragSectionKey) return; // cross-section -> section handles (assign)
+      e.preventDefault();
+      e.stopPropagation();                    // suppress the section's group-assign dragover/highlight
+      e.dataTransfer.dropEffect = 'move';
+      const r = card.getBoundingClientRect();
+      const before = e.clientX < r.left + r.width / 2;
+      card.style.boxShadow = before ? 'inset 3px 0 0 var(--primary)' : 'inset -3px 0 0 var(--primary)';
+    });
+    card.addEventListener('dragleave', () => { card.style.boxShadow = ''; });
+    card.addEventListener('drop', async (e) => {
+      if (!dragDeviceId || dragDeviceId === card.dataset.deviceId) return;
+      if (sectionKeyOf(card) !== dragSectionKey) return; // cross-section -> bubble to section (assign)
+      e.preventDefault();
+      e.stopPropagation();                    // CRITICAL: stop the section's group-assign drop also firing
+      const r = card.getBoundingClientRect();
+      const before = e.clientX < r.left + r.width / 2;
+      clearDropIndicators();
+      const grid = card.closest('.device-grid');
+      if (!grid) return;
+      const ids = Array.from(grid.querySelectorAll('.device-card')).map(c => c.dataset.deviceId).filter(Boolean);
+      const from = ids.indexOf(dragDeviceId);
+      if (from === -1) return;
+      ids.splice(from, 1);
+      let to = ids.indexOf(card.dataset.deviceId);
+      if (!before) to += 1;
+      ids.splice(to, 0, dragDeviceId);
+      try {
+        await api.reorderDevices(ids);
+        loadDashboard();
+      } catch (err) { showToast(err.message, 'error'); }
     });
   });
 
