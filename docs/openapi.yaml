@@ -53,6 +53,8 @@ tags:
     description: Activity log.
   - name: kiosk
     description: Interactive kiosk pages and their render output.
+  - name: pip
+    description: Picture-in-picture / overlay push (image or web on top of the running playlist).
 
 security:
   - ApiToken: []
@@ -819,6 +821,12 @@ paths:
                 sort_order: { type: integer }
                 duration_sec: { type: integer }
                 zone_id: { type: [string, "null"] }
+                muted:
+                  type: boolean
+                  description: >
+                    Mute this item's audio. Applied to playing devices in real time
+                    (device:mute-changed) and persisted into the published snapshot, so it
+                    also takes effect on the next playlist load. (#129)
       responses:
         '200': { description: Updated item. }
     delete:
@@ -1227,6 +1235,80 @@ paths:
                 payload: { type: object }
       responses:
         '200': { description: '{ success, sent, offline, total, results }.' }
+
+  # ---------------------------------------------------------------------- pip
+  /pip:
+    post:
+      tags: [pip]
+      summary: Show a picture-in-picture overlay on a device or group
+      description: |
+        Pushes an image or web overlay onto a device (or every device in a group) on top
+        of the running playlist, in real time (device:pip-show). The player fetches `uri`
+        itself (same trust model as remote_url content; the server does not proxy it). A
+        `web` overlay renders an arbitrary page in an iframe, so this requires scope: full. (#109)
+      x-required-scope: full
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [device_id, type, uri]
+              properties:
+                device_id: { type: string, description: A device id OR a group id (expanded to its members). }
+                type: { type: string, enum: [image, web] }
+                uri: { type: string, description: Absolute http(s) URL the player fetches directly. }
+                position: { type: string, enum: [top-left, top-right, bottom-left, bottom-right, center], default: top-right }
+                width: { type: integer, description: 'px (40-3840)', default: 480 }
+                height: { type: integer, description: 'px (40-3840)', default: 360 }
+                duration: { type: integer, description: 'seconds; 0 = until cleared (0-86400)', default: 0 }
+                title: { type: string }
+                title_color: { type: string, description: '#RRGGBB' }
+                background_color: { type: string, description: '#RRGGBB (transparency via opacity)' }
+                opacity: { type: number, description: '0-1', default: 1 }
+                border_radius: { type: integer, description: 'px (0-512)', default: 0 }
+                close_button: { type: boolean }
+      responses:
+        '200': { description: '{ success, pip_id, target, sent, offline, total, results }.' }
+        '400': { description: Validation error (type / uri scheme / position / numeric bounds / color). }
+        '404': { description: Device or group not found in this workspace. }
+    delete:
+      tags: [pip]
+      summary: Clear a picture-in-picture overlay
+      description: 'Clears the overlay on a device or group (device:pip-clear). Requires scope: full. (#109)'
+      x-required-scope: full
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [device_id]
+              properties:
+                device_id: { type: string, description: A device id OR a group id. }
+                pip_id: { type: string, description: Omit to clear whatever overlay is showing. }
+      responses:
+        '200': { description: '{ success, target, sent, offline, total, results }.' }
+        '404': { description: Device or group not found in this workspace. }
+  /pip/clear:
+    post:
+      tags: [pip]
+      summary: Clear a picture-in-picture overlay (alias for DELETE /pip)
+      description: 'Same as DELETE /pip; provided for clients that prefer POST. Requires scope: full. (#109)'
+      x-required-scope: full
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [device_id]
+              properties:
+                device_id: { type: string, description: A device id OR a group id. }
+                pip_id: { type: string, description: Omit to clear whatever overlay is showing. }
+      responses:
+        '200': { description: '{ success, target, sent, offline, total, results }.' }
+        '404': { description: Device or group not found in this workspace. }
 
   # ---------------------------------------------------------------- schedules
   /schedules:

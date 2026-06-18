@@ -32,7 +32,10 @@ test('openapi: every operation x-required-scope matches the method-based enforce
     for (const [m, op] of Object.entries(ops)) {
       if (!METHODS.includes(m) || !op || typeof op !== 'object') continue;
       if (Array.isArray(op.security) && op.security.length === 0) continue; // unauthenticated render
-      const expected = (m === 'get' || m === 'head') ? 'read' : (p.includes('command') ? 'full' : 'write');
+      // Operational/fleet-affecting routes require 'full' even though they aren't GETs:
+      // the group command route, and #109 PiP (push an arbitrary web overlay to devices).
+      const isFullScope = p.includes('command') || p === '/pip' || p.startsWith('/pip/');
+      const expected = (m === 'get' || m === 'head') ? 'read' : (isFullScope ? 'full' : 'write');
       if (op['x-required-scope'] !== expected) {
         mismatches.push(`${m.toUpperCase()} ${p}: spec='${op['x-required-scope']}' enforcement='${expected}'`);
       }
