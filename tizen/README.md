@@ -9,13 +9,21 @@ display pairs and plays from the same dashboard with no server changes.
 - Registers, shows a **6-digit pairing code**; you claim it in the dashboard
   (Devices → Pair a display). On `device:paired` it switches to playback.
 - Reconnects automatically with a stored `device_id` + `device_token`.
-- Renders **fullscreen single-zone** playlists, looping:
+- Renders **multi-zone layouts** (matching the Android player) when a layout is assigned —
+  each zone has its own percent geometry, `z_index`, `fit_mode`, background, and rotates its
+  own assignments independently — and falls back to **fullscreen single-zone** when no
+  layout is set, looping:
   - **image** → shown for `duration_sec` (min 3s)
   - **video** (`/api/content/{id}/file` or `remote_url`) → plays to end, then next; single item loops
   - **YouTube** (`mime video/youtube`) → muted autoplay `<iframe>` embed
   - **widget** → `<iframe>` of `{server}/api/widgets/{id}/render`
 - Sends `device:heartbeat` every 15s (with best-effort Tizen telemetry).
 - Keeps the screen awake (`tizen.power` / Samsung `appcommon` screensaver-off).
+- **Video walls** (mirrors the web player): when the device is a wall member the payload
+  carries `wall_config`; the stage is positioned (in vw/vh) as this screen's slice of the
+  wall, the leader broadcasts `wall:sync` and followers align index + drift-correct their
+  video to the leader's clock. Per-tile `rotation` is not applied yet (matches the web
+  player); video walls have no Android equivalent.
 
 ## Files
 ```
@@ -23,6 +31,7 @@ config.xml          Tizen TV web-app manifest (privileges, profile, icon)
 index.html          setup / pairing / stage screens
 css/style.css
 js/app.js           device protocol client (register, pair, heartbeat, state)
+js/device-control.js Samsung B2B/system fleet control (device:command) — #125
 js/player.js        fullscreen playlist renderer
 js/socket.io.min.js socket.io-client v4.7.5 (bundled)
 icon.png
@@ -79,7 +88,57 @@ lives in `~/tizen-studio-data`, password `screentinker`).
 - **Runtime**: loads + renders in Chromium with no JS errors (setup screen verified).
 - Not yet on real Tizen hardware — needs signing + a TV (or URL Launcher).
 
-## Not yet ported (Android player has these; fullscreen single-zone covers most signage)
-Multi-zone layouts, video walls (`wall:sync`), screenshots, remote touch/control,
-and self-OTA (Tizen apps update via Samsung's store / URL Launcher refresh, not the
-Android `PackageInstaller` flow).
+## Remote control & preview (#120 / #121 / #125)
+The Tizen player listens for the same dashboard events as the web/Android player.
+`device:command` is handled by `js/device-control.js`, which drives the real Samsung
+fleet-control surface (`webapis.systemcontrol` on Tizen 6.5/7, else `b2bapis.b2bcontrol`
+on SSSP/Tizen 4) and reports each outcome back via `device:log` (tag `command`, shown
+live on the device-detail screen) plus a structured `device:command-result`:
+
+| Command (`device:command` type)   | Tizen behaviour                                                        |
+|-----------------------------------|------------------------------------------------------------------------|
+| `refresh` / `reload`              | `location.reload()`                                                    |
+| `launch` / `screen_on`            | clears the screen-off overlay + re-asserts wake; `setPanelMute("OFF")` when the B2B surface is present |
+| `screen_off`                      | `setPanelMute("ON")` (backlight off) on a B2B panel; **black overlay fallback** otherwise |
+| `update`                          | reload to re-pull URL-Launcher content (no in-app OTA — see **Updates**) |
+| `reboot`                          | `rebootDevice()` on a B2B panel; `unsupported` otherwise               |
+| `shutdown`                        | `setPanelMute("ON")` + note (SSSP web API has no true power-off)        |
+| _unknown_                         | reported as `unsupported`                                              |
+| `device:screenshot-request`       | best-effort capture (see note)                                         |
+| `device:remote-start` / `-stop`   | start/stop ~1 fps preview streaming                                    |
+
+> **Partner-signing caveat (#125):** the `b2bcontrol` / `systemcontrol` privileges in
+> `config.xml` only take effect on a **partner-signed `.wgt` on a real SSSP panel**. On
+> the dev/URL-Launcher/web build (or a consumer TV) those surfaces are absent, so reboot
+> returns `unsupported`, `screen_off` uses the black overlay, and the startup capability
+> log reports `backend=none`. Only a partner-signed build on real hardware fully
+> validates reboot / panel power.
+
+> **Screenshot/preview note:** the TV decodes `<video>` onto a hardware overlay plane
+> and plays YouTube in a cross-origin `<iframe>`, neither of which can be read back into
+> a `<canvas>`. So **images capture for real; video/YouTube fall back to a status card**
+> (device + timestamp). The dashboard preview shows a truthful frame rather than a dead
+> button. Full-fidelity video preview isn't feasible on the sideloaded Tizen runtime.
+
+## Updates (#122)
+There is **no in-app OTA** for a sideloaded, signed `.wgt`. Updating a screen means
+**re-building and re-sideloading** the `.wgt` (path B above), or — on Samsung B2B
+signage — pushing it through the **URL Launcher refresh / MDM (MagicINFO / SSSP)**
+channel. The dashboard `update` command therefore just tells the screen an update is
+pending; it cannot self-apply. If you run the **URL Launcher path (A)**, a plain
+TV reboot re-fetches `…/player` and you're current with the server with no `.wgt` step.
+
+## Auto-launch on boot (#122)
+Boot auto-start for a **sideloaded** consumer TV web app is a **display setting, not an
+app setting** — there's no `config.xml` autostart for the TV profile. Configure it on
+the panel:
+- **URL Launcher path (A):** set the URL Launcher as the boot app (it relaunches on
+  power-up automatically) — the recommended signage setup.
+- **Signed-app path (B):** use the TV's **kiosk / auto-start app** setting (B2B/SSSP
+  firmware) to launch ScreenTinker on boot; on dev-mode consumer TVs there's no
+  guaranteed boot-launch, so the URL Launcher path is preferred for unattended screens.
+
+## Version reporting (#119)
+`app_version` is sourced from `config.xml`'s `version=""` — read at runtime via the
+Tizen application API, with a build-stamped constant fallback (`build-wgt.sh` stamps it
+from `config.xml`). The dashboard always shows the version actually installed.

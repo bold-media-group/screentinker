@@ -11,7 +11,18 @@
 (function () {
   'use strict';
 
-  var APP_VERSION = '1.0.0';
+  // #119: one source of truth for the player version. Resolve at runtime from the
+  // packaged config.xml via the Tizen application API; fall back to a constant that
+  // build-wgt.sh stamps from config.xml's version="" so the dashboard always shows the
+  // version that is actually installed (never the old hardcoded '1.0.0').
+  var APP_VERSION_FALLBACK = '1.9.1'; // st:app-version — stamped by build-wgt.sh
+  var APP_VERSION = (function () {
+    try {
+      var v = tizen.application.getCurrentApplication().appInfo.version;
+      if (v) return v;
+    } catch (e) {}
+    return APP_VERSION_FALLBACK;
+  })();
   var HEARTBEAT_MS = 15000;
   var DEFAULT_DURATION = 10;
   var MIN_DURATION = 3;
@@ -50,6 +61,7 @@
   var elSetup = document.getElementById('setup');
   var elPairing = document.getElementById('pairing');
   var elStage = document.getElementById('stage');
+  var elPip = document.getElementById('pip'); // #109: PiP overlay layer (above #stage)
   var elUrl = document.getElementById('serverUrl');
   var elConnect = document.getElementById('connectBtn');
   var elSetupStatus = document.getElementById('setupStatus');
@@ -80,6 +92,8 @@
   var serverUrl = get(LS.url);
   var heartbeatTimer = null;
   var beatCount = 0;
+  var authenticated = false; // #118: true only between device:registered and disconnect/auth-error
+  var streamTimer = null;    // #120: dashboard preview streaming interval
 
   function deviceInfo() {
     return {
@@ -122,6 +136,11 @@
     });
 
     socket.on('connect', function () {
+      // #118: a brand-new socket is not authenticated until device:registered. Reset the
+      // flag and kill any heartbeat carried over from the previous socket, so a beat can't
+      // fire on this fresh, unregistered connection (TV sleep/wake reconnects often).
+      authenticated = false;
+      stopHeartbeat();
       clearToast();
       register();
     });
@@ -137,12 +156,19 @@
         toast('Reconnecting…', true);
       }
     });
-    socket.on('disconnect', function () { toast('Reconnecting…', true); });
+    socket.on('disconnect', function () {
+      authenticated = false; // #118
+      stopHeartbeat();        // #118: no beats on a dead socket
+      toast('Reconnecting…', true);
+    });
 
     socket.on('device:registered', function (data) {
       deviceId = data.device_id; deviceToken = data.device_token;
       set(LS.id, deviceId); set(LS.token, deviceToken);
+      authenticated = true; // #118: this socket may now send post-register events
+      clearToast();         // #118: drop any stale "Not authenticated…" banner
       startHeartbeat();
+      reportCapabilities(); // #125: surface the fleet-control backend to the dashboard
       if (data.status === 'provisioning') showPairing();
     });
 
@@ -157,8 +183,13 @@
     });
 
     socket.on('device:auth-error', function (data) {
+      // #118: NEVER sticky. A transient pre-register rejection must self-clear, not paint
+      // a permanent strip over still-playing content. Stop the heartbeat so a rejected beat
+      // can't sustain a reject -> auth-error loop.
+      authenticated = false;
+      stopHeartbeat();
+      toast((data && data.error) ? data.error : 'Auth error', false);
       // Bad/stale token or fingerprint-reclaim block: drop creds and re-pair.
-      toast((data && data.error) ? data.error : 'Auth error', true);
       del(LS.id); del(LS.token);
       deviceId = null; deviceToken = null;
       setTimeout(register, 3000);
@@ -166,8 +197,57 @@
 
     socket.on('device:playlist-update', onPlaylist);
 
-    // Optional remote commands the dashboard may send (best-effort)
-    socket.on('device:reload', function () { location.reload(); });
+    // ---- remote control from the dashboard (#120 / #121 / #125) ----
+    // Mirror the web/Android player. The server emits device:command with the set in
+    // server/routes/device-groups.js (ALLOWED_COMMANDS) plus 'refresh', and the
+    // screenshot/remote events below. (The old device:reload listener was dead — the
+    // server never emits it — so 'refresh' replaces it.)
+    //
+    // #125: reboot / screen power / shutdown now go through STDeviceControl, which
+    // drives the real Samsung b2bcontrol/systemcontrol surface on a partner-signed
+    // panel. Where that surface is absent (web / URL-Launcher / consumer TV), it
+    // resolves { supported:false } and we fall back to the local black overlay for
+    // screen_off so the command still does something visible.
+    socket.on('device:command', function (data) {
+      var type = (data && data.type) ? String(data.type).toLowerCase() : '';
+      var payload = (data && data.payload) ? data.payload : null;
+      if (!type) return;
+
+      // "Wake" intents always clear any black overlay and re-assert screen-awake,
+      // independent of (and in addition to) the panel API.
+      if (type === 'screen_on' || type === 'launch') { clearScreenOff(); keepAwake(); }
+
+      if (!window.STDeviceControl) { reportCmd('error', type, 'device-control unavailable'); return; }
+      STDeviceControl.run(type, payload).then(function (res) {
+        var note = res.note;
+        // No real panel-power surface: keep the pre-#125 behaviour — a black overlay
+        // (content keeps running behind it) — so screen_off isn't a silent no-op.
+        if (type === 'screen_off' && res.supported === false) {
+          showScreenOff();
+          res = { ok: true, supported: true, reload: false };
+          note = 'no panel API — black overlay fallback';
+        }
+        var level = res.ok ? 'info' : (res.supported === false ? 'warn' : 'error');
+        reportCmd(level, type, note || (res.ok ? 'ok' : 'failed'));
+        // Delay the reload so the log/result emit reaches the server first.
+        if (res.reload) setTimeout(function () { location.reload(); }, 1200);
+      });
+    });
+
+    // #120: dashboard preview — single shot and start/stop streaming.
+    socket.on('device:screenshot-request', function () { captureAndSend(); });
+    socket.on('device:remote-start', function () { startStreaming(); });
+    socket.on('device:remote-stop', function () { stopStreaming(); });
+
+    // ---- video wall sync (mirrors the web player) ----
+    // Leader broadcasts position; followers align index + drift-correct their video.
+    socket.on('wall:sync', function (d) { wallController.onSync(d); });
+    socket.on('wall:sync-request', function (d) { wallController.onSyncRequest(d); });
+
+    // #109: PiP overlay — a pushed floating layer above the playlist. The player
+    // fetches the uri itself (same trust model as remote_url content).
+    socket.on('device:pip-show', function (d) { pipOverlay.show(d); });
+    socket.on('device:pip-clear', function (d) { pipOverlay.clear(d && d.pip_id); });
   }
 
   function register() {
@@ -183,44 +263,155 @@
   }
 
   function startHeartbeat() {
-    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    stopHeartbeat();
     heartbeatTimer = setInterval(function () {
-      if (!socket || !deviceId) return;
+      // #118: only beat on a socket that finished device:register, or the server's
+      // requireDeviceAuth() rejects the beat with device:auth-error.
+      if (!socket || !socket.connected || !deviceId || !authenticated) return;
       socket.emit('device:heartbeat', { device_id: deviceId, telemetry: telemetry() });
       // Every 4th beat (~60s) ask for a fresh playlist, matching the Android player.
       if ((++beatCount % 4) === 0) socket.emit('device:heartbeat', { device_id: deviceId, telemetry: telemetry() });
     }, HEARTBEAT_MS);
   }
+  function stopHeartbeat() {
+    if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+  }
+
+  // ---- remote control + dashboard preview (#120 / #121) ----
+  // Screen on/off uses a black overlay (a sideloaded web app can't power the panel
+  // off cleanly), mirroring the web player.
+  function showScreenOff() {
+    if (document.getElementById('screenOffOverlay')) return;
+    var o = document.createElement('div');
+    o.id = 'screenOffOverlay';
+    o.style.cssText = 'position:fixed;inset:0;background:#000;z-index:9999';
+    document.body.appendChild(o);
+  }
+  function clearScreenOff() {
+    var o = document.getElementById('screenOffOverlay');
+    if (o && o.parentNode) o.parentNode.removeChild(o);
+  }
+  // #109: report PiP show/clear over the existing device:log channel (tag 'pip') so it
+  // surfaces in the dashboard device log. Used as the PipOverlay log callback.
+  function reportPip(level, msg) {
+    try {
+      if (socket && deviceId) socket.emit('device:log', { device_id: deviceId, tag: 'pip', level: level, message: msg });
+    } catch (e) {}
+  }
+
+  // #125: report a command outcome to the dashboard. device:log surfaces live as
+  // dashboard:device-log on the open device-detail screen; device:command-result is
+  // a structured echo (harmless if the server doesn't handle it).
+  function reportCmd(level, type, msg) {
+    var message = '[' + type + '] ' + msg;
+    try {
+      if (socket && deviceId) {
+        socket.emit('device:log', { device_id: deviceId, tag: 'command', level: level, message: message });
+        socket.emit('device:command-result', { device_id: deviceId, type: type, level: level, message: msg });
+      }
+    } catch (e) {}
+  }
+
+  // #125: log the panel's control surface at startup so the dashboard shows whether
+  // fleet control is actually wired (backend "none" on web / consumer TV / unsigned).
+  function reportCapabilities() {
+    try {
+      var caps = (window.STDeviceControl && STDeviceControl.capabilities)
+        ? STDeviceControl.capabilities() : { backend: 'none', reboot: false, panel: false };
+      reportCmd('info', 'capabilities',
+        'fleet control backend=' + caps.backend + ' reboot=' + caps.reboot + ' panel=' + caps.panel);
+    } catch (e) {}
+  }
+
+  // #120: best-effort dashboard preview. The Tizen TV runtime decodes <video> onto a
+  // hardware overlay plane and plays YouTube in a cross-origin <iframe>; neither can be
+  // read back into a <canvas> (drawImage yields black / throws). So video/YouTube fall
+  // back to a status card — the same shape as the web player's fallback — while images
+  // (same-origin / CORS-ok) capture for real. This gives the dashboard a truthful frame
+  // instead of a dead button.
+  function captureAndSend() {
+    if (!socket || !socket.connected || !deviceId || !authenticated) return;
+    var canvas = document.createElement('canvas');
+    canvas.width = 960; canvas.height = 540;
+    var ctx = canvas.getContext('2d');
+    var captured = false;
+    try {
+      var img = elStage.querySelector('img');
+      if (img && img.complete && img.naturalWidth > 0) {
+        try { ctx.drawImage(img, 0, 0, 960, 540); captured = true; } catch (e) {}
+      }
+      if (!captured) {
+        ctx.fillStyle = '#111827'; ctx.fillRect(0, 0, 960, 540);
+        ctx.fillStyle = '#3b82f6'; ctx.font = 'bold 28px sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText('ScreenTinker (Tizen)', 480, 235);
+        ctx.fillStyle = '#94a3b8'; ctx.font = '16px sans-serif';
+        ctx.fillText('Live preview unavailable for video / YouTube on Tizen', 480, 280);
+        ctx.fillText(new Date().toLocaleTimeString(), 480, 312);
+      }
+    } catch (e) {
+      ctx.fillStyle = '#000'; ctx.fillRect(0, 0, 960, 540);
+    }
+    try {
+      var base64 = canvas.toDataURL('image/jpeg', 0.4).split(',')[1];
+      if (base64 && base64.length > 100) {
+        socket.emit('device:screenshot', { device_id: deviceId, image_b64: base64 });
+      }
+    } catch (e) {}
+  }
+  function startStreaming() { stopStreaming(); streamTimer = setInterval(captureAndSend, 1000); }
+  function stopStreaming() { if (streamTimer) { clearInterval(streamTimer); streamTimer = null; } }
 
   // ---- playback ----
   var player = new PlaylistPlayer(elStage, function () { return serverUrl.replace(/\/+$/, ''); });
+  // Multi-zone layout renderer (matches the Android player). app.js picks the renderer
+  // per playlist-update from payload.layout; the two never run at once.
+  var zoneRenderer = new ZoneRenderer(elStage, function () { return serverUrl.replace(/\/+$/, ''); });
+  // Video-wall sync (mirrors the web player). Drives the single-zone player as leader or
+  // follower. canEmit gates wall emits on auth+connection so a pre-register tick can't
+  // trip device:auth-error (same guard rationale as the heartbeat).
+  var wallController = new WallController(
+    elStage, player,
+    function () { return socket; },
+    function () { return deviceId; },
+    function () { return authenticated && !!socket && socket.connected; }
+  );
+  // #109: PiP overlay layer. Renders into #pip (above #stage); never touches the
+  // playlist. Reports show/clear over device:log (tag 'pip').
+  var pipOverlay = new PipOverlay(elPip, { log: reportPip });
 
   // Rotate the playback stage in software for portrait / flipped signage. Tizen TVs
   // are fixed-landscape, so we rotate the CONTENT (not the panel). Values mirror the
   // dashboard: landscape / portrait / landscape-flipped / portrait-flipped.
   function applyOrientation(o) {
-    var s = elStage;
+    // #109: apply the SAME transform to #stage AND #pip so the overlay's corner
+    // positions track the visible CONTENT, not the physical panel, in every orientation.
+    orientEl(elStage.style, o);
+    if (elPip) orientEl(elPip.style, o);
+  }
+  function orientEl(s, o) {
     if (!o || o === 'landscape') {
-      s.style.position = ''; s.style.top = ''; s.style.left = '';
-      s.style.width = ''; s.style.height = ''; s.style.transform = ''; s.style.transformOrigin = '';
+      s.position = ''; s.top = ''; s.left = '';
+      s.width = ''; s.height = ''; s.transform = ''; s.transformOrigin = '';
       return;
     }
     var deg = o === 'portrait' ? 90 : o === 'portrait-flipped' ? 270 : o === 'landscape-flipped' ? 180 : 0;
     var swap = (deg === 90 || deg === 270);
-    s.style.position = 'absolute';
-    s.style.top = '50%';
-    s.style.left = '50%';
-    s.style.width = swap ? '100vh' : '100vw';
-    s.style.height = swap ? '100vw' : '100vh';
-    s.style.transformOrigin = 'center center';
-    s.style.transform = 'translate(-50%, -50%) rotate(' + deg + 'deg)';
+    s.position = 'absolute';
+    s.top = '50%';
+    s.left = '50%';
+    s.width = swap ? '100vh' : '100vw';
+    s.height = swap ? '100vw' : '100vh';
+    s.transformOrigin = 'center center';
+    s.transform = 'translate(-50%, -50%) rotate(' + deg + 'deg)';
   }
 
   function onPlaylist(payload) {
     if (!payload) return;
-    applyOrientation(payload.orientation || 'landscape');
     if (payload.suspended) {
       player.stop();
+      zoneRenderer.clear();
+      wallController.exit();
+      applyOrientation(payload.orientation || 'landscape');
       elStage.innerHTML = '<div class="card" style="position:relative"><h1>' +
         esc(payload.message || 'Display suspended') + '</h1><p class="sub">' +
         esc(payload.detail || '') + '</p></div>';
@@ -230,8 +421,31 @@
     // If we have content + we're paired, make sure we're on the stage.
     if (elPairing.classList.contains('hidden') === false) show(elStage);
     else if (elStage.classList.contains('hidden')) show(elStage);
-    player.setTimezone(payload.timezone || null); // #74/#75: effective tz for schedule eval
-    player.load(payload.assignments || []);
+
+    if (payload.wall_config) {
+      // Video wall: fullscreen content mapped into this screen's slice. No multi-zone,
+      // and no orientation transform — the wall geometry owns the stage.
+      zoneRenderer.clear();
+      wallController.apply(payload.wall_config);
+      player.setTimezone(payload.timezone || null);
+      player.load(payload.assignments || []);
+      return;
+    }
+
+    wallController.exit(); // leave wall mode if we were in it
+    applyOrientation(payload.orientation || 'landscape');
+    var layout = payload.layout;
+    if (layout && layout.zones && layout.zones.length) {
+      // Multi-zone layout (matches the Android player). Leave single-zone mode first.
+      player.stop();
+      zoneRenderer.setTimezone(payload.timezone || null); // #74/#75: effective tz
+      zoneRenderer.render(layout, payload.assignments || []);
+    } else {
+      // Fullscreen single zone. Leave any previous zone layout first.
+      zoneRenderer.clear();
+      player.setTimezone(payload.timezone || null); // #74/#75: effective tz for schedule eval
+      player.load(payload.assignments || []);
+    }
   }
 
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); }

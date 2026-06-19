@@ -522,6 +522,7 @@ router.get('/me', requireAuth, resolveTenancy, (req, res) => {
 
   res.json({
     ...req.user,
+    hide_billing: config.hideBilling, // #116: client hides the Subscription nav + guards #/billing
     current_workspace_id: req.workspaceId,
     current_workspace: req.workspace ? { id: req.workspace.id, name: req.workspace.name, organization_id: req.workspace.organization_id } : null,
     current_organization: currentOrg,

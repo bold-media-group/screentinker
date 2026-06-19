@@ -74,6 +74,10 @@ module.exports = {
   graphDevRestrictTo: process.env.GRAPH_DEV_RESTRICT_TO || '',
   // Self-hosted mode: if true, first user gets enterprise plan and no billing
   selfHosted: process.env.SELF_HOSTED === 'true',
+  // #116: opt-in UI gate. When true, hides the Subscription nav item + billing view
+  // and bounces #/billing to the dashboard. Default off, so existing deployments are
+  // unchanged. UI-only — /api/subscription/* stays in place (internal usage reads).
+  hideBilling: process.env.HIDE_BILLING === 'true',
   // Disable public registration (OAuth auto-signup is also blocked when set).
   // First-user setup is still allowed so a fresh install can be initialized.
   disableRegistration: ['true', '1'].includes(String(process.env.DISABLE_REGISTRATION || '').toLowerCase()),

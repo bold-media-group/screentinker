@@ -458,8 +458,17 @@ function route() {
     currentView = settings;
     settings.render(app);
   } else if (hash === '#/billing') {
-    currentView = billing;
-    billing.render(app);
+    // #116: when HIDE_BILLING is set, a direct #/billing navigation is bounced to the
+    // dashboard. replaceState (not a hash assignment) so it doesn't add a history entry
+    // — the back button skips over it instead of looping back into the guard.
+    if (getCurrentUser()?.hide_billing) {
+      history.replaceState(null, '', window.location.pathname + '#/');
+      currentView = dashboard;
+      dashboard.render(app);
+    } else {
+      currentView = billing;
+      billing.render(app);
+    }
   } else {
     currentView = dashboard;
     dashboard.render(app);
@@ -473,6 +482,11 @@ function updateSidebarUser() {
   // Show admin nav only for platform admins (legacy 'superadmin' or Phase 1 renamed 'platform_admin')
   const adminNav = document.getElementById('adminNavItem');
   if (adminNav) adminNav.style.display = isPlatformAdmin(user) ? '' : 'none';
+
+  // #116: hide the Subscription nav item when HIDE_BILLING is set (surfaced on /me).
+  // Runs at boot from the cached user (no flash on warm loads) and again after /me.
+  const billingNav = document.getElementById('billingNavItem');
+  if (billingNav) billingNav.style.display = user.hide_billing ? 'none' : '';
 
   let userEl = document.getElementById('sidebarUser');
   if (!userEl) {
