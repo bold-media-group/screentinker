@@ -97,10 +97,24 @@ class ZoneManager(
         }
 
         // Group assignments by zone_id, ordered by sort_order so rotation is stable.
+        // Zone-orphan fallback: an item whose zone_id isn't a zone in the ACTIVE layout
+        // (assigned under a different layout, or the layout was duplicated/switched — copies
+        // get fresh zone ids) would otherwise be SILENTLY DROPPED: its bucket matches no
+        // rendered zone. Re-bucket it into the LARGEST-area zone's rotation so it shares
+        // screen time there (one item at a time -> never overlays existing content) and warn
+        // via DebugLog (mirrored to the dashboard device-log when debug is on).
+        val validZoneIds = zones.map { it.id }.toHashSet()
+        val fallbackZone = zones.maxByOrNull { it.widthPercent * it.heightPercent }
         val assignmentsByZone = mutableMapOf<String?, MutableList<JSONObject>>()
         for (i in 0 until assignments.length()) {
             val a = assignments.getJSONObject(i)
-            val zoneId = if (a.isNull("zone_id")) null else a.optString("zone_id", null)
+            var zoneId = if (a.isNull("zone_id")) null else a.optString("zone_id", null)
+            if (zoneId != null && !validZoneIds.contains(zoneId) && fallbackZone != null) {
+                val item = a.optString("filename", "").ifEmpty { a.optString("content_id", a.optString("widget_id", "?")) }
+                com.remotedisplay.player.util.DebugLog.w("Zone",
+                    "orphan zone_id=$zoneId item=$item -> fallback zone '${fallbackZone.name}'")
+                zoneId = fallbackZone.id
+            }
             assignmentsByZone.getOrPut(zoneId) { mutableListOf() }.add(a)
         }
         assignmentsByZone.values.forEach { list -> list.sortBy { it.optInt("sort_order", 0) } }
@@ -199,7 +213,9 @@ class ZoneManager(
             // YouTube - render via an embed wrapper with a valid origin (Error 153 fix)
             mimeType == "video/youtube" && !remoteUrl.isNullOrEmpty() -> {
                 val webView = createWebView()
-                val html = com.remotedisplay.player.util.WebViewSupport.youtubeEmbedHtml(remoteUrl)
+                // #129: initial mute from the per-item flag (was hardcoded mute=1). Live
+                // per-zone mute isn't wired (device:mute-changed targets the fullscreen item).
+                val html = com.remotedisplay.player.util.WebViewSupport.youtubeEmbedHtml(remoteUrl, isMuted)
                 if (html != null) webView.loadDataWithBaseURL(com.remotedisplay.player.util.WebViewSupport.EMBED_BASE, html, "text/html", "UTF-8", null)
                 else webView.loadUrl(remoteUrl)
                 webView.layoutParams = params

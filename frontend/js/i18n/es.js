@@ -1,6 +1,11 @@
 // Spanish translations. Reviewed for UI register (informal tú).
 // Native review still recommended before publicizing as fully supported.
 export default {
+  // #zone-orphan dashboard warnings
+  'device.pl_item.orphan_zone': 'Zona de otro diseño — reasignar',
+  'device.pl_item.orphan_zone_tip': 'La zona de este elemento no pertenece al diseño actual del dispositivo. Se sigue reproduciendo (recuperado en la zona más grande), pero reasígnalo a una zona de este diseño.',
+  'dashboard.device_orphan_tip_one': '{n} elemento asignado a una zona que no está en el diseño de este dispositivo — abre el dispositivo para reasignar',
+  'dashboard.device_orphan_tip_other': '{n} elementos asignados a una zona que no está en el diseño de este dispositivo — abre el dispositivo para reasignar',
   // Nav
   'nav.displays': 'Pantallas',
   'nav.content': 'Contenido',

@@ -227,20 +227,29 @@ router.post('/:id/duplicate', (req, res) => {
   db.prepare('INSERT INTO layouts (id, user_id, workspace_id, name, width, height) VALUES (?, ?, ?, ?, ?, ?)')
     .run(newId, req.user.id, req.workspaceId, name, source.width, source.height);
 
-  // Copy zones
+  // Copy zones, keeping an old->new zone-id map. The copy gets fresh zone ids, so any
+  // playlist_items still pointing at the SOURCE zones would be orphaned if a device is
+  // moved onto this copy. We return the map (zone_id_map) so a follow-up remap can run.
+  // NOTE for review: we intentionally do NOT auto-rewrite playlist_items.zone_id here —
+  // the source layout's own assignments must keep pointing at the source. A safe remap is
+  // a scoped op ("migrate playlist P from layout A to its copy B"), best done explicitly;
+  // see find-orphan-zone-items.js + the player fallback, which already de-risk the runtime.
   const zones = db.prepare('SELECT * FROM layout_zones WHERE layout_id = ?').all(req.params.id);
   const stmt = db.prepare(`
     INSERT INTO layout_zones (id, layout_id, name, x_percent, y_percent, width_percent, height_percent, z_index, zone_type, fit_mode, background_color, sort_order)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
+  const zone_id_map = {};
   zones.forEach(z => {
-    stmt.run(uuidv4(), newId, z.name, z.x_percent, z.y_percent, z.width_percent, z.height_percent,
+    const nz = uuidv4();
+    zone_id_map[z.id] = nz;
+    stmt.run(nz, newId, z.name, z.x_percent, z.y_percent, z.width_percent, z.height_percent,
       z.z_index, z.zone_type, z.fit_mode, z.background_color, z.sort_order);
   });
 
   const layout = db.prepare('SELECT * FROM layouts WHERE id = ?').get(newId);
   layout.zones = db.prepare('SELECT * FROM layout_zones WHERE layout_id = ? ORDER BY sort_order').all(newId);
-  res.status(201).json(layout);
+  res.status(201).json({ ...layout, zone_id_map });
 });
 
 // Assign layout to device.

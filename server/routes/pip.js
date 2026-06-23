@@ -138,7 +138,9 @@ router.post('/', requireScope('full'), (req, res) => {
   if (b.background_color) payload.background_color = b.background_color;
 
   const results = emitToTargets(req, targets.devices, 'device:pip-show', payload);
-  res.json({ success: true, pip_id, target: targets.kind, ...summarize(results) });
+  const summary = summarize(results);
+  console.log(`[pip] show ${pip_id} (${b.type}) -> ${targets.kind} ${b.device_id}: ${summary.sent} sent, ${summary.offline} offline`);
+  res.json({ success: true, pip_id, target: targets.kind, ...summary });
 });
 
 // Clear an overlay. DELETE /api/pip and POST /api/pip/clear are equivalent; an omitted
@@ -150,7 +152,9 @@ function handleClear(req, res) {
   if (!targets) return res.status(404).json({ error: 'device or group not found in this workspace' });
   const payload = b.pip_id ? { pip_id: String(b.pip_id) } : {};
   const results = emitToTargets(req, targets.devices, 'device:pip-clear', payload);
-  res.json({ success: true, target: targets.kind, ...summarize(results) });
+  const summary = summarize(results);
+  console.log(`[pip] clear ${b.pip_id || '(all)'} -> ${targets.kind} ${b.device_id}: ${summary.sent} sent, ${summary.offline} offline`);
+  res.json({ success: true, target: targets.kind, ...summary });
 }
 
 router.post('/clear', requireScope('full'), handleClear);

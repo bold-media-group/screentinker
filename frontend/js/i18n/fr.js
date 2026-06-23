@@ -2,6 +2,11 @@
 // standard for software UIs in France; tu would feel underdressed for a B2B tool).
 // Native review recommended before publicizing as fully supported.
 export default {
+  // #zone-orphan dashboard warnings
+  'device.pl_item.orphan_zone': 'Zone d\'une autre mise en page — réattribuer',
+  'device.pl_item.orphan_zone_tip': 'La zone de cet élément ne fait pas partie de la mise en page actuelle de l\'appareil. Il continue de s\'afficher (récupéré dans la plus grande zone), mais réattribuez-le à une zone de cette mise en page.',
+  'dashboard.device_orphan_tip_one': '{n} élément attribué à une zone absente de la mise en page de cet appareil — ouvrez l\'appareil pour le réattribuer',
+  'dashboard.device_orphan_tip_other': '{n} éléments attribués à une zone absente de la mise en page de cet appareil — ouvrez l\'appareil pour les réattribuer',
   // Nav
   'nav.displays': 'Écrans',
   'nav.content': 'Contenu',

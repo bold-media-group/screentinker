@@ -76,11 +76,13 @@
             android:indeterminate="true" />
     </LinearLayout>
 
-    <!-- #109: PiP overlay layer. Last child = drawn on top of the playlist content.
-         It lives INSIDE rootLayout, so the orientation rotation/translation applied to
-         rootView covers it too — corner positions track the visible content. PipOverlay
-         renders the overlay box into this (otherwise-transparent, empty) layer; the
-         playlist renderers never touch it. -->
+    <!-- #109: PiP overlay layer (otherwise-transparent, empty). PipOverlay renders the
+         overlay box into this; the playlist renderers never touch it.
+         NOTE: at runtime MainActivity REPARENTS this out of rootLayout up to the window
+         content (android.R.id.content) so it composites ABOVE the YouTube WebView's video
+         plane (the in-rootLayout position was occluded — see #109). MainActivity mirrors
+         rootView's orientation/wall transform onto it so corner positions still track the
+         rotated content. It is declared here only so it inflates with a known id. -->
     <FrameLayout
         android:id="@+id/pipLayout"
         android:layout_width="match_parent"

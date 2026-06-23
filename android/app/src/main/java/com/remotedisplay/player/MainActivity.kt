@@ -57,6 +57,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusOverlay: View
     private lateinit var statusText: TextView
     private lateinit var rootView: View
+    private lateinit var pipLayout: FrameLayout       // #109: reparented above rootView (see onCreate)
+    private lateinit var captureRoot: View            // window content; capture source (includes pipLayout)
     private var currentOrientation: String? = null
 
     private val handler = Handler(Looper.getMainLooper())
@@ -134,9 +136,27 @@ class MainActivity : AppCompatActivity() {
         // Hide player controls
         playerView.useController = false
 
-        // #109: PiP overlay layer (top child of rootLayout; inherits the orientation
-        // transform). Reports show/clear over device:log (tag "pip").
-        pipOverlay = PipOverlay(this, findViewById(R.id.pipLayout)) { level, message ->
+        val youtubeWebView = findViewById<android.webkit.WebView>(R.id.youtubeWebView)
+
+        // #109 fix (1): the PiP layer must render ABOVE the YouTube WebView's video plane.
+        // As the last child of rootLayout it sat in the SAME compositing band as the WebView
+        // and was occluded by the playing video surface. Reparent it OUT of rootLayout to the
+        // window content (android.R.id.content), as a top-level sibling drawn AFTER rootLayout
+        // — so it composites above the WebView. applyOrientation()/applyWallTransform() mirror
+        // rootView's transform onto it so corner positions still track the rotated content,
+        // and the remote-view screenshot captures `captureRoot` (content) so the PiP is still
+        // included. See docs/109-android-pip-visibility.md.
+        captureRoot = findViewById(android.R.id.content)
+        pipLayout = findViewById(R.id.pipLayout)
+        (pipLayout.parent as? ViewGroup)?.removeView(pipLayout)
+        (captureRoot as ViewGroup).addView(
+            pipLayout,
+            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        )
+
+        // #109: PiP overlay layer. Reports show/clear over device:log (tag "pip"); rootView +
+        // youtubeWebView are passed for pipDebug geometry logging only.
+        pipOverlay = PipOverlay(this, pipLayout, rootView, youtubeWebView) { level, message ->
             wsService?.sendLog("pip", level, message)
         }
 
@@ -155,7 +175,6 @@ class MainActivity : AppCompatActivity() {
         )
 
         // Setup media player
-        val youtubeWebView = findViewById<android.webkit.WebView>(R.id.youtubeWebView)
         mediaPlayer = MediaPlayerManager(
             context = this,
             playerView = playerView,
@@ -252,7 +271,28 @@ class MainActivity : AppCompatActivity() {
         rootView.translationY = if (swap) (h - w) / 2f else 0f
         rootView.rotation = rot
         rootView.requestLayout()
+        mirrorTransformToPip()
         Log.i("MainActivity", "Applied orientation: $orientation (rotation=$rot, swap=$swap)")
+    }
+
+    // #109: pipLayout was reparented out of rootView (to draw above the WebView), so it no
+    // longer inherits the orientation/wall transform. Copy rootView's current size + transform
+    // onto it verbatim so the PiP box still lands in the same rotated coordinate space as the
+    // visible content (mirrors the web/Tizen players, which apply the same transform to #pip
+    // as to #stage). Called after every rootView transform change.
+    private fun mirrorTransformToPip() {
+        if (!::pipLayout.isInitialized) return
+        val rl = rootView.layoutParams
+        val pl = pipLayout.layoutParams
+        pl.width = rl.width
+        pl.height = rl.height
+        pipLayout.layoutParams = pl
+        pipLayout.translationX = rootView.translationX
+        pipLayout.translationY = rootView.translationY
+        pipLayout.rotation = rootView.rotation
+        pipLayout.scaleX = rootView.scaleX
+        pipLayout.scaleY = rootView.scaleY
+        pipLayout.requestLayout()
     }
 
     private fun parseWallConfig(wc: JSONObject): WallController.WallConfig {
@@ -291,6 +331,7 @@ class MainActivity : AppCompatActivity() {
             rootView.scaleX = 1f
             rootView.scaleY = 1f
             rootView.requestLayout()
+            mirrorTransformToPip()
             // Force the next playlist update to re-apply orientation (applyOrientation
             // early-returns when the value is unchanged).
             currentOrientation = null
@@ -314,6 +355,7 @@ class MainActivity : AppCompatActivity() {
         rootView.scaleX = 1f
         rootView.scaleY = 1f
         rootView.requestLayout()
+        mirrorTransformToPip()
         // Orientation no longer reflects reality; ensure it re-applies after wall exit.
         currentOrientation = null
         Log.i("MainActivity", "Wall transform: size=${lp.width}x${lp.height} tx=${rootView.translationX} ty=${rootView.translationY}")
@@ -483,9 +525,11 @@ class MainActivity : AppCompatActivity() {
             // Handled by service now
         }
 
-        // Provide screenshot callback to service (composite capture on main thread)
+        // Provide screenshot callback to service (composite capture on main thread).
+        // Capture the window content (not just rootView) so the reparented #109 PiP layer
+        // is included in remote-view screenshots.
         wsService?.onCaptureScreenshot = {
-            screenshotCapture.captureView(rootView, 40)
+            screenshotCapture.captureView(captureRoot, 40)
         }
 
         wsService?.onRemoteStop = {
@@ -552,6 +596,13 @@ class MainActivity : AppCompatActivity() {
                 "refresh" -> {
                     wsService?.connect()
                 }
+                // #109 debug: toggle the PiP magenta-box + geometry logging (default off).
+                // device:command {type:"pip_debug", payload:{enabled:true}}.
+                "pip_debug" -> {
+                    val on = payload?.optBoolean("enabled", false) ?: false
+                    if (::pipOverlay.isInitialized) pipOverlay.pipDebug = on
+                    Log.i("MainActivity", "PiP debug ${if (on) "ENABLED" else "disabled"}")
+                }
             }
         }
 
@@ -606,7 +657,7 @@ class MainActivity : AppCompatActivity() {
         // YouTube content - play in WebView
         if (item.mimeType == "video/youtube" && !item.remoteUrl.isNullOrEmpty()) {
             Log.i("MainActivity", "Playing YouTube: ${item.remoteUrl}")
-            mediaPlayer.playYoutube(item.remoteUrl!!, item.durationSec)
+            mediaPlayer.playYoutube(item.remoteUrl!!, item.durationSec, item.muted)
             wsService?.sendPlaybackState(item.contentId, 0f)
             return
         }
@@ -667,7 +718,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun captureAndSendScreenshot() {
         Log.i("MainActivity", "Capturing screenshot")
-        val base64 = screenshotCapture.captureView(rootView, 40)
+        val base64 = screenshotCapture.captureView(captureRoot, 40)
         if (base64 != null) {
             Log.i("MainActivity", "Screenshot captured, size=${base64.length} chars, sending...")
             wsService?.sendScreenshot(base64)

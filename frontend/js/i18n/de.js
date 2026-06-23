@@ -2,6 +2,11 @@
 // standard for B2B software in DACH). Native review recommended before
 // publicizing as fully supported.
 export default {
+  // #zone-orphan dashboard warnings
+  'device.pl_item.orphan_zone': 'Zone aus einem anderen Layout — neu zuweisen',
+  'device.pl_item.orphan_zone_tip': 'Die Zone dieses Elements gehört nicht zum aktuellen Layout des Geräts. Es wird weiterhin abgespielt (in die größte Zone verschoben), sollte aber einer Zone dieses Layouts neu zugewiesen werden.',
+  'dashboard.device_orphan_tip_one': '{n} Element ist einer Zone zugewiesen, die nicht im Layout dieses Geräts enthalten ist — zum Neuzuweisen das Gerät öffnen',
+  'dashboard.device_orphan_tip_other': '{n} Elemente sind einer Zone zugewiesen, die nicht im Layout dieses Geräts enthalten ist — zum Neuzuweisen das Gerät öffnen',
   // Nav
   'nav.displays': 'Bildschirme',
   'nav.content': 'Inhalt',

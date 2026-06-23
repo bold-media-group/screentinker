@@ -74,10 +74,18 @@ object WebViewSupport {
      * HTML wrapper for a YouTube embed. Loaded via loadDataWithBaseURL(YT_BASE, ...)
      * so the iframe has a valid youtube.com origin/referer (a bare loadUrl of the
      * embed gives Error 153 "player misconfigured"). Returns null if no video id.
+     *
+     * #129: the initial mute now comes from the per-item [muted] flag (was hardcoded
+     * mute=1, which made YouTube un-unmuteable). The WebView sets
+     * mediaPlaybackRequiresUserGesture=false, so mute=0 still autoplays WITH audio.
+     * enablejsapi=1 lets the live device:mute-changed toggle drive the player via the
+     * IFrame API postMessage bridge (MediaPlayerManager.setYoutubeMuted) without a
+     * flicker-y reload.
      */
-    fun youtubeEmbedHtml(url: String): String? {
+    fun youtubeEmbedHtml(url: String, muted: Boolean = true): String? {
         val id = extractYoutubeId(url) ?: return null
-        val src = "$YT_BASE/embed/$id?autoplay=1&mute=1&controls=0&rel=0&modestbranding=1&loop=1&playlist=$id&playsinline=1"
+        val mute = if (muted) 1 else 0
+        val src = "$YT_BASE/embed/$id?autoplay=1&mute=$mute&controls=0&rel=0&modestbranding=1&loop=1&playlist=$id&playsinline=1&enablejsapi=1"
         return "<!DOCTYPE html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
             "<style>html,body{margin:0;padding:0;height:100%;background:#000;overflow:hidden}iframe{display:block;width:100%;height:100%;border:0}</style>" +
             "</head><body><iframe src=\"$src\" allow=\"autoplay; encrypted-media\" allowfullscreen></iframe></body></html>"

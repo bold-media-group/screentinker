@@ -50,9 +50,14 @@ class MediaPlayerManager(
         }
     }
 
-    fun playYoutube(embedUrl: String, durationSec: Int = 0) {
-        Log.i("MediaPlayerManager", "Playing YouTube: $embedUrl")
+    // #129: remembered so the live device:mute-changed toggle knows YouTube's current
+    // state and the IFrame API bridge can flip it without reloading the embed.
+    private var youtubeMuted = false
+
+    fun playYoutube(embedUrl: String, durationSec: Int = 0, muted: Boolean = false) {
+        Log.i("MediaPlayerManager", "Playing YouTube: $embedUrl (muted=$muted)")
         currentType = MediaType.YOUTUBE
+        youtubeMuted = muted || wallMute
 
         playerView.visibility = android.view.View.GONE
         imageView.visibility = android.view.View.GONE
@@ -64,10 +69,23 @@ class MediaPlayerManager(
             com.remotedisplay.player.util.WebViewSupport.configure(this, "YouTube")
             setBackgroundColor(android.graphics.Color.BLACK)
             // Load via an embed wrapper with a valid youtube.com origin (Error 153 fix).
-            val html = com.remotedisplay.player.util.WebViewSupport.youtubeEmbedHtml(embedUrl)
+            // #129: initial mute comes from the per-item flag (no longer hardcoded).
+            val html = com.remotedisplay.player.util.WebViewSupport.youtubeEmbedHtml(embedUrl, youtubeMuted)
             if (html != null) loadDataWithBaseURL(com.remotedisplay.player.util.WebViewSupport.EMBED_BASE, html, "text/html", "UTF-8", null)
             else loadUrl(embedUrl)
         }
+    }
+
+    // #129: live mute for the YouTube embed via the IFrame API postMessage bridge
+    // (enablejsapi=1 is set on the embed). Avoids a full reload of the player, which
+    // would restart the video and flicker. Main thread only (WebView access).
+    private fun setYoutubeMuted(muted: Boolean) {
+        youtubeMuted = muted
+        val func = if (muted) "mute" else "unMute"
+        val js = "(function(){try{var f=document.querySelector('iframe');" +
+            "if(f&&f.contentWindow){f.contentWindow.postMessage(" +
+            "JSON.stringify({event:'command',func:'$func',args:[]}),'*');}}catch(e){}})()"
+        youtubeWebView?.let { wv -> wv.post { try { wv.evaluateJavascript(js, null) } catch (_: Throwable) {} } }
     }
 
     // Fullscreen widget render (single-zone / "fullscreen" layouts). Reuses the
@@ -185,12 +203,17 @@ class MediaPlayerManager(
     fun isPlayingVideo(): Boolean = currentType == MediaType.VIDEO && (exoPlayer?.isPlaying == true)
 
     // #129: live per-item mute. Applies a dashboard mute toggle to the CURRENTLY playing
-    // video in real time (decoupled from a playlist reload). Only video carries audio here
-    // — YouTube embeds autoplay muted and images/widgets are silent — so this targets the
-    // ExoPlayer volume. Persistence across the next play comes from the playlist payload's
-    // per-item `muted` (honored in playVideo). Main thread only.
+    // item in real time (decoupled from a playlist reload). Native video -> ExoPlayer
+    // volume; YouTube -> the IFrame API mute()/unMute() bridge (setYoutubeMuted), which
+    // previously this method ignored so YouTube could never be un/muted live. Images/
+    // widgets are silent. Persistence across the next play comes from the playlist
+    // payload's per-item `muted` (honored in playVideo/playYoutube). Main thread only.
     fun setVideoMuted(muted: Boolean) {
-        if (currentType == MediaType.VIDEO) exoPlayer?.volume = if (muted) 0f else 1f
+        when (currentType) {
+            MediaType.VIDEO -> exoPlayer?.volume = if (muted) 0f else 1f
+            MediaType.YOUTUBE -> setYoutubeMuted(muted)   // #129: was a no-op for YouTube
+            else -> {}
+        }
     }
 
     // ---- Video-wall (wall:sync) accessors. All must be called on the main thread. ----

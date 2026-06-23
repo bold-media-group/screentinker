@@ -1,6 +1,11 @@
 // Italian translations. This file is the source of truth for keys —
 // every other locale should mirror its keys (or fall back to en).
 export default {
+  // #zone-orphan dashboard warnings
+  'device.pl_item.orphan_zone': 'Zona di un altro layout — riassegna',
+  'device.pl_item.orphan_zone_tip': 'La zona di questo elemento non fa parte del layout attuale del dispositivo. Continua a essere riprodotto (recuperato nella zona più grande), ma riassegnalo a una zona di questo layout.',
+  'dashboard.device_orphan_tip_one': '{n} elemento assegnato a una zona non presente nel layout di questo dispositivo — apri il dispositivo per riassegnarlo',
+  'dashboard.device_orphan_tip_other': '{n} elementi assegnati a una zona non presente nel layout di questo dispositivo — apri il dispositivo per riassegnarli',
   // Nav (sidebar)
   'nav.displays': 'Schermi',
   'nav.content': 'Contenuti',
