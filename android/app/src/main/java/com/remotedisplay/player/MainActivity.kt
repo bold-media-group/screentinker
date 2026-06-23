@@ -657,7 +657,7 @@ class MainActivity : AppCompatActivity() {
         // YouTube content - play in WebView
         if (item.mimeType == "video/youtube" && !item.remoteUrl.isNullOrEmpty()) {
             Log.i("MainActivity", "Playing YouTube: ${item.remoteUrl}")
-            mediaPlayer.playYoutube(item.remoteUrl!!, item.durationSec)
+            mediaPlayer.playYoutube(item.remoteUrl!!, item.durationSec, item.muted)
             wsService?.sendPlaybackState(item.contentId, 0f)
             return
         }

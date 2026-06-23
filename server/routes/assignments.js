@@ -7,10 +7,27 @@ const { PLATFORM_ROLES, ELEVATED_ROLES } = require('../middleware/auth');
 // already carry workspace_id from Phase 1; this route can use them even
 // though playlists.js itself isn't yet workspace-filtered.
 const { accessContext } = require('../lib/tenancy');
+const { zoneInLayout } = require('../lib/zone-validate');
 
 // Mark playlist as draft (called after any item mutation)
 function markDraft(playlistId) {
   db.prepare("UPDATE playlists SET status = 'draft', updated_at = strftime('%s','now') WHERE id = ?").run(playlistId);
+}
+
+// Hardening (#zone-orphan): a zone_id only renders if it belongs to the layout the
+// device is actually showing. Assigning a zone from a DIFFERENT layout (e.g. after a
+// layout switch/duplicate) creates an item that the players can't place. We CLEAR a
+// stale zone_id to null here (-> "unassigned", which the players route sensibly) rather
+// than reject, so this can't break a caller; the cleared write is logged. NOTE for
+// review: switch to a 400 reject if you'd rather surface the bad zone to the operator.
+// Returns the zone_id to persist (the given one, or null if it isn't in the device's
+// active layout). deviceLayoutId may be null (device on fullscreen) -> any zone_id is
+// stale, so cleared.
+function validZoneForLayout(zoneId, deviceLayoutId, ctx) {
+  if (!zoneId) return null;
+  if (zoneInLayout(zoneId, deviceLayoutId)) return zoneId;
+  console.warn(`[assign] cleared stale zone_id ${zoneId} (not in active layout ${deviceLayoutId || 'none'})${ctx ? ' ' + ctx : ''}`);
+  return null;
 }
 
 // Phase 2.2j: workspace-aware device access check. Returns access context
@@ -99,6 +116,10 @@ router.post('/device/:deviceId', (req, res) => {
 
   const playlistId = ensureDevicePlaylist(req.params.deviceId, req.user.id);
 
+  // Hardening: clear a zone_id that isn't in THIS device's active layout (prevents new orphans).
+  const devLayout = db.prepare('SELECT layout_id FROM devices WHERE id = ?').get(req.params.deviceId);
+  const effZone = validZoneForLayout(zone_id, devLayout?.layout_id, `on add to device ${req.params.deviceId}`);
+
   let order = sort_order;
   if (order === undefined || order === null) {
     const max = db.prepare('SELECT MAX(sort_order) as max_order FROM playlist_items WHERE playlist_id = ?')
@@ -110,7 +131,7 @@ router.post('/device/:deviceId', (req, res) => {
     const result = db.prepare(`
       INSERT INTO playlist_items (playlist_id, content_id, widget_id, zone_id, sort_order, duration_sec)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run(playlistId, content_id || null, widget_id || null, zone_id || null, order, duration_sec);
+    `).run(playlistId, content_id || null, widget_id || null, effZone, order, duration_sec);
 
     markDraft(playlistId);
 
@@ -168,7 +189,17 @@ router.put('/:id', (req, res) => {
   if (duration_sec !== undefined) { updates.push('duration_sec = ?'); values.push(duration_sec); }
   // zone_id can be null (clear the zone) - treat undefined as "no change",
   // any other value (including null) as "write this".
-  if (zone_id !== undefined) { updates.push('zone_id = ?'); values.push(zone_id || null); }
+  if (zone_id !== undefined) {
+    // Hardening: if this playlist is bound to exactly ONE device with a layout, clear a
+    // zone_id that isn't in that layout (prevents new orphans). Multi-device / fullscreen
+    // playlists can't be bound to one layout here, so we leave those to the player fallback.
+    let effZone = zone_id || null;
+    if (effZone) {
+      const devs = db.prepare('SELECT layout_id FROM devices WHERE playlist_id = ? AND layout_id IS NOT NULL').all(item.playlist_id);
+      if (devs.length === 1) effZone = validZoneForLayout(effZone, devs[0].layout_id, `on update of item ${req.params.id}`);
+    }
+    updates.push('zone_id = ?'); values.push(effZone);
+  }
   // #129: per-item mute (coerced to 0/1). Was silently dropped here before, so the
   // dashboard toggle did nothing.
   const mutedChanged = muted !== undefined && (item.muted ? 1 : 0) !== (muted ? 1 : 0);

@@ -580,6 +580,10 @@ function renderPlaylist(assignments) {
           ${!a.content_duration && !a.mime_type?.startsWith('video/') && a.duration_sec ? ` &middot; ${a.duration_sec}s` : ''}
           ${a.schedule_start ? ` &middot; ${a.schedule_start}-${a.schedule_end}` : ''}
         </div>
+        ${a.orphan ? `<div class="pl-orphan-warning" data-orphan-assignment="${a.id}" title="${t('device.pl_item.orphan_zone_tip')}" style="margin-top:4px;font-size:11px;color:var(--danger);cursor:pointer;display:inline-flex;align-items:center;gap:4px">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          ${t('device.pl_item.orphan_zone')}
+        </div>` : ''}
       </div>
       <div class="playlist-item-actions" style="display:flex;align-items:center;gap:4px">
         <select class="input zone-select" data-assignment-id="${a.id}" data-current-zone-id="${a.zone_id || ''}" style="width:100px;font-size:11px;padding:2px 4px;background:var(--bg-input);display:none">
@@ -1202,40 +1206,60 @@ function attachRemoveHandlers(device) {
   // Fetch errors are logged - the dropdowns simply stay hidden (display:none
   // is the default from the render), same end-state as before but no longer
   // silent.
+  // Inline per-item zone reassign dropdowns. A device WITH a layout always gets them;
+  // visibility is NOT gated on whether the zone list arrived (gating on that silently hid
+  // the selector when the server payload lacked active_layout_zones — e.g. a stale server
+  // during a deploy skew). Only a genuinely fullscreen device (no layout_id) has no zones.
   if (device.layout_id) {
-    const token = localStorage.getItem('token');
-    fetch(`/api/layouts/${device.layout_id}`, { headers: { Authorization: `Bearer ${token}` }})
-      .then(r => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then(layout => {
-        const zones = layout.zones || [];
-        document.querySelectorAll('.zone-select').forEach(select => {
-          select.style.display = '';
-          const assignmentId = select.dataset.assignmentId;
-          const currentZoneId = select.dataset.currentZoneId || '';
-          zones.forEach(z => {
-            const opt = document.createElement('option');
-            opt.value = z.id;
-            opt.textContent = z.name;
-            select.appendChild(opt);
-          });
-          if (currentZoneId) select.value = currentZoneId;
-          select.onchange = async () => {
-            try {
-              await api.updateAssignment(assignmentId, { zone_id: select.value || null });
-              showToast(t('device.toast.zone_updated'), 'success');
-              loadDevice(device.id, 'playlist');
-            } catch (err) { showToast(err.message, 'error'); }
-          };
-        });
-      })
-      .catch(e => {
-        // No toast - fires once per device-detail load, would be annoying for
-        // a layout misconfig that's already surfaced via the modal info row.
-        console.warn('Failed to load layout for edit-zone dropdowns:', e.message);
+    // Show the selectors immediately; they become usable once zones populate below.
+    document.querySelectorAll('.zone-select').forEach(s => { s.style.display = ''; });
+    // Clicking an item's orphan warning badge scrolls to + focuses its zone-select.
+    document.querySelectorAll('.pl-orphan-warning').forEach(w => {
+      w.addEventListener('click', () => {
+        const sel = document.querySelector('.zone-select[data-assignment-id="' + w.dataset.orphanAssignment + '"]');
+        if (sel) { sel.scrollIntoView({ block: 'center', behavior: 'smooth' }); sel.focus(); }
       });
+    });
+
+    const populateZoneSelects = (zones) => {
+      const activeIds = new Set((zones || []).map(z => z.id));
+      document.querySelectorAll('.zone-select').forEach(select => {
+        select.style.display = '';
+        while (select.options.length > 1) select.remove(1); // keep the "no zone" placeholder, drop stale options
+        const assignmentId = select.dataset.assignmentId;
+        const currentZoneId = select.dataset.currentZoneId || '';
+        (zones || []).forEach(z => {
+          const opt = document.createElement('option');
+          opt.value = z.id;
+          opt.textContent = z.name;
+          select.appendChild(opt);
+        });
+        const orphan = !!currentZoneId && !activeIds.has(currentZoneId);
+        if (currentZoneId && !orphan) select.value = currentZoneId; // can't select a zone the layout lacks
+        if (orphan) { select.style.borderColor = 'var(--danger)'; select.style.color = 'var(--danger)'; }
+        select.onchange = async () => {
+          try {
+            await api.updateAssignment(assignmentId, { zone_id: select.value || null });
+            showToast(t('device.toast.zone_updated'), 'success');
+            loadDevice(device.id, 'playlist');
+          } catch (err) { showToast(err.message, 'error'); }
+        };
+      });
+    };
+
+    if (device.active_layout_zones && device.active_layout_zones.length) {
+      // Fast path: zones already in the device payload — no round-trip.
+      populateZoneSelects(device.active_layout_zones);
+    } else {
+      // Fallback: payload field absent/empty (server/frontend version skew, or a payload
+      // change) — fetch the layout so the dropdowns still populate. A missing field must
+      // never make the selector silently vanish.
+      const token = localStorage.getItem('token');
+      fetch(`/api/layouts/${device.layout_id}`, { headers: { Authorization: `Bearer ${token}` } })
+        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+        .then(layout => populateZoneSelects(layout.zones || []))
+        .catch(e => console.warn('Zone dropdowns: layout fetch fallback failed:', e.message));
+    }
   }
 
   // Mute toggle buttons

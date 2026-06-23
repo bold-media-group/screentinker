@@ -6,6 +6,7 @@ const { PLATFORM_ROLES, ELEVATED_ROLES, isPlatformStaff } = require('../middlewa
 // or null based on the caller's reach into a specific workspace.
 const { accessContext } = require('../lib/tenancy');
 const { stripDeviceSecrets } = require('../lib/device-sanitize');
+const { layoutZones, orphanCountsByDevice } = require('../lib/zone-validate');
 
 // List devices in the caller's current workspace.
 // Phase 2.2a: filter by workspace_id instead of user_id. The caller's current
@@ -40,7 +41,10 @@ router.get('/', (req, res) => {
     ORDER BY d.sort_order ASC, d.created_at ASC
     LIMIT ? OFFSET ?
   `).all(req.workspaceId, limit, offset);
-  res.json(devices.map(stripDeviceSecrets));
+  // #zone-orphan: lightweight per-device count of playlist items whose zone_id isn't in
+  // the device's active layout, so the dashboard can flag screens that need attention.
+  const orphanCounts = orphanCountsByDevice(devices.map(d => d.id));
+  res.json(devices.map(d => ({ ...stripDeviceSecrets(d), orphan_count: orphanCounts[d.id] || 0 })));
 });
 
 // #106: reorder display tiles (cosmetic, within-section). Writes devices.sort_order
@@ -109,7 +113,7 @@ router.get('/:id', (req, res) => {
   let playlist_has_published = false;
   if (device.playlist_id) {
     assignments = db.prepare(`
-      SELECT pi.id, pi.content_id, pi.widget_id, pi.zone_id, pi.sort_order, pi.duration_sec,
+      SELECT pi.id, pi.content_id, pi.widget_id, pi.zone_id, pi.sort_order, pi.duration_sec, pi.muted,
              pi.created_at, pi.updated_at,
              COALESCE(c.filename, w.name) as filename, c.mime_type, c.filepath, c.thumbnail_path,
              c.duration_sec as content_duration, c.remote_url,
@@ -127,6 +131,14 @@ router.get('/:id', (req, res) => {
     }
   }
 
+  // #zone-orphan: flag any item whose zone_id isn't a zone in the device's ACTIVE layout
+  // (same rule as lib/zone-validate). The dashboard shows a per-item "reassign" warning;
+  // active_layout_zones ships the zone list here too so the inline reassign dropdown needs
+  // no separate /api/layouts round-trip. Informational only — playback uses the fallback.
+  const active_layout_zones = layoutZones(device.layout_id);
+  const activeZoneIdSet = new Set(active_layout_zones.map(z => z.id));
+  for (const a of assignments) a.orphan = !!a.zone_id && !activeZoneIdSet.has(a.zone_id);
+
   // Uptime timeline: get status change events for last 24 hours
   const dayAgo = Math.floor(Date.now() / 1000) - 86400;
   let statusLog = [];
@@ -141,7 +153,7 @@ router.get('/:id', (req, res) => {
     'SELECT reported_at FROM device_telemetry WHERE device_id = ? AND reported_at > ? ORDER BY reported_at ASC'
   ).all(req.params.id, dayAgo).map(r => r.reported_at);
 
-  res.json({ ...stripDeviceSecrets(device), telemetry, screenshot, assignments, playlist_status, playlist_has_published, uptimeData, statusLog });
+  res.json({ ...stripDeviceSecrets(device), telemetry, screenshot, assignments, active_layout_zones, playlist_status, playlist_has_published, uptimeData, statusLog });
 });
 
 // Helper: check device write access via the workspace the device belongs to.

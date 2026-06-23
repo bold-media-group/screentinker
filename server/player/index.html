@@ -363,6 +363,11 @@
     // Per-zone rotation timers (multi-zone). Each zone advances independently on
     // its own interval, decoupled from the fullscreen advanceTimer/nextItem.
     let zoneTimers = {};
+    // #zone-orphan: parts of the operator-only PREVIEW banner (never shown on a live
+    // player). 'layout' = dominant-layout note when items span >1 layout; 'orphans' =
+    // the list of items whose zone isn't in the active layout. renderPreviewBanner()
+    // composes them into a single #previewBanner element.
+    let previewBannerParts = {};
     // Video wall state. wallConfig is the tile assignment from the server
     // (null when this device isn't in a wall). The leader runs the playlist
     // normally and broadcasts wall:sync every second; followers don't run
@@ -690,16 +695,31 @@
         // playlist-only: items span >1 layout (rare) — server picked the dominant one.
         // Device payloads never carry this flag (layout is device-bound, unambiguous).
         if (payload.layout && payload.layout._preview_ambiguous) {
-          const b = document.createElement('div');
-          b.textContent = 'Previewing layout: ' + (payload.layout.name || '—');
-          b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:3000;background:rgba(245,158,11,.92);color:#000;font:12px sans-serif;padding:4px 10px;text-align:center';
-          document.body.appendChild(b);
+          previewBannerParts.layout = 'Previewing dominant layout "' + (payload.layout.name || '—') + '" — items span more than one layout';
         }
+        renderPreviewBanner();
         handlePlaylistUpdate(payload);
       } catch (e) {
         console.error('preview fetch failed', e);
         showPreviewError(0);
       }
+    }
+
+    // #zone-orphan: one operator-only banner, built from previewBannerParts. Created on
+    // first use, removed when there's nothing to report. PREVIEW_MODE only — the live
+    // player/wall must stay clean for the audience.
+    function renderPreviewBanner() {
+      if (!PREVIEW_MODE) return;
+      const lines = [previewBannerParts.layout, previewBannerParts.orphans].filter(Boolean);
+      let el = document.getElementById('previewBanner');
+      if (!lines.length) { if (el) el.remove(); return; }
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'previewBanner';
+        el.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:3000;background:rgba(245,158,11,.94);color:#000;font:12px sans-serif;padding:5px 10px;text-align:center;line-height:1.4';
+        document.body.appendChild(el);
+      }
+      el.innerHTML = lines.join('<br>');
     }
 
     function showPreviewError(status) {
@@ -962,6 +982,13 @@
     const pipPx = (v, d) => { const n = Number(v); return (isFinite(n) && n > 0 ? n : d) + 'px'; };
     function pipReport(level, msg) {
       try { if (socket?.connected && config.deviceId) socket.emit('device:log', { device_id: config.deviceId, tag: 'pip', level, message: msg }); } catch (e) {}
+    }
+    // Zone diagnostics (orphaned zone_id fallback). Mirrors pipReport: stream to the
+    // dashboard device-log (tag 'zone') AND the in-page debug overlay buffer.
+    function zoneReport(level, msg) {
+      try { if (socket?.connected && config.deviceId) socket.emit('device:log', { device_id: config.deviceId, tag: 'zone', level, message: msg }); } catch (e) {}
+      try { window.__debugLog_push && window.__debugLog_push({ type: 'zone', level: level, msg: msg }); } catch (e) {}
+      try { console.warn('[zone] ' + msg); } catch (e) {}
     }
     function pipTeardown() {
       try { if (pipTimer) clearTimeout(pipTimer); } catch (e) {}
@@ -1741,12 +1768,41 @@
       // Group assignments by zone, ordered by sort_order so each zone rotates its
       // OWN list independently (images/widgets on a duration timer, videos on end)
       // rather than every zone re-rendering on a single global tick.
+      // Zone-orphan fallback: an item whose zone_id is NOT a zone in the active layout
+      // (assigned under a different layout, or the layout was duplicated/switched — the new
+      // zones get fresh ids) would otherwise be SILENTLY DROPPED, because its bucket never
+      // matches a rendered zone. Re-bucket it into the LARGEST-area zone's rotation so it
+      // shares screen time there (one item at a time -> never overlays/stacks on existing
+      // content) and emit telemetry so the stale assignment is diagnosable. (See the
+      // fallback-rule rationale in the change notes.)
+      const validZoneIds = new Set(layout.zones.map(z => z.id));
+      const fallbackZone = layout.zones.reduce(
+        (a, b) => (((b.width_percent || 0) * (b.height_percent || 0)) > ((a.width_percent || 0) * (a.height_percent || 0)) ? b : a),
+        layout.zones[0]);
       const byZone = {};
+      const orphanNames = [];
       for (const a of playlist) {
-        const zid = a.zone_id || '__none__';
+        let zid = a.zone_id || '__none__';
+        if (a.zone_id && !validZoneIds.has(a.zone_id) && fallbackZone) {
+          zoneReport('warn', 'orphan zone_id=' + a.zone_id + ' item=' + (a.filename || a.content_id || a.widget_id || '?') +
+            ' device=' + (config.deviceId || 'preview') + ' -> fallback zone "' + (fallbackZone.name || fallbackZone.id) + '"');
+          orphanNames.push(a.filename || a.content_id || a.widget_id || '?');
+          zid = fallbackZone.id;
+        }
         (byZone[zid] = byZone[zid] || []).push(a);
       }
       for (const k in byZone) byZone[k].sort((x, y) => (x.sort_order || 0) - (y.sort_order || 0));
+
+      // #zone-orphan: operator-only preview note naming the stale items (NOT on a live
+      // player — zoneReport already streams those to the dashboard device-log instead).
+      if (PREVIEW_MODE) {
+        previewBannerParts.orphans = orphanNames.length
+          ? orphanNames.length + ' item(s) assigned to a different layout: ' +
+            orphanNames.slice(0, 6).join(', ') + (orphanNames.length > 6 ? '…' : '') +
+            ' — showing in "' + ((fallbackZone && (fallbackZone.name || fallbackZone.id)) || '—') + '"'
+          : null;
+        renderPreviewBanner();
+      }
 
       let unassignedUsed = false;
       layout.zones.forEach(zone => {

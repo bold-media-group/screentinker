@@ -1,6 +1,11 @@
 // English translations. This file is the source of truth for keys —
 // every other locale should mirror its keys (or fall back to en).
 export default {
+  // #zone-orphan dashboard warnings
+  'device.pl_item.orphan_zone': 'Zone from a different layout — reassign',
+  'device.pl_item.orphan_zone_tip': "This item's zone isn't part of the device's current layout. It still plays (recovered into the largest zone), but reassign it to a zone in this layout.",
+  'dashboard.device_orphan_tip_one': "{n} item assigned to a zone that isn't in this device's layout — open the device to reassign",
+  'dashboard.device_orphan_tip_other': "{n} items assigned to a zone that isn't in this device's layout — open the device to reassign",
   // Nav (sidebar)
   'nav.displays': 'Displays',
   'nav.content': 'Content',
