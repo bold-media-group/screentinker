@@ -710,13 +710,22 @@ function resolveApkPath() {
   return null;
 }
 
+// #139: a device that can't silently install re-downloads the APK every check cycle. Don't
+// word a download as "in progress" (it may be a stuck loop, not progress), and rate-limit the
+// line to once per IP per window so a looping device can't flood the log.
+const otaDownloadLoggedAt = new Map(); // ip -> last-logged ms
+const OTA_DOWNLOAD_LOG_WINDOW_MS = 10 * 60 * 1000;
+
 // Serve APK download
 app.get('/download/apk', (req, res) => {
   const apkPath = resolveApkPath();
   if (apkPath) {
-    // #96: an APK download means a device is actually applying an OTA - log it so the
-    // update is observable end to end (check -> download -> [relaunch]).
-    console.log(`[ota] APK download by ${getClientIp(req)} (${fs.statSync(apkPath).size} bytes) - OTA update in progress`);
+    const ip = getClientIp(req);
+    const now = Date.now();
+    if (now - (otaDownloadLoggedAt.get(ip) || 0) > OTA_DOWNLOAD_LOG_WINDOW_MS) {
+      otaDownloadLoggedAt.set(ip, now);
+      console.log(`[ota] APK served to ${ip} (${fs.statSync(apkPath).size} bytes)`);
+    }
     res.setHeader('Content-Type', 'application/vnd.android.package-archive');
     res.setHeader('Content-Disposition', 'attachment; filename="ScreenTinker.apk"');
     res.setHeader('Cache-Control', 'no-cache');

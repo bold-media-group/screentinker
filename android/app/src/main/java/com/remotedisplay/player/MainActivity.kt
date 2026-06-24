@@ -240,6 +240,9 @@ class MainActivity : AppCompatActivity() {
 
         // Start auto-update checker
         updateChecker = UpdateChecker(this)
+        // #139: surface OTA status (applying / backing off / manual-update-required) to the
+        // dashboard. wsService is read lazily — it binds after this runs.
+        updateChecker.otaLogReporter = { level, msg -> wsService?.sendLog("ota", level, msg) }
         updateChecker.startPeriodicCheck()
 
     }
