@@ -71,4 +71,37 @@ class ServerConfig(context: Context) {
     fun clearPlaylistCache() {
         prefs.edit().remove("cached_playlist").apply()
     }
+
+    // #139 OTA attempt state. Persisted (not in-memory) on purpose: the OTA loop is driven
+    // by Fire OS restarting the app, which re-fires the update check; an in-memory counter
+    // would reset on every restart and never back off. `otaTargetVersion` is the version we
+    // are currently trying to install; `otaAttempts` counts install attempts for it;
+    // `otaLastAttemptAt` gates the post-cap retry backoff.
+    var otaTargetVersion: String
+        get() = prefs.getString("ota_target_version", "") ?: ""
+        set(value) = prefs.edit().putString("ota_target_version", value).apply()
+
+    var otaAttempts: Int
+        get() = prefs.getInt("ota_attempts", 0)
+        set(value) = prefs.edit().putInt("ota_attempts", value).apply()
+
+    var otaLastAttemptAt: Long
+        get() = prefs.getLong("ota_last_attempt_at", 0L)
+        set(value) = prefs.edit().putLong("ota_last_attempt_at", value).apply()
+
+    // #139: true once the "entering backoff" status has been reported for the current target,
+    // so the dashboard line fires on the transition only — not on every backed-off poll (Fire OS
+    // restarts re-fire the check constantly). Reset on a new target / on clear.
+    var otaBackoffReported: Boolean
+        get() = prefs.getBoolean("ota_backoff_reported", false)
+        set(value) = prefs.edit().putBoolean("ota_backoff_reported", value).apply()
+
+    fun clearOtaState() {
+        prefs.edit()
+            .remove("ota_target_version")
+            .remove("ota_attempts")
+            .remove("ota_last_attempt_at")
+            .remove("ota_backoff_reported")
+            .apply()
+    }
 }

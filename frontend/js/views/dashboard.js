@@ -117,6 +117,9 @@ function renderDeviceCard(device) {
         <div class="device-card-name">${esc(device.name)}${device.orphan_count > 0 ? `
           <span class="device-orphan-badge" title="${tn('dashboard.device_orphan_tip', device.orphan_count)}" style="margin-left:6px;display:inline-flex;align-items:center;gap:3px;font-size:11px;color:var(--danger);vertical-align:middle">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>${device.orphan_count}
+          </span>` : ''}${device.ota_status === 'manual_update_required' ? `
+          <span class="device-ota-badge" title="${esc(t('dashboard.device_ota_stuck', { version: device.ota_target_version || '?', n: device.ota_attempts || 0 }))}" style="margin-left:6px;display:inline-flex;align-items:center;gap:3px;font-size:11px;color:var(--warning);vertical-align:middle">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>update
           </span>` : ''}</div>
         ${device.owner_name || device.owner_email ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-1px">

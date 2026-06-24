@@ -13,6 +13,8 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.util.DisplayMetrics
 import android.view.WindowManager
+import com.remotedisplay.player.data.ServerConfig
+import com.remotedisplay.player.service.OtaThrottle
 import java.security.MessageDigest
 import org.json.JSONObject
 
@@ -49,6 +51,13 @@ class DeviceInfo(private val context: Context) {
             put("screen_height", outH)
             put("render_width", renW)
             put("render_height", renH)
+            // #139 Phase 2: report OTA backoff state (alongside app_version) so the dashboard can
+            // flag screens stuck in manual-update-required. Read from the persisted throttle state.
+            val cfg = ServerConfig(context)
+            val ota = OtaThrottle.State(cfg.otaTargetVersion, cfg.otaAttempts, cfg.otaLastAttemptAt, cfg.otaBackoffReported)
+            put("ota_status", OtaThrottle.statusFor(ota, System.currentTimeMillis()))
+            put("ota_target_version", cfg.otaTargetVersion)
+            put("ota_attempts", cfg.otaAttempts)
         }
     }
 

@@ -39,6 +39,25 @@ class UpdateChecker(private val context: Context) {
 
     private var installReceiverRegistered = false
 
+    // #139: report OTA status to the dashboard (device:log, tag "ota"). Wired by MainActivity
+    // to WebSocketService.sendLog; null until then. Read lazily so binding order doesn't matter.
+    // The throttle thresholds + decision rules live in OtaThrottle (pure, unit-tested); this
+    // class is the imperative shell that persists state and does the download/install.
+    var otaLogReporter: ((level: String, message: String) -> Unit)? = null
+
+    private fun report(level: String, message: String) {
+        when (level) { "error" -> Log.e(TAG, message); "warn" -> Log.w(TAG, message); else -> Log.i(TAG, message) }
+        try { otaLogReporter?.invoke(level, message) } catch (_: Throwable) {}
+    }
+
+    // #139 Phase 2 (Option B): announce an OTA status TRANSITION to the server (wired by
+    // MainActivity to WebSocketService.sendOtaStatus, which reads the just-persisted state).
+    // Fired ONLY at the two transitions — clear and enter-backoff — so the dashboard badge
+    // updates promptly without waiting for a reconnect, with no per-poll/heartbeat chatter.
+    // Lazy/null-safe so binding order doesn't matter, same as otaLogReporter.
+    var otaStatusReporter: (() -> Unit)? = null
+    private fun announceOtaStatus() { try { otaStatusReporter?.invoke() } catch (_: Throwable) {} }
+
     // The PackageInstaller session reports its status (incl. STATUS_PENDING_USER_ACTION,
     // which Android 13+ returns for non-device-owner installers) via this broadcast.
     // Without handling it the committed session just stalls and the update never
@@ -59,6 +78,8 @@ class UpdateChecker(private val context: Context) {
                             catch (e: Exception) { Log.e(TAG, "Confirm launch failed: ${e.message}") }
                         }
                     }
+                    // Logcat only — NOT report(): these fire per attempt, and #139 keeps the
+                    // device:log/dashboard channel to state transitions (enter-backoff, clear).
                     android.content.pm.PackageInstaller.STATUS_SUCCESS -> Log.i(TAG, "Update installed successfully")
                     else -> Log.w(TAG, "Install status: ${intent.getStringExtra(android.content.pm.PackageInstaller.EXTRA_STATUS_MESSAGE)}")
                 }
@@ -116,9 +137,17 @@ class UpdateChecker(private val context: Context) {
 
                 Log.i(TAG, "Current: $currentVersion, Latest: $latestVersion, Update: $updateAvailable")
 
-                if (updateAvailable && downloadUrl.isNotEmpty()) {
-                    Log.i(TAG, "Update available! Downloading...")
-                    downloadAndInstall("${config.serverUrl}$downloadUrl", latestVersion)
+                if (!updateAvailable) {
+                    // #139: on the latest version now. If OTA state was pending, the install
+                    // landed (the app relaunched as the new version) — clear state + caches once.
+                    if (OtaThrottle.shouldClearOnUpToDate(otaState())) {
+                        report("info", "OTA complete: now on $currentVersion — clearing update state")
+                        config.clearOtaState()
+                        cleanupApks(null)
+                        announceOtaStatus() // transition -> emits 'none' so the badge clears promptly
+                    }
+                } else if (downloadUrl.isNotEmpty()) {
+                    maybeUpdate(latestVersion, "${config.serverUrl}$downloadUrl")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Update check error: ${e.message}")
@@ -126,19 +155,88 @@ class UpdateChecker(private val context: Context) {
         }.start()
     }
 
-    private fun downloadAndInstall(url: String, version: String) {
+    private fun otaState() = OtaThrottle.State(
+        config.otaTargetVersion, config.otaAttempts, config.otaLastAttemptAt, config.otaBackoffReported)
+
+    private fun persistOta(s: OtaThrottle.State) {
+        config.otaTargetVersion = s.targetVersion
+        config.otaAttempts = s.attempts
+        config.otaLastAttemptAt = s.lastAttemptAt
+        config.otaBackoffReported = s.backoffReported
+    }
+
+    // #139 imperative shell over OtaThrottle (the pure, unit-tested decision logic). A device
+    // that can't silently install (Fire TV: no device-owner) stops re-pulling the full APK every
+    // cycle. Only a COMMITTED install consumes the attempt budget — a transient download/verify
+    // failure on a HEALTHY device must never park it in backoff.
+    private fun maybeUpdate(latestVersion: String, downloadUrl: String) {
+        val now = System.currentTimeMillis()
+        val cur = otaState()
+        if (OtaThrottle.isNewTarget(cur, latestVersion)) cleanupApks(latestVersion)
+
+        val (afterCheck, action) = OtaThrottle.onUpdateAvailable(cur, latestVersion, now)
+        persistOta(afterCheck)
+        // Capped + still inside the window: do nothing AND stay silent. Fire OS restarts re-fire
+        // this check constantly; reporting here would just move the flood onto the WS channel.
+        // The enter-backoff line was already sent once on the crossing (below).
+        if (action == OtaThrottle.Action.BACKOFF) return
+
+        // download/verify failure → retry on the normal cadence; do NOT count it as an attempt.
+        if (!downloadAndInstall(downloadUrl, latestVersion)) {
+            Log.w(TAG, "Update $latestVersion: download/verify failed — retry next check (no attempt consumed)")
+            return
+        }
+
+        val (afterLaunch, enteredBackoff) = OtaThrottle.onInstallLaunched(afterCheck, now)
+        persistOta(afterLaunch)
+        Log.i(TAG, "Install launched for $latestVersion (attempt ${afterLaunch.attempts}/${OtaThrottle.MAX_INSTALL_ATTEMPTS})")
+        if (enteredBackoff) {
+            report("warn", "Update $latestVersion available but not installing after ${afterLaunch.attempts} attempts — manual update required (backing off to one retry per ${OtaThrottle.BACKOFF_MS / 3_600_000L}h)")
+            announceOtaStatus() // transition -> emits 'manual_update_required'
+        }
+    }
+
+    // #139: remove cached OTA APKs other than `keep` (null = remove all). Keeps the external
+    // files dir from accumulating one stale APK per superseded version.
+    private fun cleanupApks(keep: String?) {
         try {
+            val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: return
+            val keepName = keep?.let { "ScreenTinker-$it.apk" }
+            dir.listFiles { f ->
+                f.name.startsWith("ScreenTinker-") && f.name.endsWith(".apk") && f.name != keepName
+            }?.forEach { it.delete() }
+        } catch (e: Exception) {
+            Log.w(TAG, "APK cleanup failed: ${e.message}")
+        }
+    }
+
+    // Returns TRUE only when a verified APK is in hand and an install has been launched (the
+    // caller may then count an attempt); FALSE on any download/verify failure — the caller must
+    // NOT count those, so a transient network problem can't burn a healthy device's budget. #139
+    private fun downloadAndInstall(url: String, version: String): Boolean {
+        try {
+            val apkFile = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS),
+                "ScreenTinker-$version.apk")
+
+            // #139: reuse a previously-downloaded, verified APK for this version instead of
+            // re-pulling ~8.7 MB every cycle. The file also stays on disk as the artifact for a
+            // manual install when silent install isn't possible.
+            if (apkFile.exists() && verifyApkSignature(apkFile)) {
+                Log.i(TAG, "Reusing cached verified APK: ${apkFile.absolutePath} (${apkFile.length()} bytes)")
+                handler.post { installApk(apkFile) }
+                return true
+            }
+            // A leftover but invalid file (partial/corrupt/tampered) must never be reused.
+            if (apkFile.exists()) apkFile.delete()
+
             // Download to a temp file
             val request = Request.Builder().url(url).build()
             val response = client.newCall(request).execute()
 
             if (!response.isSuccessful) {
                 Log.e(TAG, "Download failed: ${response.code}")
-                return
+                return false
             }
-
-            val apkFile = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS),
-                "ScreenTinker-$version.apk")
 
             response.body?.byteStream()?.use { input ->
                 apkFile.outputStream().use { output ->
@@ -158,7 +256,7 @@ class UpdateChecker(private val context: Context) {
             if (!verifyApkSignature(apkFile)) {
                 Log.e(TAG, "Refusing update: APK signature/package verification failed (tampered or MITM'd APK)")
                 apkFile.delete()
-                return
+                return false
             }
             Log.i(TAG, "APK signature verified against installed app - proceeding to install")
 
@@ -166,8 +264,10 @@ class UpdateChecker(private val context: Context) {
             handler.post {
                 installApk(apkFile)
             }
+            return true
         } catch (e: Exception) {
             Log.e(TAG, "Download/install error: ${e.message}")
+            return false
         }
     }
 
@@ -245,9 +345,18 @@ class UpdateChecker(private val context: Context) {
     private fun verifyApkSignature(apkFile: File): Boolean {
         return try {
             val pm = context.packageManager
-            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
+            // #139: getPackageArchiveInfo(GET_SIGNING_CERTIFICATES).signingInfo is NULL for
+            // ARCHIVE files on API 28/29 (it's only populated from API 30) — so the modern flag
+            // reads 0 certs from a downloaded APK and we'd wrongly REFUSE a legitimate update,
+            // which is the real Fire OS 8 / Android 9 OTA-loop cause. Below API 30, read the
+            // archive's signer via the legacy GET_SIGNATURES + .signatures (its v1/JAR cert,
+            // which IS populated on 28/29). This reads the cert CORRECTLY — it does not weaken
+            // verification: the archive's signer is still extracted and compared to the installed
+            // app's signer below, and a mismatch / zero-cert APK is still rejected.
+            val archiveUsesSigningInfo = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R // API 30
+            val archiveFlags = if (archiveUsesSigningInfo)
                 PackageManager.GET_SIGNING_CERTIFICATES else @Suppress("DEPRECATION") PackageManager.GET_SIGNATURES
-            val downloaded = pm.getPackageArchiveInfo(apkFile.absolutePath, flags)
+            val downloaded = pm.getPackageArchiveInfo(apkFile.absolutePath, archiveFlags)
             if (downloaded == null) {
                 Log.e(TAG, "Could not parse downloaded APK")
                 return false
@@ -256,14 +365,20 @@ class UpdateChecker(private val context: Context) {
                 Log.e(TAG, "APK package mismatch: ${downloaded.packageName} != ${context.packageName}")
                 return false
             }
-            val installed = pm.getPackageInfo(context.packageName, flags)
-            val downloadedSigs = signingCertHashes(downloaded)
-            val installedSigs = signingCertHashes(installed)
+            // INSTALLED-app read: signingInfo IS populated for installed packages on API 28+,
+            // so keep the modern flag there (this side already worked).
+            val installedUsesSigningInfo = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P // API 28
+            val installedFlags = if (installedUsesSigningInfo)
+                PackageManager.GET_SIGNING_CERTIFICATES else @Suppress("DEPRECATION") PackageManager.GET_SIGNATURES
+            val installed = pm.getPackageInfo(context.packageName, installedFlags)
+            val downloadedSigs = signingCertHashes(downloaded, archiveUsesSigningInfo)
+            val installedSigs = signingCertHashes(installed, installedUsesSigningInfo)
             if (downloadedSigs.isEmpty() || installedSigs.isEmpty()) {
                 Log.e(TAG, "Missing signing certificates (downloaded=${downloadedSigs.size}, installed=${installedSigs.size})")
                 return false
             }
-            // Share at least one current signing certificate.
+            // Require a non-empty overlap of signer certs (handles multi-signer / cert-rotation
+            // the same way the API>=30 path does: compare the full current signer sets).
             val match = downloadedSigs.any { it in installedSigs }
             if (!match) Log.e(TAG, "APK signing certificate does not match installed app")
             match
@@ -273,8 +388,13 @@ class UpdateChecker(private val context: Context) {
         }
     }
 
-    private fun signingCertHashes(info: PackageInfo): Set<String> {
-        val sigs: Array<Signature>? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+    // Read the signer-cert SHA-256 set from a PackageInfo. `useSigningInfo` must match the flag
+    // it was fetched with: GET_SIGNING_CERTIFICATES -> signingInfo.apkContentsSigners (modern;
+    // multi-signer + rotation aware), GET_SIGNATURES -> legacy .signatures (the only field
+    // populated for ARCHIVE reads on API 28/29). Both yield the same cert for a normally-signed
+    // APK; the caller compares as sets so an overlapping signer still verifies.
+    private fun signingCertHashes(info: PackageInfo, useSigningInfo: Boolean): Set<String> {
+        val sigs: Array<Signature>? = if (useSigningInfo) {
             info.signingInfo?.apkContentsSigners
         } else {
             @Suppress("DEPRECATION") info.signatures

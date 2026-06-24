@@ -259,6 +259,32 @@ test('device WS: wrong device_token is rejected (auth-error, never registered)',
   assert.ok(!got.registered, 'wrong token must not register');
 });
 
+// #139 Phase 2 (Option B): event-driven OTA status. Registers (which, with no ota fields in
+// device_info, persists ota_status='none' via the backstop), then emits a valid ota-status and
+// a foreign-id one in order on the authenticated socket.
+function deviceOtaSeq(payload, otaEvents, timeoutMs = 4000) {
+  return new Promise((resolve) => {
+    const sock = ioClient(`${BASE}/device`, { transports: ['websocket'], reconnection: false, forceNew: true });
+    const finish = () => { try { sock.close(); } catch { /* */ } resolve(); };
+    sock.on('connect', () => sock.emit('device:register', payload));
+    sock.on('device:registered', () => { for (const e of otaEvents) sock.emit('device:ota-status', e); setTimeout(finish, 500); });
+    sock.on('device:auth-error', finish);
+    setTimeout(finish, timeoutMs);
+  });
+}
+test('device WS: device:ota-status persists the fields; a foreign device_id is a safe no-op (#139)', async () => {
+  await deviceOtaSeq(
+    { device_id: S.deviceId, device_token: S.deviceToken, device_info: { app_version: 'test' } },
+    [
+      { device_id: S.deviceId, ota_status: 'manual_update_required', ota_target_version: '1.9.1-beta6', ota_attempts: 3 },
+      { device_id: 'nope-not-a-device', ota_status: 'none', ota_target_version: null, ota_attempts: 0 }, // foreign id -> no-op, no throw
+    ]);
+  const dev = await jfetch(`/api/devices/${S.deviceId}`, auth(S.jwt));
+  assert.equal(dev.body.ota_status, 'manual_update_required', 'valid ota-status persisted');
+  assert.equal(dev.body.ota_target_version, '1.9.1-beta6');
+  assert.equal(dev.body.ota_attempts, 3, 'and the foreign-id event did not overwrite it');
+});
+
 // ───────────────────────── TIER 4: #92 FOLLOW-UP COVERAGE ─────────────────────────
 // The non-security gaps named in the self-review (issue #92): the gap-fix fields + the
 // cross-tenant guard (the security-relevant one), docs serving, and the token lifecycle

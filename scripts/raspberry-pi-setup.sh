@@ -280,7 +280,7 @@ fi
 if echo "\$KIOSK_URL" | grep -q "localhost"; then
     echo "Waiting for ScreenTinker server..."
     for i in \$(seq 1 30); do
-        if curl -sf "http://localhost:${SCREENTINKER_PORT}/api/health" >/dev/null 2>&1; then
+        if curl -sf "http://localhost:${SCREENTINKER_PORT}/api/status" >/dev/null 2>&1; then
             echo "Server ready"
             break
         fi
@@ -288,8 +288,19 @@ if echo "\$KIOSK_URL" | grep -q "localhost"; then
     done
 fi
 
+# Detect screen resolution so Chromium fills the display on minimal X11 (no WM)
+SCREEN_RES=\$(xrandr 2>/dev/null | grep ' connected' | grep -oE '[0-9]+x[0-9]+' | head -1)
+SCREEN_W=\${SCREEN_RES%%x*}
+SCREEN_H=\${SCREEN_RES##*x}
+if [ -z "\$SCREEN_W" ] || [ -z "\$SCREEN_H" ]; then
+    SCREEN_W=1920
+    SCREEN_H=1080
+fi
+
 exec ${CHROMIUM_BIN} \\
     --kiosk \\
+    --window-position=0,0 \\
+    --window-size=\${SCREEN_W},\${SCREEN_H} \\
     --noerrdialogs \\
     --disable-infobars \\
     --disable-session-crashed-bubble \\
@@ -298,7 +309,6 @@ exec ${CHROMIUM_BIN} \\
     --check-for-update-interval=31536000 \\
     --autoplay-policy=no-user-gesture-required \\
     --no-first-run \\
-    --start-fullscreen \\
     --disable-pinch \\
     --overscroll-history-navigation=0 \\
     --disable-translate \\

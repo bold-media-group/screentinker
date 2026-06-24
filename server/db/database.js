@@ -216,6 +216,15 @@ const migrations = [
   // signal, so the two differ — surfacing both explains "reports 720 but monitor sees 1080".
   "ALTER TABLE devices ADD COLUMN render_width INTEGER",
   "ALTER TABLE devices ADD COLUMN render_height INTEGER",
+  // #139 Phase 2: device-reported OTA backoff status, so the dashboard can flag screens that
+  // can't self-install (Fire TV: no device-owner path) and need a hands-on update. ADD COLUMN
+  // with defaults is non-destructive in SQLite, and the apply loop below swallows "duplicate
+  // column" — so this is idempotent and upgrades an existing populated db without data loss.
+  // ota_updated_at = server receipt time (s), stamped on each register persist.
+  "ALTER TABLE devices ADD COLUMN ota_status TEXT DEFAULT 'none'",
+  "ALTER TABLE devices ADD COLUMN ota_target_version TEXT",
+  "ALTER TABLE devices ADD COLUMN ota_attempts INTEGER DEFAULT 0",
+  "ALTER TABLE devices ADD COLUMN ota_updated_at INTEGER",
 ];
 // Apply each ALTER idempotently. A "duplicate column name" / "already exists"
 // error means the column is already present (expected on a migrated DB) - benign.

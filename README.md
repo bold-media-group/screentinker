@@ -426,6 +426,7 @@ keytool -genkey -v -keystore android/release-key.jks -keyalg RSA -keysize 2048 -
 3. Install the ScreenTinker app on your device:
    - **Android TV / tablets**: Download the APK from your instance (`/download/apk`) or build it from source (see above)
    - **Raspberry Pi**: `curl -sSL https://your-instance/scripts/raspberry-pi-setup.sh | bash`
+   - **Debian 13 (headless)**: `curl -sSL https://your-instance/scripts/debian-13-setup.sh | sudo bash`
    - **Windows**: Run the setup script from `scripts/windows-setup.bat`
    - **Samsung Tizen TV / signage**: point the TV's URL Launcher (or browser) at `https://your-instance/player` - no signing needed. For an installed native app, see [tizen/README.md](tizen/README.md)
    - **Any browser**: Open `https://your-instance/player` in kiosk/fullscreen mode

@@ -560,6 +560,22 @@ class WebSocketService : Service() {
         } catch (e: Throwable) { Log.w("WebSocketService", "sendLog: ${e.message}") }
     }
 
+    // #139 Phase 2 (Option B): announce an OTA status transition to the server so the dashboard
+    // badge updates promptly (not only on reconnect). Reads the just-persisted throttle state —
+    // the emit always reflects the stored truth. Called by UpdateChecker at clear / enter-backoff.
+    fun sendOtaStatus() {
+        if (socket?.connected() != true) return
+        try {
+            val s = OtaThrottle.State(config.otaTargetVersion, config.otaAttempts, config.otaLastAttemptAt, config.otaBackoffReported)
+            socket?.emit("device:ota-status", JSONObject().apply {
+                put("device_id", config.deviceId)
+                put("ota_status", OtaThrottle.statusFor(s, System.currentTimeMillis()))
+                put("ota_target_version", config.otaTargetVersion)
+                put("ota_attempts", config.otaAttempts)
+            })
+        } catch (e: Throwable) { Log.w("WebSocketService", "sendOtaStatus: ${e.message}") }
+    }
+
     fun sendPlaybackState(contentId: String, positionSec: Float) {
         if (socket?.connected() != true) return
         try {

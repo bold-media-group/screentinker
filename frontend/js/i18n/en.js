@@ -6,6 +6,8 @@ export default {
   'device.pl_item.orphan_zone_tip': "This item's zone isn't part of the device's current layout. It still plays (recovered into the largest zone), but reassign it to a zone in this layout.",
   'dashboard.device_orphan_tip_one': "{n} item assigned to a zone that isn't in this device's layout — open the device to reassign",
   'dashboard.device_orphan_tip_other': "{n} items assigned to a zone that isn't in this device's layout — open the device to reassign",
+  // #139: device stuck in OTA backoff (can't self-install — e.g. Fire TV) — needs a manual update.
+  'dashboard.device_ota_stuck': 'Update available (v{version}) — install failed {n}×, manual update required',
   // Nav (sidebar)
   'nav.displays': 'Displays',
   'nav.content': 'Content',

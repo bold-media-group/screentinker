@@ -372,8 +372,12 @@ module.exports = function setupDeviceSocket(io) {
           }
 
           if (device_info) {
-            db.prepare('UPDATE devices SET android_version = ?, app_version = ?, screen_width = ?, screen_height = ?, render_width = ?, render_height = ? WHERE id = ?')
-              .run(device_info.android_version, device_info.app_version, device_info.screen_width, device_info.screen_height, device_info.render_width ?? null, device_info.render_height ?? null, device_id);
+            db.prepare(`UPDATE devices SET android_version = ?, app_version = ?, screen_width = ?, screen_height = ?, render_width = ?, render_height = ?,
+              ota_status = ?, ota_target_version = ?, ota_attempts = ?, ota_updated_at = strftime('%s','now') WHERE id = ?`)
+              .run(device_info.android_version, device_info.app_version, device_info.screen_width, device_info.screen_height, device_info.render_width ?? null, device_info.render_height ?? null,
+                // #139 Phase 2: older APKs don't send these — default to a clean 'none' state.
+                device_info.ota_status ?? 'none', device_info.ota_target_version ?? null, device_info.ota_attempts ?? 0,
+                device_id);
           }
 
           heartbeat.registerConnection(device_id, socket.id);
@@ -583,6 +587,20 @@ module.exports = function setupDeviceSocket(io) {
         message,
         ts: Date.now(),
       });
+    });
+
+    // #139 Phase 2 (Option B): event-driven OTA status. The device announces a status TRANSITION
+    // ('manual_update_required' on enter-backoff, 'none' on clear) so the dashboard badge updates
+    // promptly without waiting for a reconnect. The register path still persists these fields too
+    // (the reconnect backstop if a transition event is missed). Same columns + ?? defaults.
+    socket.on('device:ota-status', (data) => {
+      if (!requireDeviceAuth()) return;
+      const { device_id, ota_status, ota_target_version, ota_attempts } = data || {};
+      // Unknown / forged / mismatched id -> no-op. WHERE id = ? also makes an unregistered id a
+      // 0-row update (never throws), so a stray event can't error the socket.
+      if (!device_id || device_id !== currentDeviceId) return;
+      db.prepare("UPDATE devices SET ota_status = ?, ota_target_version = ?, ota_attempts = ?, ota_updated_at = strftime('%s','now') WHERE id = ?")
+        .run(ota_status ?? 'none', ota_target_version ?? null, ota_attempts ?? 0, device_id);
     });
 
     // Play event logging (proof-of-play)
