@@ -17,6 +17,25 @@ if [ -n "$(git status --porcelain)" ]; then
   exit 1
 fi
 
+# Pre-push fast-forward guard. This script creates an annotated tag locally; if
+# origin/main has advanced past the commit we're bumping from, `git push origin main`
+# is rejected as a non-fast-forward - and if the tag gets pushed anyway it fires the
+# release workflow from a commit that isn't even on main (the beta9 divergence
+# incident). Catch the divergence HERE, before the tag exists, so nothing can fire.
+# Best-effort: when the fetch can't run (offline), warn and proceed rather than block
+# a local bump - the push itself is still the backstop.
+if git fetch --quiet origin main 2>/dev/null; then
+  if ! git merge-base --is-ancestor FETCH_HEAD HEAD; then
+    echo "ERROR: origin/main ($(git rev-parse --short FETCH_HEAD)) has commits not in your" >&2
+    echo "       HEAD ($(git rev-parse --short HEAD)) - 'git push origin main' would be rejected." >&2
+    echo "       Merge origin/main into your branch first, then re-run the bump." >&2
+    exit 1
+  fi
+else
+  echo "WARNING: could not fetch origin/main - skipping the fast-forward check (offline?)." >&2
+  echo "         Confirm 'git push origin main' will fast-forward before pushing the tag." >&2
+fi
+
 CURRENT="$(cat VERSION)"
 IFS=. read -r MAJ MIN PAT <<< "$CURRENT"
 
