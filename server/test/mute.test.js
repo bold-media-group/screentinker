@@ -91,6 +91,24 @@ test('muted reaches the device via the published snapshot (buildSnapshotItems)',
   assert.equal(item.muted, 1, 'snapshot (device payload) carries muted=1');
 });
 
+test('mute toggle patches the published snapshot WITHOUT a manual republish (the beta7 bug)', async () => {
+  // Baseline: publish once so the device has a snapshot carrying muted=0.
+  await jfetch(`/api/assignments/${S.itemId}`, put(S.jwt, { muted: false }));
+  await jfetch(`/api/playlists/${S.playlistId}/publish`, post(S.jwt, {}));
+  const read = () => JSON.parse(db.prepare('SELECT published_snapshot FROM playlists WHERE id = ?').get(S.playlistId).published_snapshot)
+    .find((i) => i.content_id === S.contentId).muted;
+  assert.equal(read(), 0, 'baseline: snapshot the device plays carries muted=0');
+
+  // The actual bug: a mute toggle ALONE (no /publish) must reach the played snapshot.
+  // On beta7 this stayed 0 (markDraft only) so every loop re-applied full volume.
+  await jfetch(`/api/assignments/${S.itemId}`, put(S.jwt, { muted: true }));
+  assert.equal(read(), 1, 'mute toggle patched the snapshot the device plays — no manual republish needed');
+
+  // Unmute toggle reverts the snapshot too.
+  await jfetch(`/api/assignments/${S.itemId}`, put(S.jwt, { muted: false }));
+  assert.equal(read(), 0, 'unmute toggle patched the snapshot back to 0');
+});
+
 test('PUT ignoring muted (other field) leaves muted untouched', async () => {
   await jfetch(`/api/assignments/${S.itemId}`, put(S.jwt, { muted: true }));
   const r = await jfetch(`/api/assignments/${S.itemId}`, put(S.jwt, { duration_sec: 15 }));

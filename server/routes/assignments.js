@@ -160,20 +160,58 @@ function checkItemWrite(req, res) {
   return item;
 }
 
-// #129: real-time mute. Tell every device on this playlist to toggle the volume of the
-// matching currently-playing item NOW (decoupled from publish — the device matches by
-// content_id/widget_id and applies it live). The new value is also written to the row, so
-// it lands in the next published snapshot and persists across playlist reloads.
+// #129 + mute-fix: per-item mute has to do TWO things, because the device plays from
+// playlists.published_snapshot (deviceSocket.buildPlaylistPayload), NOT the draft
+// playlist_items the toggle writes:
+//   (1) LIVE — tell every device on this playlist to silence the matching currently-playing
+//       item NOW (device matches by content_id/widget_id). Mutes the in-progress playthrough.
+//   (2) PERSIST — patch the matching item's `muted` inside the published_snapshot the device
+//       actually plays, then re-push the playlist. Without this the snapshot kept muted=0, so
+//       every loop/reload re-applied full volume — the "icon red but audio plays across 3
+//       playthroughs" bug (Android re-loads each loop; web's native <video> loop masked it).
+// We patch the snapshot SURGICALLY (just the muted field of matching items) rather than calling
+// publishPlaylist, so a mute toggle can't prematurely publish other pending draft edits or flip
+// the playlist's draft/published status. muted is written as 0/1 to match buildSnapshotItems'
+// format (the player reads it via optInt). playlist_items.muted is still updated by the caller,
+// so a later full publish stays consistent.
 function emitMuteChanged(req, item, muted) {
   try {
     const io = req.app.get('io');
     if (!io) return;
     const deviceNs = io.of('/device');
+    const m = !!muted;
+
+    // (2) PERSIST: patch the published snapshot the device reads from.
+    const pl = db.prepare('SELECT published_snapshot FROM playlists WHERE id = ?').get(item.playlist_id);
+    if (pl && pl.published_snapshot) {
+      let snap = null;
+      try { snap = JSON.parse(pl.published_snapshot); } catch (e) { snap = null; }
+      if (Array.isArray(snap)) {
+        let changed = false;
+        for (const s of snap) {
+          const match = item.content_id ? s.content_id === item.content_id
+            : (item.widget_id ? s.widget_id === item.widget_id : false);
+          if (match && (s.muted ? 1 : 0) !== (m ? 1 : 0)) { s.muted = m ? 1 : 0; changed = true; }
+        }
+        if (changed) {
+          db.prepare('UPDATE playlists SET published_snapshot = ? WHERE id = ?')
+            .run(JSON.stringify(snap), item.playlist_id);
+        }
+      }
+    }
+
+    // (1) LIVE toggle + re-deliver the patched snapshot so loops re-apply the correct flag.
+    // Lazy require (matches playlists.pushToDevices) to avoid a route<->ws circular import.
+    const { buildPlaylistPayload } = require('../ws/deviceSocket');
+    const commandQueue = require('../lib/command-queue');
     const devices = db.prepare('SELECT id FROM devices WHERE playlist_id = ?').all(item.playlist_id);
-    const payload = { content_id: item.content_id || null, widget_id: item.widget_id || null, muted: !!muted };
-    for (const d of devices) deviceNs.to(d.id).emit('device:mute-changed', payload);
-    console.log(`[mute] item ${item.id} (content ${item.content_id || item.widget_id}) -> ${muted ? 'MUTED' : 'unmuted'}; notified ${devices.length} device(s)`);
-  } catch (e) { /* best-effort live toggle; the published snapshot is the source of truth */ }
+    const payload = { content_id: item.content_id || null, widget_id: item.widget_id || null, muted: m };
+    for (const d of devices) {
+      deviceNs.to(d.id).emit('device:mute-changed', payload);                        // current playthrough
+      commandQueue.queueOrEmitPlaylistUpdate(deviceNs, d.id, buildPlaylistPayload);  // future loads (no reload of current item)
+    }
+    console.log(`[mute] item ${item.id} (content ${item.content_id || item.widget_id}) -> ${m ? 'MUTED' : 'unmuted'}; snapshot patched + notified ${devices.length} device(s)`);
+  } catch (e) { /* best-effort; playlist_items.muted is still updated for the next full publish */ }
 }
 
 // Update playlist item

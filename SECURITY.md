@@ -95,3 +95,28 @@ by name in release notes and (when applicable) in the GitHub advisory
 itself. Let me know in your report whether you'd like credit and how
 you'd like to be named. Anonymous reports are also welcome — no credit
 is required.
+
+## Uploaded content access model
+
+Uploaded content (images, videos) served under /uploads/content is
+**public by unguessable URL**, not access-controlled:
+
+- Filenames are UUIDv4 (122 bits of randomness), so URLs are not enumerable
+  or guessable.
+- There is no per-request authentication on content bytes, and CORS is open
+  (Access-Control-Allow-Origin: *) because the web player's canvas-based
+  screenshot capture requires cross-origin access.
+- Anyone who obtains a content URL can read that file, cross-tenant, with no
+  expiry (immutable 30-day cache) and no revocation short of deleting the file.
+
+This is an intentional design choice for digital signage, where content is
+destined for public display. It is **security-through-unguessability, not
+access control.**
+
+**Do not upload content you require to remain confidential** - including
+material that is destined for a screen but not yet public (e.g. a scheduled
+promotion before its reveal, or an internal board containing names or other
+sensitive details). Such content is world-readable from the moment of upload.
+If pre-launch or tenant-private confidentiality is a requirement for your
+deployment, open an issue - signed/expiring URLs are tracked but not yet
+implemented.
