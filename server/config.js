@@ -90,4 +90,22 @@ module.exports = {
   // on MSP-style deployments where an admin/operator assigns users to existing
   // orgs after signup instead.
   autoCreateOrgOnSignup: !['false', '0'].includes(String(process.env.AUTO_CREATE_ORG_ON_SIGNUP || '').toLowerCase()),
+
+  // #142 event-loop lag telemetry (services/loop-lag.js). perf_hooks
+  // monitorEventLoopDelay is C++-backed, so continuous sampling is cheap. Each
+  // window's p99 is persisted to event_loop_lag (bounded: indexed + pruned from
+  // day one) and drives the banded load level the reconnect throttle reads.
+  lagSampleIntervalMs: parseInt(process.env.LAG_SAMPLE_INTERVAL_MS) || 1000,
+  lagResolutionMs: parseInt(process.env.LAG_RESOLUTION_MS) || 20,
+  lagTelemetryRetentionDays: parseFloat(process.env.LAG_TELEMETRY_RETENTION_DAYS) || 3,
+  lagPruneIntervalMs: parseInt(process.env.LAG_PRUNE_INTERVAL_MS) || 3600000,
+  // Banded load levels from the window p99 (ms). Asymmetric by design: a band is
+  // entered immediately when its up-threshold is crossed (tighten fast), but
+  // released only one step at a time after lagReleaseSamples consecutive samples
+  // fall below a deadband (release slow), so small fluctuations don't flap it.
+  // Bands ONLY scale how hard an already-flagged device is throttled; a healthy
+  // device is never gated by global lag.
+  lagElevatedMs: parseInt(process.env.LAG_ELEVATED_MS) || 100,
+  lagCriticalMs: parseInt(process.env.LAG_CRITICAL_MS) || 250,
+  lagReleaseSamples: parseInt(process.env.LAG_RELEASE_SAMPLES) || 5,
 };

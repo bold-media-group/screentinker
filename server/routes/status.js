@@ -7,6 +7,7 @@ const fs = require('fs');
 const config = require('../config');
 const VERSION = require('../version');
 const { PLATFORM_ROLES } = require('../middleware/auth');
+const loopLag = require('../services/loop-lag');
 
 // Public status page
 router.get('/', (req, res) => {
@@ -24,6 +25,9 @@ router.get('/', (req, res) => {
     version,
     uptime_human: formatUptime(uptime),
     timestamp: new Date().toISOString(),
+    // #142: current event-loop lag snapshot, so site lag is diagnosable from the
+    // health endpoint independent of any throttling. Cheap (in-memory read).
+    loop_lag: loopLag.getLag(),
   });
 });
 

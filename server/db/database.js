@@ -230,6 +230,10 @@ const migrations = [
   // Both the dashboard uptime query and the retention prune were full scans — the
   // dashboard-degradation cause once the table reached 1M+ rows.
   "CREATE INDEX IF NOT EXISTS idx_device_status_log_device_ts ON device_status_log(device_id, timestamp)",
+  // #142: event-loop lag telemetry table (bounded: indexed + scheduled prune).
+  // schema.sql creates these on fresh installs; this covers existing DBs.
+  "CREATE TABLE IF NOT EXISTS event_loop_lag (id INTEGER PRIMARY KEY AUTOINCREMENT, sampled_at INTEGER NOT NULL DEFAULT (strftime('%s','now')), mean_ms REAL NOT NULL, p50_ms REAL NOT NULL, p99_ms REAL NOT NULL, max_ms REAL NOT NULL, band TEXT NOT NULL DEFAULT 'normal')",
+  "CREATE INDEX IF NOT EXISTS idx_event_loop_lag_sampled ON event_loop_lag(sampled_at)",
 ];
 // Apply each ALTER idempotently. A "duplicate column name" / "already exists"
 // error means the column is already present (expected on a migrated DB) - benign.
