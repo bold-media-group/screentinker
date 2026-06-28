@@ -90,4 +90,63 @@ module.exports = {
   // on MSP-style deployments where an admin/operator assigns users to existing
   // orgs after signup instead.
   autoCreateOrgOnSignup: !['false', '0'].includes(String(process.env.AUTO_CREATE_ORG_ON_SIGNUP || '').toLowerCase()),
+
+  // #142 event-loop lag telemetry (services/loop-lag.js). perf_hooks
+  // monitorEventLoopDelay is C++-backed, so continuous sampling is cheap. Each
+  // window's p99 is persisted to event_loop_lag (bounded: indexed + pruned from
+  // day one) and drives the banded load level the reconnect throttle reads.
+  lagSampleIntervalMs: parseInt(process.env.LAG_SAMPLE_INTERVAL_MS) || 1000,
+  lagResolutionMs: parseInt(process.env.LAG_RESOLUTION_MS) || 20,
+  lagTelemetryRetentionDays: parseFloat(process.env.LAG_TELEMETRY_RETENTION_DAYS) || 3,
+  lagPruneIntervalMs: parseInt(process.env.LAG_PRUNE_INTERVAL_MS) || 3600000,
+  // Banded load levels from the window p99 (ms). Asymmetric by design: a band is
+  // entered immediately when its up-threshold is crossed (tighten fast), but
+  // released only one step at a time after lagReleaseSamples consecutive samples
+  // fall below a deadband (release slow), so small fluctuations don't flap it.
+  // Bands ONLY scale how hard an already-flagged device is throttled; a healthy
+  // device is never gated by global lag.
+  lagElevatedMs: parseInt(process.env.LAG_ELEVATED_MS) || 100,
+  lagCriticalMs: parseInt(process.env.LAG_CRITICAL_MS) || 250,
+  lagReleaseSamples: parseInt(process.env.LAG_RELEASE_SAMPLES) || 5,
+
+  // #142 load-aware per-device reconnect throttle (lib/reconnect-throttle.js).
+  // The verdict of WHO is misbehaving is ALWAYS per-device (keyed on device_id):
+  // a device is flagged only when it exceeds reconnectBaseMax genuine reconnects
+  // per reconnectWindowMs. Global lag never flags a healthy device — the lag band
+  // only MULTIPLIES how hard an already-flagged device is backed off.
+  reconnectWindowMs: parseInt(process.env.RECONNECT_WINDOW_MS) || 10000,
+  reconnectBaseMax: parseInt(process.env.RECONNECT_BASE_MAX) || 5,
+  // Absolute per-device ceiling, independent of band AND of warm-up: no device may
+  // exceed this many reconnects/window no matter what the adaptive logic computes,
+  // so a slow-ramp attacker can't train its way through.
+  reconnectHardCeiling: parseInt(process.env.RECONNECT_HARD_CEILING) || 20,
+  // Server-enforced backoff for a flagged device: baseBackoff * 2^(level-1) * band
+  // multiplier, capped at maxBackoff. Level escalates while it keeps storming
+  // (tighten fast) and decays one step per reconnectReleaseMs of calm (release slow).
+  reconnectBaseBackoffMs: parseInt(process.env.RECONNECT_BASE_BACKOFF_MS) || 1000,
+  reconnectMaxBackoffMs: parseInt(process.env.RECONNECT_MAX_BACKOFF_MS) || 60000,
+  reconnectMaxLevel: parseInt(process.env.RECONNECT_MAX_LEVEL) || 10,
+  reconnectReleaseMs: parseInt(process.env.RECONNECT_RELEASE_MS) || 30000,
+  // Cold start: for this long after process start, lag is high while the whole
+  // fleet reconnects at once. Treat leniently — force the 'normal' band and apply
+  // only the hard ceiling (no rate-band throttle) so a deploy can't throttle
+  // healthy screens. Throttle state is in-memory and resets on restart.
+  reconnectWarmupMs: parseInt(process.env.RECONNECT_WARMUP_MS) || 30000,
+  reconnectBandElevatedMult: parseFloat(process.env.RECONNECT_BAND_ELEVATED_MULT) || 2,
+  reconnectBandCriticalMult: parseFloat(process.env.RECONNECT_BAND_CRITICAL_MULT) || 4,
+
+  // #142 device_status_log retention. A GLOBAL scheduled sweep (pruneStatusLog in
+  // db/database.js, run on startup + the heartbeat interval) deletes rows older
+  // than this across ALL devices — covering what the per-device insert-time prune
+  // in deviceSocket.js misses: removed/idle devices that never insert again, and
+  // the heartbeat.js offline_timeout insert that bypasses logDeviceStatus. Default
+  // is LOWER than the old hardcoded 7 days (the reporter's bloat happened under 7d);
+  // 2-3 days is plenty for the dashboard's 24h uptime view + diagnostics.
+  statusLogRetentionDays: parseFloat(process.env.STATUS_LOG_RETENTION_DAYS) || 3,
+
+  // #142 content-ack dedup window (deviceSocket.js). A device (esp. older apps)
+  // can spam "content <id>: ready" for the same item; suppress identical
+  // (device_id, content_id, status) reports within this window. A status CHANGE
+  // has a different key and passes immediately. In-memory; resets on restart.
+  contentAckDedupMs: parseInt(process.env.CONTENT_ACK_DEDUP_MS) || 10000,
 };

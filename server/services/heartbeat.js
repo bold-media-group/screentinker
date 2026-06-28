@@ -1,4 +1,4 @@
-const { db } = require('../db/database');
+const { db, pruneStatusLog } = require('../db/database');
 const config = require('../config');
 const { deviceRoom, emitToWorkspace } = require('../lib/socket-rooms');
 
@@ -6,6 +6,10 @@ const { deviceRoom, emitToWorkspace } = require('../lib/socket-rooms');
 const deviceConnections = new Map();
 
 function startHeartbeatChecker(io) {
+  // #142: sweep stale device_status_log rows once at startup (recovers a bloated
+  // table immediately after a deploy), then again on each interval below.
+  pruneStatusLog();
+
   setInterval(() => {
     const now = Date.now();
     const dashboardNs = io.of('/dashboard');
@@ -36,18 +40,17 @@ function startHeartbeatChecker(io) {
       }
     }
 
-    // Cleanup: delete unclaimed provisioning devices older than 24 hours
-    // Keep imported devices (they have user_id set) so users can re-pair them
-    db.prepare(`
-      DELETE FROM devices WHERE status = 'provisioning'
-      AND user_id IS NULL
-      AND created_at < strftime('%s','now') - (365 * 86400)
-    `).run();
+    // Cleanup: delete unclaimed provisioning devices older than 24 hours.
+    pruneProvisioningDevices();
 
     // Cleanup: prune play logs older than 90 days
     db.prepare(`
       DELETE FROM play_logs WHERE started_at < strftime('%s','now') - (90 * 86400)
     `).run();
+
+    // #142: global device_status_log retention sweep (all devices, incl. removed/idle
+    // and the offline_timeout insert path that bypasses the per-device prune).
+    pruneStatusLog();
 
     // Cleanup: expired team invites
     db.prepare(`
@@ -83,11 +86,25 @@ function getAllConnections() {
   return deviceConnections;
 }
 
+// #142: sweep unclaimed provisioning devices older than 24h. The window previously
+// read `365 * 86400` (a YEAR), contradicting its own "older than 24 hours" comment,
+// so socket-register pairing junk lingered far longer than intended. Imported
+// devices keep a user_id and are preserved so they can be re-paired. Extracted from
+// the interval above so the correctness fix is unit-testable. Returns rows deleted.
+function pruneProvisioningDevices() {
+  return db.prepare(`
+    DELETE FROM devices
+    WHERE status = 'provisioning' AND user_id IS NULL
+    AND created_at < strftime('%s','now') - (24 * 3600)
+  `).run().changes;
+}
+
 module.exports = {
   startHeartbeatChecker,
   registerConnection,
   updateHeartbeat,
   removeConnection,
   getConnection,
-  getAllConnections
+  getAllConnections,
+  pruneProvisioningDevices
 };

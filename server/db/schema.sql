@@ -463,6 +463,27 @@ CREATE TABLE IF NOT EXISTS device_status_log (
     status          TEXT NOT NULL,
     timestamp       INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
+-- #142: index the per-device + time-window access pattern. Both the dashboard
+-- uptime query (WHERE device_id=? AND timestamp>?) and the retention prune
+-- (WHERE device_id=? AND timestamp<?) were full table scans; at 1M+ rows that
+-- was the dashboard-degradation cause in the outage report.
+CREATE INDEX IF NOT EXISTS idx_device_status_log_device_ts ON device_status_log(device_id, timestamp);
+
+-- ===================== EVENT LOOP LAG (#142) =====================
+-- Event-loop delay telemetry from perf_hooks.monitorEventLoopDelay(). Bounded
+-- from day one: indexed on sampled_at and pruned on a schedule (see
+-- services/loop-lag.js, LAG_TELEMETRY_RETENTION_DAYS) so it can never become a
+-- second unbounded-growth table.
+CREATE TABLE IF NOT EXISTS event_loop_lag (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    sampled_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    mean_ms     REAL NOT NULL,
+    p50_ms      REAL NOT NULL,
+    p99_ms      REAL NOT NULL,
+    max_ms      REAL NOT NULL,
+    band        TEXT NOT NULL DEFAULT 'normal'
+);
+CREATE INDEX IF NOT EXISTS idx_event_loop_lag_sampled ON event_loop_lag(sampled_at);
 
 -- ===================== DEVICE FINGERPRINTS =====================
 
@@ -482,13 +503,6 @@ CREATE TABLE IF NOT EXISTS alert_configs (
     enabled         INTEGER NOT NULL DEFAULT 1,
     config          TEXT NOT NULL DEFAULT '{}',
     created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-);
-
-CREATE TABLE IF NOT EXISTS device_status_log (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    device_id       TEXT NOT NULL,
-    status          TEXT NOT NULL,
-    timestamp       INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
 
 -- ===================== PLAYER DEBUG LOGS =====================
