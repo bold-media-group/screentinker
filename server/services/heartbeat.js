@@ -1,4 +1,4 @@
-const { db } = require('../db/database');
+const { db, pruneStatusLog } = require('../db/database');
 const config = require('../config');
 const { deviceRoom, emitToWorkspace } = require('../lib/socket-rooms');
 
@@ -6,6 +6,10 @@ const { deviceRoom, emitToWorkspace } = require('../lib/socket-rooms');
 const deviceConnections = new Map();
 
 function startHeartbeatChecker(io) {
+  // #142: sweep stale device_status_log rows once at startup (recovers a bloated
+  // table immediately after a deploy), then again on each interval below.
+  pruneStatusLog();
+
   setInterval(() => {
     const now = Date.now();
     const dashboardNs = io.of('/dashboard');
@@ -48,6 +52,10 @@ function startHeartbeatChecker(io) {
     db.prepare(`
       DELETE FROM play_logs WHERE started_at < strftime('%s','now') - (90 * 86400)
     `).run();
+
+    // #142: global device_status_log retention sweep (all devices, incl. removed/idle
+    // and the offline_timeout insert path that bypasses the per-device prune).
+    pruneStatusLog();
 
     // Cleanup: expired team invites
     db.prepare(`

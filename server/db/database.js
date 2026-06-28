@@ -750,6 +750,21 @@ const { applyTenantDeleteCascade } = require('../lib/tenant-cascade-migration');
   }
 })();
 
+// #142 GLOBAL device_status_log retention sweep across ALL devices. Run on startup
+// and on the heartbeat interval (services/heartbeat.js). This covers the rows the
+// per-device insert-time prune in deviceSocket.js misses: removed/idle devices that
+// never insert again, and the heartbeat offline_timeout insert that bypasses
+// logDeviceStatus. A plain time-range delete (like the play_logs prune) — runs off
+// the hot path; after the first sweep the table is small, so the cost is negligible.
+function pruneStatusLog() {
+  try {
+    const maxAgeSec = Math.round(config.statusLogRetentionDays * 86400);
+    const n = db.prepare("DELETE FROM device_status_log WHERE timestamp < strftime('%s','now') - ?").run(maxAgeSec).changes;
+    if (n > 0) console.log(`[status-log] pruned ${n} row(s) older than ${config.statusLogRetentionDays}d`);
+    return n;
+  } catch (_) { return 0; }
+}
+
 // Prune old telemetry (keep last 24h worth at 15s intervals = ~5760, cap at 6000)
 function pruneTelemetry(deviceId) {
   db.prepare(`
@@ -822,4 +837,4 @@ try {
 const { verifyAndRepairSchema } = require('../lib/schema-check');
 verifyAndRepairSchema(db);
 
-module.exports = { db, pruneTelemetry, pruneScreenshots };
+module.exports = { db, pruneTelemetry, pruneScreenshots, pruneStatusLog };

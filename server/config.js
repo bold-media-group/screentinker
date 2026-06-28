@@ -134,4 +134,13 @@ module.exports = {
   reconnectWarmupMs: parseInt(process.env.RECONNECT_WARMUP_MS) || 30000,
   reconnectBandElevatedMult: parseFloat(process.env.RECONNECT_BAND_ELEVATED_MULT) || 2,
   reconnectBandCriticalMult: parseFloat(process.env.RECONNECT_BAND_CRITICAL_MULT) || 4,
+
+  // #142 device_status_log retention. A GLOBAL scheduled sweep (pruneStatusLog in
+  // db/database.js, run on startup + the heartbeat interval) deletes rows older
+  // than this across ALL devices — covering what the per-device insert-time prune
+  // in deviceSocket.js misses: removed/idle devices that never insert again, and
+  // the heartbeat.js offline_timeout insert that bypasses logDeviceStatus. Default
+  // is LOWER than the old hardcoded 7 days (the reporter's bloat happened under 7d);
+  // 2-3 days is plenty for the dashboard's 24h uptime view + diagnostics.
+  statusLogRetentionDays: parseFloat(process.env.STATUS_LOG_RETENTION_DAYS) || 3,
 };
