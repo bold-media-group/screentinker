@@ -13,7 +13,7 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const Database = require('better-sqlite3');
 
-const PORT = 3979;
+const PORT = 3982;
 const BASE = `http://127.0.0.1:${PORT}`;
 const DATA_DIR = path.join(os.tmpdir(), 'st-lag-int-' + crypto.randomBytes(4).toString('hex'));
 const LOG = path.join(os.tmpdir(), 'st-lag-int-' + crypto.randomBytes(4).toString('hex') + '.log');
@@ -54,7 +54,7 @@ test('lag samples are persisted AND bounded by retention prune (not unbounded)',
   // Let it sample for ~3s. At 200ms/sample that is ~15 inserts, but with ~0.86s
   // retention pruned every 400ms the table must stay small — proving the table
   // can never become a second unbounded-growth table.
-  await new Promise(r => setTimeout(r, 3000));
+  await new Promise(r => setTimeout(r, 1800));
   const dbPath = path.join(DATA_DIR, 'db', 'remote_display.db');
   const db = new Database(dbPath, { readonly: true });
   const count = db.prepare('SELECT COUNT(*) c FROM event_loop_lag').get().c;

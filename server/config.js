@@ -108,4 +108,30 @@ module.exports = {
   lagElevatedMs: parseInt(process.env.LAG_ELEVATED_MS) || 100,
   lagCriticalMs: parseInt(process.env.LAG_CRITICAL_MS) || 250,
   lagReleaseSamples: parseInt(process.env.LAG_RELEASE_SAMPLES) || 5,
+
+  // #142 load-aware per-device reconnect throttle (lib/reconnect-throttle.js).
+  // The verdict of WHO is misbehaving is ALWAYS per-device (keyed on device_id):
+  // a device is flagged only when it exceeds reconnectBaseMax genuine reconnects
+  // per reconnectWindowMs. Global lag never flags a healthy device — the lag band
+  // only MULTIPLIES how hard an already-flagged device is backed off.
+  reconnectWindowMs: parseInt(process.env.RECONNECT_WINDOW_MS) || 10000,
+  reconnectBaseMax: parseInt(process.env.RECONNECT_BASE_MAX) || 5,
+  // Absolute per-device ceiling, independent of band AND of warm-up: no device may
+  // exceed this many reconnects/window no matter what the adaptive logic computes,
+  // so a slow-ramp attacker can't train its way through.
+  reconnectHardCeiling: parseInt(process.env.RECONNECT_HARD_CEILING) || 20,
+  // Server-enforced backoff for a flagged device: baseBackoff * 2^(level-1) * band
+  // multiplier, capped at maxBackoff. Level escalates while it keeps storming
+  // (tighten fast) and decays one step per reconnectReleaseMs of calm (release slow).
+  reconnectBaseBackoffMs: parseInt(process.env.RECONNECT_BASE_BACKOFF_MS) || 1000,
+  reconnectMaxBackoffMs: parseInt(process.env.RECONNECT_MAX_BACKOFF_MS) || 60000,
+  reconnectMaxLevel: parseInt(process.env.RECONNECT_MAX_LEVEL) || 10,
+  reconnectReleaseMs: parseInt(process.env.RECONNECT_RELEASE_MS) || 30000,
+  // Cold start: for this long after process start, lag is high while the whole
+  // fleet reconnects at once. Treat leniently — force the 'normal' band and apply
+  // only the hard ceiling (no rate-band throttle) so a deploy can't throttle
+  // healthy screens. Throttle state is in-memory and resets on restart.
+  reconnectWarmupMs: parseInt(process.env.RECONNECT_WARMUP_MS) || 30000,
+  reconnectBandElevatedMult: parseFloat(process.env.RECONNECT_BAND_ELEVATED_MULT) || 2,
+  reconnectBandCriticalMult: parseFloat(process.env.RECONNECT_BAND_CRITICAL_MULT) || 4,
 };

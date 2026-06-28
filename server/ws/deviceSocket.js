@@ -6,6 +6,7 @@ const { db, pruneTelemetry, pruneScreenshots } = require('../db/database');
 const config = require('../config');
 const heartbeat = require('../services/heartbeat');
 const commandQueue = require('../lib/command-queue');
+const reconnectThrottle = require('../lib/reconnect-throttle');
 
 // Debounce window for marking a device offline on socket disconnect. Brief
 // flap (Wi-Fi blip, Engine.IO ping miss, server-side eviction-then-reconnect)
@@ -351,6 +352,23 @@ module.exports = function setupDeviceSocket(io) {
             console.warn(`Invalid device token for ${device_id} from ${getClientIp(socket)} — received_len=${(device_token || '').length}, stored_len=${device.device_token.length}, received_prefix=${(device_token || '').substring(0, 8)}, stored_prefix=${device.device_token.substring(0, 8)}`);
             socket.emit('device:auth-error', { error: 'Invalid device token' });
             return;
+          }
+
+          // #142: per-device reconnect throttle. Only GENUINE reconnects (a new
+          // socket) count — same-socket playlist refreshes (isPlaylistRefresh) are
+          // exempt. This runs BEFORE the heavy register work (DB writes, playlist
+          // build) so a single flapping device cannot saturate the event loop. The
+          // verdict is per-device; global lag only scales an already-flagged
+          // device's backoff, never gates a healthy one.
+          if (!isPlaylistRefresh) {
+            const verdict = reconnectThrottle.check(device_id);
+            if (!verdict.allow) {
+              console.warn(`[throttle] device ${device_id} reconnect throttled: reason=${verdict.reason} band=${verdict.band} observed=${verdict.observed}/${verdict.allowed} per ${config.reconnectWindowMs}ms -> backoff ${verdict.retryAfterMs}ms (level ${verdict.level})`);
+              socket.emit('device:throttled', { retry_after_ms: verdict.retryAfterMs, reason: 'reconnect_rate' });
+              // nextTick disconnect so the throttle notice flushes first.
+              process.nextTick(() => { try { socket.disconnect(true); } catch (_) { /* */ } });
+              return;
+            }
           }
 
           currentDeviceId = device_id;
