@@ -225,6 +225,15 @@ const migrations = [
   "ALTER TABLE devices ADD COLUMN ota_target_version TEXT",
   "ALTER TABLE devices ADD COLUMN ota_attempts INTEGER DEFAULT 0",
   "ALTER TABLE devices ADD COLUMN ota_updated_at INTEGER",
+  // #142: index device_status_log for the per-device + time-window access pattern.
+  // schema.sql creates this on fresh installs; this migration covers existing DBs.
+  // Both the dashboard uptime query and the retention prune were full scans — the
+  // dashboard-degradation cause once the table reached 1M+ rows.
+  "CREATE INDEX IF NOT EXISTS idx_device_status_log_device_ts ON device_status_log(device_id, timestamp)",
+  // #142: event-loop lag telemetry table (bounded: indexed + scheduled prune).
+  // schema.sql creates these on fresh installs; this covers existing DBs.
+  "CREATE TABLE IF NOT EXISTS event_loop_lag (id INTEGER PRIMARY KEY AUTOINCREMENT, sampled_at INTEGER NOT NULL DEFAULT (strftime('%s','now')), mean_ms REAL NOT NULL, p50_ms REAL NOT NULL, p99_ms REAL NOT NULL, max_ms REAL NOT NULL, band TEXT NOT NULL DEFAULT 'normal')",
+  "CREATE INDEX IF NOT EXISTS idx_event_loop_lag_sampled ON event_loop_lag(sampled_at)",
 ];
 // Apply each ALTER idempotently. A "duplicate column name" / "already exists"
 // error means the column is already present (expected on a migrated DB) - benign.
@@ -741,6 +750,21 @@ const { applyTenantDeleteCascade } = require('../lib/tenant-cascade-migration');
   }
 })();
 
+// #142 GLOBAL device_status_log retention sweep across ALL devices. Run on startup
+// and on the heartbeat interval (services/heartbeat.js). This covers the rows the
+// per-device insert-time prune in deviceSocket.js misses: removed/idle devices that
+// never insert again, and the heartbeat offline_timeout insert that bypasses
+// logDeviceStatus. A plain time-range delete (like the play_logs prune) — runs off
+// the hot path; after the first sweep the table is small, so the cost is negligible.
+function pruneStatusLog() {
+  try {
+    const maxAgeSec = Math.round(config.statusLogRetentionDays * 86400);
+    const n = db.prepare("DELETE FROM device_status_log WHERE timestamp < strftime('%s','now') - ?").run(maxAgeSec).changes;
+    if (n > 0) console.log(`[status-log] pruned ${n} row(s) older than ${config.statusLogRetentionDays}d`);
+    return n;
+  } catch (_) { return 0; }
+}
+
 // Prune old telemetry (keep last 24h worth at 15s intervals = ~5760, cap at 6000)
 function pruneTelemetry(deviceId) {
   db.prepare(`
@@ -813,4 +837,4 @@ try {
 const { verifyAndRepairSchema } = require('../lib/schema-check');
 verifyAndRepairSchema(db);
 
-module.exports = { db, pruneTelemetry, pruneScreenshots };
+module.exports = { db, pruneTelemetry, pruneScreenshots, pruneStatusLog };

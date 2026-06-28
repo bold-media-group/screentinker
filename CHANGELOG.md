@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.9.2-beta1 — unreleased
+
+### Fixed — server resilience (#142)
+- **A single flapping device can no longer saturate the event loop.** A new
+  load-aware, per-device reconnect throttle (`lib/reconnect-throttle.js`) gates
+  genuine reconnects *before* the heavy register work (DB writes + playlist build).
+  The verdict is per-device; global event-loop lag only multiplies an
+  already-flagged device's backoff and never throttles a healthy one. Hard ceiling
+  + cold-start warm-up so a full-fleet reconnect after a deploy is never throttled.
+- **`device_status_log` growth is bounded.** Added
+  `idx_device_status_log_device_ts`, a global retention sweep (`pruneStatusLog`,
+  `STATUS_LOG_RETENTION_DAYS` default 3) covering removed/idle devices and the
+  `offline_timeout` path, and de-duplicated the table's `CREATE TABLE`.
+- **`content-ack` spam de-duplicated.** Repeated identical
+  `(device_id, content_id, status)` reports are suppressed within
+  `CONTENT_ACK_DEDUP_MS` (default 10s).
+- **Provisioning cleanup window corrected.** Unclaimed provisioning devices are now
+  swept after 24h (the code used `365 * 86400` — a year — contradicting its own
+  comment).
+
+### Added — observability (#142)
+- **Event-loop lag telemetry** via `perf_hooks.monitorEventLoopDelay()`. Sampled to
+  a bounded `event_loop_lag` table (indexed + pruned, `LAG_TELEMETRY_RETENTION_DAYS`)
+  and surfaced on `/api/status` as `loop_lag` (mean/p50/p99/max + band).
+
+### Maintenance
+- Operators whose `device_status_log` is already bloated from a pre-1.9.2 deployment
+  should reclaim disk with a **one-time manual `VACUUM`** in a maintenance window;
+  retention now bounds further growth. Auto-VACUUM is intentionally not enabled.
+  See [`docs/maintenance-device-status-log.md`](docs/maintenance-device-status-log.md).
+
 ## 1.9.1-beta3 — unreleased
 
 ### Fixed — Tizen player

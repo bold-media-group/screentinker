@@ -625,6 +625,10 @@ app.set('io', io);
 const { startHeartbeatChecker } = require('./services/heartbeat');
 startHeartbeatChecker(io);
 
+// #142: start event-loop lag sampling (feeds /api/status + the reconnect throttle)
+const { startLoopLagMonitor } = require('./services/loop-lag');
+startLoopLagMonitor();
+
 // Start command-queue sweep (prunes expired entries for offline devices)
 const commandQueue = require('./lib/command-queue');
 commandQueue.startSweep();
