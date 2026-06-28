@@ -79,6 +79,14 @@ function sample() {
     const tag = band !== prev ? ` (was ${prev})` : '';
     console.log(`[loop-lag] band=${band}${tag} mean=${snap.mean_ms}ms p99=${snap.p99_ms}ms max=${snap.max_ms}ms`);
   }
+
+  // #143 global pressure valve — log ONLY the band edge (open/close), not per shed
+  // message. When critical, deviceSocket sheds non-essential acks (it reads getBand()).
+  if (band === 'critical' && prev !== 'critical') {
+    console.warn(`[shed] global valve OPEN — loop-lag critical (p99=${snap.p99_ms}ms); shedding non-essential device messages (content-acks). reconnects + dashboard still processed.`);
+  } else if (prev === 'critical' && band !== 'critical') {
+    console.log(`[shed] global valve CLOSED — loop-lag recovered (band=${band}, p99=${snap.p99_ms}ms)`);
+  }
 }
 
 function pruneLag() {

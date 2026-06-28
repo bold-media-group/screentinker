@@ -149,4 +149,14 @@ module.exports = {
   // (device_id, content_id, status) reports within this window. A status CHANGE
   // has a different key and passes immediately. In-memory; resets on restart.
   contentAckDedupMs: parseInt(process.env.CONTENT_ACK_DEDUP_MS) || 10000,
+
+  // #143 content-ack RATE budget (lib/content-ack-limiter.js), layered on top of the
+  // dedup above. Caps TOTAL acks per device per window REGARDLESS of differing
+  // content_id — the flood the dedup misses (a device cycling 2-4 ids makes every
+  // ack look unique, so dedup never fires, yet aggregate volume blocks the loop).
+  // TUNING GUESSES — validate against Bold's real fleet. Legit playlist cadence is
+  // roughly <=1 ack/s/device; the flood is many/s. 20 per 10s (=2/s) sits above
+  // legit and below the flood. Easy to retune via env.
+  contentAckMaxPerWindow: parseInt(process.env.CONTENT_ACK_MAX_PER_WINDOW) || 20,
+  contentAckRateWindowMs: parseInt(process.env.CONTENT_ACK_RATE_WINDOW_MS) || 10000,
 };

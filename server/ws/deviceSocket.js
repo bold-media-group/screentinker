@@ -7,6 +7,8 @@ const config = require('../config');
 const heartbeat = require('../services/heartbeat');
 const commandQueue = require('../lib/command-queue');
 const reconnectThrottle = require('../lib/reconnect-throttle');
+const contentAckLimiter = require('../lib/content-ack-limiter');
+const loopLag = require('../services/loop-lag');
 
 // Debounce window for marking a device offline on socket disconnect. Brief
 // flap (Wi-Fi blip, Engine.IO ping miss, server-side eviction-then-reconnect)
@@ -29,11 +31,9 @@ const OFFLINE_DEBOUNCE_MS = 5000;
 const lastPlayLogAt = new Map();
 const PLAY_LOG_MIN_GAP_MS = 2000;
 
-// #142 content-ack dedup. An older app can spam "content <id>: ready" for the same
-// item; each was logged + emitted individually (secondary load). Suppress identical
-// (device_id, content_id, status) reports within config.contentAckDedupMs. A status
-// CHANGE has a different key and passes immediately. In-memory; resets on restart.
-const lastContentAck = new Map();
+// #142 dedup + #143 per-device rate budget + global loop-lag valve for content-acks
+// all live in one control: lib/content-ack-limiter.js (required above as
+// contentAckLimiter). Kept out of this file so there is a single limiter on the path.
 const { getUserPlan, getUserDeviceCount } = require('../middleware/subscription');
 // Phase 2.3: deviceRoom() resolves a device_id to its workspace room so
 // dashboardNs.emit can be scoped instead of broadcast platform-wide.
@@ -585,13 +585,18 @@ module.exports = function setupDeviceSocket(io) {
       if (!requireDeviceAuth()) return;
       const { device_id, content_id, status } = data;
       if (device_id !== currentDeviceId) return;
-      // #142: drop repeats of the same (device, content, status) within the dedup
-      // window. Only a change (new content/status) or a report after the window
-      // logs+emits, so a device spamming the same "ready" can't add load.
-      const ackKey = `${device_id}|${content_id}|${status}`;
-      const nowAck = Date.now();
-      if (nowAck - (lastContentAck.get(ackKey) || 0) < config.contentAckDedupMs) return;
-      lastContentAck.set(ackKey, nowAck);
+      // #142 dedup + #143 per-device rate budget + global critical-lag valve, in one
+      // control. Anything but 'pass' is dropped BEFORE the log+emit (that per-ack work
+      // is the cost we shed). Drops are SILENT except a single line per device per
+      // window when rate-shedding STARTS (re-logging per drop would recreate the
+      // flood). The valve's open/close is logged once at the band edge in loop-lag.
+      const verdict = contentAckLimiter.check(device_id, content_id, status, loopLag.getBand());
+      if (verdict.action !== 'pass') {
+        if (verdict.action === 'shed-rate' && verdict.logStart) {
+          console.warn(`[content-ack] shedding device ${device_id}: ${verdict.observed}/${verdict.budget} per ${config.contentAckRateWindowMs}ms — flood control engaged`);
+        }
+        return;
+      }
       console.log(`Device ${device_id} content ${content_id}: ${status}`);
       emitToDeviceWorkspace(dashboardNs, device_id, 'dashboard:content-ack', { device_id, content_id, status });
     });
