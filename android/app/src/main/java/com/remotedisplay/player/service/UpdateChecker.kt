@@ -119,7 +119,11 @@ class UpdateChecker(private val context: Context) {
         Thread {
             try {
                 val currentVersion = getAppVersion()
-                val url = "${config.serverUrl}/api/update/check?version=$currentVersion"
+                // #144: send our stable registered device_id so the server OTA breaker can throttle
+                // per-device (not per-NAT-IP). Reuses the same id we register/socket with; omitted
+                // until provisioned (server then falls back to version-keyed).
+                val deviceParam = if (config.deviceId.isNotEmpty()) "&device_id=${config.deviceId}" else ""
+                val url = "${config.serverUrl}/api/update/check?version=$currentVersion$deviceParam"
                 Log.i(TAG, "Checking for updates: $url")
 
                 val request = Request.Builder().url(url).build()

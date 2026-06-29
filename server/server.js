@@ -578,28 +578,36 @@ app.use('/api/status', require('./routes/status'));
 // route block) - leaving this comment here as a breadcrumb for the move.
 
 // APK version check endpoint (public, used by devices to check for updates)
+const otaBreaker = require('./lib/ota-breaker');
+otaBreaker.startSweep();   // #144: periodically evict idle breaker buckets so keyed state stays bounded
 app.get('/api/update/check', (req, res) => {
   const currentVersion = req.query.version;
-  const apkPath = resolveApkPath();
-  const apkExists = apkPath !== null;
-  const apkSize = apkExists ? fs.statSync(apkPath).size : 0;
-  const apkModified = apkExists ? fs.statSync(apkPath).mtimeMs : 0;
-
+  const deviceId = req.query.device_id || null;   // #144: optional; beta4+ clients send it for per-device keying
   const latestVersion = VERSION;
-  const updateAvailable = currentVersion && currentVersion !== latestVersion;
 
-  // #96: log every version check so the OTA is observable - which devices check in, their
-  // version, and whether they'll update. This diagnosability gap is part of why the 1.9.0
-  // relaunch failure went unseen.
-  console.log(`[ota] update check from ${getClientIp(req)}: client=${currentVersion || 'unknown'} latest=${latestVersion} update_available=${!!updateAvailable} apk=${apkExists ? 'present' : 'MISSING'}`);
+  // #144: circuit-breaker + phantom-version guard (replaces the old string-inequality
+  // offer). Keys per device_id when present, else per reported version. Rate-trips a
+  // looping client in seconds; never offers a downgrade or a superseded/garbage version.
+  const verdict = otaBreaker.decide(currentVersion, latestVersion, deviceId);
+  const apkPath = resolveApkPath();                                  // existsSync x2 (cheap)
+  const apkExists = apkPath !== null;
+  const updateAvailable = !!verdict.update_available && apkExists;    // never offer if APK missing
+  const apkSize = updateAvailable ? fs.statSync(apkPath).size : 0;    // statSync only when actually offering (don't stat on every looped poll)
+  const apkModified = updateAvailable ? fs.statSync(apkPath).mtimeMs : 0;
+
+  if (verdict.log) console.log(verdict.log);                         // once-per-event (trip / unrecognized)
+  // #96: keep the per-check line observable; now also shows the breaker reason + device_id.
+  console.log(`[ota] update check from ${getClientIp(req)}: device=${deviceId || 'none'} client=${currentVersion || 'unknown'} latest=${latestVersion} update_available=${updateAvailable} reason=${verdict.reason} apk=${apkExists ? 'present' : 'MISSING'}`);
 
   res.json({
     latest_version: latestVersion,
     current_version: currentVersion || 'unknown',
     update_available: updateAvailable,
+    reason: verdict.reason,                 // #144: breaker decision, for observability (additive; old clients ignore)
     download_url: '/download/apk',
     apk_size: apkSize,
     apk_modified: apkModified,
+    ...(verdict.retry_after_seconds ? { retry_after_seconds: verdict.retry_after_seconds } : {}),
   });
 });
 
