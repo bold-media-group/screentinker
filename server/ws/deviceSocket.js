@@ -8,6 +8,7 @@ const heartbeat = require('../services/heartbeat');
 const commandQueue = require('../lib/command-queue');
 const reconnectThrottle = require('../lib/reconnect-throttle');
 const contentAckLimiter = require('../lib/content-ack-limiter');
+const statusLogWriter = require('../lib/status-log-writer');
 const loopLag = require('../services/loop-lag');
 
 // Debounce window for marking a device offline on socket disconnect. Brief
@@ -21,6 +22,15 @@ const loopLag = require('../services/loop-lag');
 // next checker sweep within heartbeatInterval).
 const pendingOfflines = new Map();
 const OFFLINE_DEBOUNCE_MS = 5000;
+
+// #146: socket ids we force-disconnected via evictPriorSocket because a NEWER socket
+// took over the device. evictPriorSocket runs at register time BEFORE the new socket
+// is put in the connection map (registerConnection is later in the same handler), so
+// the evicted socket's disconnect handler would see the still-old map entry, pass the
+// stale-disconnect guard, and ARM a fresh offline timer — re-marking the device that
+// just reconnected offline (the self-reset race). Tagging the id here lets that
+// disconnect handler bail out instead of arming a timer. Drained on consumption.
+const evictedSockets = new Set();
 
 // Proof-of-play write throttle. A player stuck in a tight loop (e.g. a playlist
 // with 0-second item durations) fires device:play-event 'play_start' several
@@ -74,12 +84,14 @@ function getClientIp(socket) {
   return socket.handshake.address;
 }
 
+// #146: route status transitions through the batched, coalescing writer instead of
+// an immediate INSERT-per-transition. A flapping device no longer writes a row per
+// flap (the table-bloat feedback loop); the per-device age prune now lives in the
+// writer and uses config.statusLogRetentionDays (was a hardcoded 7 days here — one
+// source of truth). devices.status is still updated immediately by callers; only
+// this audit log is deferred to the next flush.
 function logDeviceStatus(deviceId, status) {
-  try {
-    db.prepare('INSERT INTO device_status_log (device_id, status) VALUES (?, ?)').run(deviceId, status);
-    // Prune entries older than 7 days
-    db.prepare("DELETE FROM device_status_log WHERE device_id = ? AND timestamp < strftime('%s','now') - 604800").run(deviceId);
-  } catch (e) { /* table might not exist yet */ }
+  statusLogWriter.record(deviceId, status);
 }
 
 
@@ -254,7 +266,10 @@ module.exports = function setupDeviceSocket(io) {
     const oldSocket = deviceNs.sockets.get(prior.socketId);
     if (oldSocket) {
       console.log(`Evicting prior socket ${prior.socketId} for device ${deviceId}`);
-      try { oldSocket.disconnect(true); } catch (_) {}
+      // Mark BEFORE disconnect: disconnect(true) fires the old socket's 'disconnect'
+      // handler synchronously, so the flag must already be set when it runs.
+      evictedSockets.add(prior.socketId);
+      try { oldSocket.disconnect(true); } catch (_) { evictedSockets.delete(prior.socketId); }
     }
   }
 
@@ -772,6 +787,14 @@ module.exports = function setupDeviceSocket(io) {
     });
 
     socket.on('disconnect', () => {
+      // #146: this socket was force-evicted by a newer registration for the same
+      // device. The new socket owns the device now (or is mid-register), so this
+      // disconnect must NOT arm an offline timer — doing so was the self-reset race
+      // that re-marked just-reconnected devices offline. The map-based stale guard
+      // below can't catch it because eviction runs before the new socket is in the
+      // map. Drain the flag and bail. (delete() returns true iff it was present.)
+      if (evictedSockets.delete(socket.id)) return;
+
       if (!currentDeviceId) return;
 
       // Stale-disconnect guard: a newer socket already took over this device_id
@@ -852,4 +875,17 @@ module.exports = function setupDeviceSocket(io) {
   });
 
   return deviceNs;
+};
+
+// #146 test hooks — read-only views of the internal offline-timer / eviction state,
+// so the cause-1 re-arm race (evicted socket arming an offline timer for a
+// just-reconnected device) is test-PROVEN, not just correct-by-construction. Prefixed
+// `__` and never used by production code.
+module.exports.__hasPendingOffline = (deviceId) => pendingOfflines.has(deviceId);
+module.exports.__pendingOfflineCount = () => pendingOfflines.size;
+module.exports.__evictedSize = () => evictedSockets.size;
+module.exports.__resetTimers = () => {
+  for (const t of pendingOfflines.values()) clearTimeout(t);
+  pendingOfflines.clear();
+  evictedSockets.clear();
 };

@@ -1,6 +1,7 @@
 const { db, pruneStatusLog } = require('../db/database');
 const config = require('../config');
 const { deviceRoom, emitToWorkspace } = require('../lib/socket-rooms');
+const statusLogWriter = require('../lib/status-log-writer');
 
 // Track connected device sockets: deviceId -> { socketId, lastHeartbeat }
 const deviceConnections = new Map();
@@ -9,6 +10,11 @@ function startHeartbeatChecker(io) {
   // #142: sweep stale device_status_log rows once at startup (recovers a bloated
   // table immediately after a deploy), then again on each interval below.
   pruneStatusLog();
+
+  // #146: start the batched device_status_log flush loop.
+  statusLogWriter.start();
+
+  const deviceNs = io.of('/device');
 
   setInterval(() => {
     const now = Date.now();
@@ -19,6 +25,17 @@ function startHeartbeatChecker(io) {
 
     for (const device of onlineDevices) {
       const conn = deviceConnections.get(device.id);
+
+      // #146: a device with a live, still-connected socket is UP, even if its last
+      // heartbeat event is stuck behind a lagged event loop. Marking it offline on a
+      // stale in-memory lastHeartbeat was the second false-offline cause (the screen
+      // is online and playing, the CMS says offline). The socket still being in the
+      // /device namespace is the authoritative liveness signal — trust it over the
+      // (possibly queued) heartbeat clock. If the socket is genuinely gone, conn is
+      // either absent or points at a socket no longer in the namespace, and we fall
+      // through to the timeout below.
+      if (conn && deviceNs.sockets.has(conn.socketId)) continue;
+
       const lastBeat = conn ? conn.lastHeartbeat : (device.last_heartbeat ? device.last_heartbeat * 1000 : 0);
 
       if (now - lastBeat > config.heartbeatTimeout) {
@@ -34,9 +51,8 @@ function startHeartbeatChecker(io) {
         });
 
         console.log(`Device ${device.id} marked offline (heartbeat timeout)`);
-        try {
-          db.prepare('INSERT INTO device_status_log (device_id, status) VALUES (?, ?)').run(device.id, 'offline_timeout');
-        } catch (_) {}
+        // #146: batch through the coalescing writer (was an immediate INSERT here).
+        statusLogWriter.record(device.id, 'offline_timeout');
       }
     }
 

@@ -127,6 +127,10 @@ module.exports = {
   reconnectMaxBackoffMs: parseInt(process.env.RECONNECT_MAX_BACKOFF_MS) || 60000,
   reconnectMaxLevel: parseInt(process.env.RECONNECT_MAX_LEVEL) || 10,
   reconnectReleaseMs: parseInt(process.env.RECONNECT_RELEASE_MS) || 30000,
+  // #146 evict idle reconnect-throttle buckets so per-device state can't grow
+  // unbounded over churned device_ids (the sweep ota-breaker has but the #142
+  // throttle lacked). A device quiet this long has its bucket dropped.
+  reconnectIdleResetMs: parseInt(process.env.RECONNECT_IDLE_RESET_MS) || 60 * 60 * 1000,
   // Cold start: for this long after process start, lag is high while the whole
   // fleet reconnects at once. Treat leniently — force the 'normal' band and apply
   // only the hard ceiling (no rate-band throttle) so a deploy can't throttle
@@ -143,6 +147,18 @@ module.exports = {
   // is LOWER than the old hardcoded 7 days (the reporter's bloat happened under 7d);
   // 2-3 days is plenty for the dashboard's 24h uptime view + diagnostics.
   statusLogRetentionDays: parseFloat(process.env.STATUS_LOG_RETENTION_DAYS) || 3,
+  // #146 HARD per-device row-count ceiling on device_status_log, enforced by the
+  // global sweep alongside the age delete above. Age-based retention can't bound a
+  // write storm (rows are all younger than the window), so a reconnect storm grew
+  // the table to 1.1M. This cap keeps only the newest N transitions per device, so
+  // the table is bounded by (devices * N) REGARDLESS of churn — and the very first
+  // sweep trims the existing backlog (table healthy now, not in retentionDays).
+  statusLogMaxRowsPerDevice: parseInt(process.env.STATUS_LOG_MAX_ROWS_PER_DEVICE) || 500,
+  // #146 device_status_log write batching (lib/status-log-writer.js). Status
+  // transitions are buffered and coalesced to the NET state per device per flush,
+  // so a flapping device writes ~1 row/flush instead of a row per transition —
+  // breaking the storm -> table-growth -> slow-writes -> more-lag feedback loop.
+  statusLogFlushMs: parseInt(process.env.STATUS_LOG_FLUSH_MS) || 1000,
 
   // #142 content-ack dedup window (deviceSocket.js). A device (esp. older apps)
   // can spam "content <id>: ready" for the same item; suppress identical

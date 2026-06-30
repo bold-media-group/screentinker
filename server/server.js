@@ -22,6 +22,7 @@ function logFatalAndExit(kind, err) {
     const e = err instanceof Error ? err : new Error('Non-error thrown: ' + require('util').inspect(err));
     process.stderr.write(`\n[FATAL ${kind}] ${new Date().toISOString()}\n${e.stack || e.message}\n`);
   } catch (_) { /* the death handler must never throw */ }
+  try { require('./lib/status-log-writer').flush(); } catch (_) { /* #146 best-effort: drain buffered audit rows before close */ }
   try { require('./db/database').db.close(); } catch (_) { /* best-effort WAL flush */ }
   process.exit(1);
 }
@@ -580,6 +581,7 @@ app.use('/api/status', require('./routes/status'));
 // APK version check endpoint (public, used by devices to check for updates)
 const otaBreaker = require('./lib/ota-breaker');
 otaBreaker.startSweep();   // #144: periodically evict idle breaker buckets so keyed state stays bounded
+require('./lib/reconnect-throttle').startSweep();   // #146: same, for the reconnect throttle's per-device buckets
 app.get('/api/update/check', (req, res) => {
   const currentVersion = req.query.version;
   const deviceId = req.query.device_id || null;   // #144: optional; beta4+ clients send it for per-device keying

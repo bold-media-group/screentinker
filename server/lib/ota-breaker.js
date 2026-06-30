@@ -87,7 +87,10 @@ function decide(clientVersion, latestVersion, deviceId = null, now = Date.now())
   if (b.hits.length > THRESHOLD) {                 // looping faster than a healthy device ever would
     const cd = COOLDOWNS_MS[Math.min(b.level, COOLDOWNS_MS.length - 1)];
     b.blockedUntil = now + cd;
-    b.level++;
+    // #146 cosmetic: cap the level counter so the log doesn't read "level 32". The
+    // backoff is already capped (Math.min above); the counter just shouldn't run away
+    // past the point where it stops affecting the cooldown.
+    b.level = Math.min(b.level + 1, COOLDOWNS_MS.length);
     b.hits = [];                                   // require a fresh burst to re-trip after cooldown
     return { update_available: false, reason: 'rate-backoff', retry_after_seconds: Math.ceil(cd / 1000),
              log: `[ota] breaker tripped key=${key} (>${THRESHOLD} checks/${Math.round(WINDOW_MS / 1000)}s, looping) -> backoff ${Math.round(cd / 1000)}s [level ${b.level}]` };

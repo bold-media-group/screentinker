@@ -24,7 +24,7 @@
 const config = require('../config');
 const loopLag = require('../services/loop-lag');
 
-// deviceId -> { hits: number[], level: number, blockedUntil: ms, lastThrottleAt: ms }
+// deviceId -> { hits: number[], level: number, blockedUntil: ms, lastThrottleAt: ms, lastSeen: ms }
 const state = new Map();
 let startedAt = Date.now();
 
@@ -53,7 +53,12 @@ function check(deviceId, now = Date.now(), bandOverride = null) {
   const band = bandOverride !== null ? bandOverride : (warmup ? 'normal' : loopLag.getBand());
 
   let s = state.get(deviceId);
-  if (!s) { s = { hits: [], level: 0, blockedUntil: 0, lastThrottleAt: 0 }; state.set(deviceId, s); }
+  if (!s) { s = { hits: [], level: 0, blockedUntil: 0, lastThrottleAt: 0, lastSeen: now }; state.set(deviceId, s); }
+  // #146: a device quiet longer than the idle window starts fresh — so a long-gone
+  // device_id never carries stale escalation, and (with sweep below) its bucket is
+  // reclaimed. Mirrors ota-breaker's reset-on-access + sweep pair.
+  if (now - s.lastSeen > config.reconnectIdleResetMs) { s.hits = []; s.level = 0; s.blockedUntil = 0; s.lastThrottleAt = 0; }
+  s.lastSeen = now;
 
   // Already inside an enforced backoff window: reject and escalate (tighten fast).
   if (now < s.blockedUntil) {
@@ -89,10 +94,28 @@ function allow(s, now, band) {
   return { allow: true, band, level: s.level };
 }
 
+// #146: actively EVICT idle per-device buckets so keyed state can't grow unbounded
+// over churned device_ids (reinstalls mint new ids; reset-on-access alone never
+// deletes). The OTA breaker grew this exact sweep in #144; the #142 throttle missed
+// it. Bounded, off the hot path, runs on its own interval.
+function sweep(now = Date.now()) {
+  let n = 0;
+  for (const [k, s] of state) if (now - s.lastSeen > config.reconnectIdleResetMs) { state.delete(k); n++; }
+  if (n > 0) console.log(`[throttle] swept ${n} idle reconnect bucket(s) (idle > ${Math.round(config.reconnectIdleResetMs / 60000)}m); ${state.size} remain`);
+  return n;
+}
+let sweepTimer = null;
+function startSweep() {
+  if (sweepTimer) return sweepTimer;
+  sweepTimer = setInterval(() => sweep(), config.reconnectIdleResetMs);
+  if (sweepTimer.unref) sweepTimer.unref();   // don't keep the process alive on this timer
+  return sweepTimer;
+}
+
 // Test-only: clear state and optionally rewind the warm-up origin.
 function __resetForTest(opts = {}) {
   state.clear();
   if (opts.startedAt !== undefined) startedAt = opts.startedAt;
 }
 
-module.exports = { check, __resetForTest };
+module.exports = { check, sweep, startSweep, _size: () => state.size, __resetForTest };

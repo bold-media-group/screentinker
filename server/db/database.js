@@ -764,8 +764,28 @@ function pruneStatusLog() {
   try {
     const maxAgeSec = Math.round(config.statusLogRetentionDays * 86400);
     const n = db.prepare("DELETE FROM device_status_log WHERE timestamp < strftime('%s','now') - ?").run(maxAgeSec).changes;
-    if (n > 0) console.log(`[status-log] pruned ${n} row(s) older than ${config.statusLogRetentionDays}d`);
-    return n;
+    // #146 HARD per-device row-count cap. Age alone can't bound a write storm: a
+    // reconnect storm writes faster than the age window expires (rows all younger
+    // than retentionDays), which is how prod reached 1.1M rows. Keep only the newest
+    // N transitions per device so the table is bounded by (devices * N) regardless
+    // of churn — and because this runs on startup + the heartbeat interval, the FIRST
+    // sweep trims the existing backlog immediately (healthy now, not in retentionDays).
+    const cap = config.statusLogMaxRowsPerDevice;
+    let capped = 0;
+    if (cap > 0) {
+      capped = db.prepare(`
+        DELETE FROM device_status_log
+        WHERE id NOT IN (
+          SELECT id FROM (
+            SELECT id, ROW_NUMBER() OVER (PARTITION BY device_id ORDER BY timestamp DESC, id DESC) AS rn
+            FROM device_status_log
+          ) WHERE rn <= ?
+        )
+      `).run(cap).changes;
+    }
+    const total = n + capped;
+    if (total > 0) console.log(`[status-log] pruned ${n} row(s) older than ${config.statusLogRetentionDays}d + ${capped} over the ${cap}/device cap`);
+    return total;
   } catch (_) { return 0; }
 }
 
