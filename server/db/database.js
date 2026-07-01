@@ -773,7 +773,8 @@ const { applyTenantDeleteCascade } = require('../lib/tenant-cascade-migration');
 // Rides idx_device_status_log_device_ts(device_id, timestamp).
 let _statusPruneRunning = false;
 let _lastPrune = { deleted: 0, ms: 0, at: 0 };        // #146 P3.8: soak observability
-function getMaintenanceStats() { return { ..._lastPrune, running: _statusPruneRunning }; }
+let _sweepsTotal = 0;                                 // #146: prune sweeps completed (confirm it's firing, not stalled)
+function getMaintenanceStats() { return { ..._lastPrune, running: _statusPruneRunning, sweepsTotal: _sweepsTotal }; }
 async function pruneStatusLog(opts = {}) {
   if (_statusPruneRunning) return 0;                  // re-entrancy: work runs once
   if (opts.bandGate && config.maintenanceBandGateEnabled && currentBand() !== 'normal') return 0;
@@ -800,6 +801,7 @@ async function pruneStatusLog(opts = {}) {
     }
     if (total > 0) console.log(`[status-log] pruned ${total} row(s) (per-device, newest ${cap}/device + ${config.statusLogRetentionDays}d retention, batches of ${batch})`);
     _lastPrune = { deleted: total, ms: Date.now() - _t0, at: Math.floor(Date.now() / 1000) };
+    _sweepsTotal += 1;
     return total;
   } catch (_) { return 0; } finally { _statusPruneRunning = false; }
 }

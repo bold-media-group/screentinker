@@ -22,9 +22,15 @@
 
 const config = require('../config');
 const { ANON_KEY } = require('./device-identity');
+const { rollingCounter, bump, read } = require('./rolling-counter');
 
 // key -> { hits: number[], blockedUntil, lastSeen, trips, tripWinStart, quarantinedUntil }
 const state = new Map();
+
+// #146 observability — throughput counters (total + rolling lastWindow).
+const refusedCtr = rollingCounter();          // every allow:false, any reason
+const quarantineStartsCtr = rollingCounter(); // each time a check first sets quarantinedUntil
+const refuse = (now, obj) => { bump(refusedCtr, now); return obj; };
 
 function maxFor(key) { return key === ANON_KEY ? config.connectRateAnonMax : config.connectRateMax; }
 
@@ -44,12 +50,12 @@ function check(key, now = Date.now()) {
   // is safe in-memory now that Item A ended the prune-induced restart loop; a
   // self-healing auto-action must NOT survive as a devices.blocked row.
   if (now < s.quarantinedUntil) {
-    return { allow: false, retryAfterMs: s.quarantinedUntil - now, reason: 'quarantined' };
+    return refuse(now, { allow: false, retryAfterMs: s.quarantinedUntil - now, reason: 'quarantined' });
   }
 
   // Inside an enforced cooldown -> refuse cheaply.
   if (now < s.blockedUntil) {
-    return { allow: false, retryAfterMs: s.blockedUntil - now, reason: 'flap-cooldown' };
+    return refuse(now, { allow: false, retryAfterMs: s.blockedUntil - now, reason: 'flap-cooldown' });
   }
 
   // Sliding window of genuine connects.
@@ -64,9 +70,10 @@ function check(key, now = Date.now()) {
     // Escalate to a time-limited quarantine after N trips in the window (0 = off).
     if (config.connectRateQuarantineTrips > 0 && s.trips >= config.connectRateQuarantineTrips) {
       s.quarantinedUntil = now + config.connectRateQuarantineMs;
-      return { allow: false, retryAfterMs: config.connectRateQuarantineMs, reason: 'flap-rate', tripped: true, trips: s.trips, quarantined: true };
+      bump(quarantineStartsCtr, now);   // a quarantine event is visible even though the gauge decays
+      return refuse(now, { allow: false, retryAfterMs: config.connectRateQuarantineMs, reason: 'flap-rate', tripped: true, trips: s.trips, quarantined: true });
     }
-    return { allow: false, retryAfterMs: config.connectRateCooldownMs, reason: 'flap-rate', tripped: true, trips: s.trips };
+    return refuse(now, { allow: false, retryAfterMs: config.connectRateCooldownMs, reason: 'flap-rate', tripped: true, trips: s.trips });
   }
   return { allow: true };
 }
@@ -86,12 +93,25 @@ function startSweep() {
   return sweepTimer;
 }
 
-function reset() { state.clear(); }        // tests
+function reset() {                          // tests
+  state.clear();
+  Object.assign(refusedCtr, rollingCounter());
+  Object.assign(quarantineStartsCtr, rollingCounter());
+}
 function _size() { return state.size; }
-// #146 P3.8: soak observability — bucket count + currently-quarantined count.
+// #146: soak observability — gauges (bucket/quarantine counts) + THROUGHPUT (refusals and
+// quarantine-starts, total + last completed window). The throughput tells the flapper
+// story on its own: a real Firestick reads as refusedLastWindow climbing while the gauge
+// (quarantined) can stay 0.
 function stats(now = Date.now()) {
   let quarantined = 0;
   for (const [, s] of state) if (now < s.quarantinedUntil) quarantined++;
-  return { buckets: state.size, quarantined };
+  const refused = read(refusedCtr, now);
+  const qstarts = read(quarantineStartsCtr, now);
+  return {
+    buckets: state.size, quarantined,
+    refusedTotal: refused.total, refusedLastWindow: refused.lastWindow,
+    quarantineStartsTotal: qstarts.total, quarantineStartsLastWindow: qstarts.lastWindow,
+  };
 }
 module.exports = { check, sweep, startSweep, reset, _size, stats };

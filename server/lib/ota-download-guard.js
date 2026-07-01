@@ -6,8 +6,9 @@
 
 const config = require('../config');
 
-// newState() — the single bounded rolling counter the endpoint keeps.
-function newState() { return { inFlight: 0, windowStart: 0, windowCount: 0, served: 0, shed: 0 }; }
+// newState() — the single bounded rolling counter the endpoint keeps. served/shed are
+// per-window (reset each window); servedTotal/shedTotal are running totals (#146 obs).
+function newState() { return { inFlight: 0, windowStart: 0, windowCount: 0, served: 0, shed: 0, servedTotal: 0, shedTotal: 0 }; }
 
 // admit(state, band, now) -> { allow, status?, retryAfter?, summary? }
 //   summary (when a window just rolled) = { served, shed } to log, else null.
@@ -27,15 +28,15 @@ function admit(state, band, now = Date.now()) {
   }
 
   if (config.otaDownloadGuardEnabled) {
-    if (band === 'critical') { state.shed++; return { allow: false, status: 503, retryAfter: 30, summary }; }
+    if (band === 'critical') { state.shed++; state.shedTotal++; return { allow: false, status: 503, retryAfter: 30, summary }; }
     if (band === 'elevated') {
       const overGlobal = state.inFlight >= config.otaDownloadMaxConcurrent || state.windowCount >= config.otaDownloadMaxPerWindow;
-      if (overGlobal) { state.shed++; return { allow: false, status: 503, retryAfter: 10, summary }; }
+      if (overGlobal) { state.shed++; state.shedTotal++; return { allow: false, status: 503, retryAfter: 10, summary }; }
     }
     // band === 'normal': no cap — serve freely.
   }
 
-  state.inFlight++; state.windowCount++; state.served++;
+  state.inFlight++; state.windowCount++; state.served++; state.servedTotal++;
   return { allow: true, summary };
 }
 
@@ -46,6 +47,6 @@ function release(state) { state.inFlight = Math.max(0, state.inFlight - 1); }
 // newState() for isolation.
 const _prod = newState();
 function prodState() { return _prod; }
-function stats() { return { inFlight: _prod.inFlight, servedThisWindow: _prod.served, shedThisWindow: _prod.shed, windowCount: _prod.windowCount }; }
+function stats() { return { inFlight: _prod.inFlight, servedThisWindow: _prod.served, shedThisWindow: _prod.shed, servedTotal: _prod.servedTotal, shedTotal: _prod.shedTotal }; }
 
 module.exports = { newState, admit, release, prodState, stats };

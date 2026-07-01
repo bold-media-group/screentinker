@@ -10,6 +10,7 @@ const { PLATFORM_ROLES } = require('../middleware/auth');
 const loopLag = require('../services/loop-lag');
 // #146 P3.8: soak observability — internal limiter/maintenance states.
 const flapLimiter = require('../lib/flap-limiter');
+const otaBreaker = require('../lib/ota-breaker');
 const otaDownloadGuard = require('../lib/ota-download-guard');
 const logCoalescer = require('../lib/log-coalescer');
 const { getMaintenanceStats } = require('../db/database');
@@ -36,9 +37,12 @@ router.get('/', (req, res) => {
     // #146 P3.8: soak observability — see the limiters biting without grepping logs.
     // Aggregate counts only (no device ids / secrets); cheap in-memory reads.
     debug: {
-      flap: flapLimiter.stats(),                  // { buckets, quarantined }
-      ota_download: otaDownloadGuard.stats(),     // { inFlight, servedThisWindow, shedThisWindow, windowCount }
-      maintenance: getMaintenanceStats(),         // { deleted, ms, at, running } of the last status-log prune
+      // gauges + THROUGHPUT (total + last completed window) so the server tells the
+      // flapper/flood story on its own — aggregate only, no ids/secrets.
+      flap: flapLimiter.stats(),                  // buckets, quarantined, refused{Total,LastWindow}, quarantineStarts{Total,LastWindow}
+      ota_breaker: otaBreaker.stats(),            // rateBackoff{Total,LastWindow}
+      ota_download: otaDownloadGuard.stats(),     // inFlight, served/shed ThisWindow + Total
+      maintenance: getMaintenanceStats(),         // deleted, ms, at, running, sweepsTotal
       log_coalescer_buffer: logCoalescer._size(),
     },
   });

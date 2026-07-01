@@ -36,6 +36,9 @@ const IDLE_RESET_MS = parseInt(process.env.OTA_BREAKER_IDLE_RESET_MS) || 60 * 60
 
 const state = new Map();          // key -> { hits:number[], blockedUntil, level, lastSeen }
 const loggedBad = new Set();      // log unrecognized/superseded versions once
+// #146 observability — rate-backoff throughput (total + rolling lastWindow).
+const { rollingCounter, bump, read } = require('./rolling-counter');
+const rateBackoffCtr = rollingCounter();
 
 // --- minimal semver-ish parse/compare (no dependency) ---
 function parseVer(v) {
@@ -78,6 +81,7 @@ function decide(clientVersion, latestVersion, deviceId = null, now = Date.now())
   b.lastSeen = now;
 
   if (now < b.blockedUntil) {
+    bump(rateBackoffCtr, now);
     return { update_available: false, reason: 'rate-backoff', retry_after_seconds: Math.ceil((b.blockedUntil - now) / 1000) };
   }
   if (b.blockedUntil !== 0) b.blockedUntil = 0;   // cooldown elapsed -> probe window
@@ -92,6 +96,7 @@ function decide(clientVersion, latestVersion, deviceId = null, now = Date.now())
     // past the point where it stops affecting the cooldown.
     b.level = Math.min(b.level + 1, COOLDOWNS_MS.length);
     b.hits = [];                                   // require a fresh burst to re-trip after cooldown
+    bump(rateBackoffCtr, now);
     return { update_available: false, reason: 'rate-backoff', retry_after_seconds: Math.ceil(cd / 1000),
              log: `[ota] breaker tripped key=${key} (>${THRESHOLD} checks/${Math.round(WINDOW_MS / 1000)}s, looping) -> backoff ${Math.round(cd / 1000)}s [level ${b.level}]` };
   }
@@ -116,6 +121,12 @@ function startSweep() {
   return sweepTimer;
 }
 
-function reset() { state.clear(); loggedBad.clear(); }
+function reset() { state.clear(); loggedBad.clear(); Object.assign(rateBackoffCtr, rollingCounter()); }
 function _size() { return state.size; }
-module.exports = { decide, reset, sweep, startSweep, cmp, parseVer, _size, WINDOW_MS, THRESHOLD };
+// #146 observability — how many update checks the breaker is rate-backing-off (total +
+// last completed window). A device=none 1.8.x flood shows here as rateBackoffLastWindow.
+function stats(now = Date.now()) {
+  const rb = read(rateBackoffCtr, now);
+  return { rateBackoffTotal: rb.total, rateBackoffLastWindow: rb.lastWindow };
+}
+module.exports = { decide, reset, sweep, startSweep, cmp, parseVer, _size, stats, WINDOW_MS, THRESHOLD };

@@ -75,6 +75,22 @@ watch, and the measured worst-case blocking cost per hot path.
   `event_loop_lag` table lags real time by up to 10s (**/api/status is unaffected** — it
   reads in-memory current, so real-time band/alerting is intact).
 
+### `/api/status.debug` THROUGHPUT counters (soak observability)
+Each subsystem now exposes gauges **and** throughput (running `Total` + last-completed-
+`LastWindow`, `DEBUG_STATS_WINDOW_MS` default 60s) so the server tells the flapper/flood
+story on its own — no client trust:
+- `flap.refusedLastWindow` — refusals/window. **Climbing while `band=normal` = the limiter
+  absorbing a flapper cheaply (the healthy signature — this is what "36 buckets, 0
+  quarantined" looked like but couldn't show). Climbing WITH band elevated/critical =
+  investigate.**
+- `flap.quarantineStartsTotal/LastWindow` — a quarantine EVENT is visible even though the
+  `quarantined` gauge decays.
+- `ota_breaker.rateBackoffLastWindow` — a device=none 1.8.x update-check flood shows here.
+- `ota_download.servedTotal/shedTotal` — a download flood: `shedTotal` climbing = the
+  global cap engaging (only under elevated/critical).
+- `maintenance.sweepsTotal` — confirms the prune is FIRING on its interval, not stalled
+  (with `deleted`/`ms` for cost). All aggregate-only, cheap in-memory reads.
+
 ## Before / after — worst-case synchronous blocking (measured)
 | Hot path | Before | After (measured) |
 |---|---|---|

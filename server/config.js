@@ -192,6 +192,9 @@ module.exports = {
   otaDownloadMaxPerWindow: parseInt(process.env.OTA_DOWNLOAD_MAX_PER_WINDOW) || 120,
   otaDownloadWindowMs: parseInt(process.env.OTA_DOWNLOAD_WINDOW_MS) || 60000,
   otaApkRefreshMs: parseInt(process.env.OTA_APK_REFRESH_MS) || 60000,
+  // #146 observability: rolling window for the /api/status.debug throughput counters, so
+  // "lastWindow" is comparable across subsystems.
+  debugStatsWindowMs: parseInt(process.env.DEBUG_STATS_WINDOW_MS) || 60000,
   // #146 Item E — coalescing log flush + batched event_loop_lag telemetry.
   logCoalesceFlushMs: parseInt(process.env.LOG_COALESCE_FLUSH_MS) || 30000,
   lagFlushMs: parseInt(process.env.LAG_FLUSH_MS) || 10000,
