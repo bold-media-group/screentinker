@@ -583,34 +583,44 @@ const otaBreaker = require('./lib/ota-breaker');
 otaBreaker.startSweep();   // #144: periodically evict idle breaker buckets so keyed state stays bounded
 require('./lib/reconnect-throttle').startSweep();   // #146: same, for the reconnect throttle's per-device buckets
 require('./lib/flap-limiter').startSweep();          // #146 Item B: evict idle flap-limiter buckets
+const apkCache = require('./lib/apk-cache');
+apkCache.start();                                    // #146 Item C: resolve APK path/size/mtime once + refresh on interval (no per-request fs)
+const { getBand } = require('./services/loop-lag');  // #146 Item C: critical-band download shed
 app.get('/api/update/check', (req, res) => {
   const currentVersion = req.query.version;
   const deviceId = req.query.device_id || null;   // #144: optional; beta4+ clients send it for per-device keying
   const latestVersion = VERSION;
 
-  // #144: circuit-breaker + phantom-version guard (replaces the old string-inequality
-  // offer). Keys per device_id when present, else per reported version. Rate-trips a
-  // looping client in seconds; never offers a downgrade or a superseded/garbage version.
+  // #144: circuit-breaker + phantom-version guard. Keys per device_id when present, else
+  // per reported version (NOT IP — SNAT). Rate-trips a looping client in seconds.
   const verdict = otaBreaker.decide(currentVersion, latestVersion, deviceId);
-  const apkPath = resolveApkPath();                                  // existsSync x2 (cheap)
-  const apkExists = apkPath !== null;
-  const updateAvailable = !!verdict.update_available && apkExists;    // never offer if APK missing
-  const apkSize = updateAvailable ? fs.statSync(apkPath).size : 0;    // statSync only when actually offering (don't stat on every looped poll)
-  const apkModified = updateAvailable ? fs.statSync(apkPath).mtimeMs : 0;
 
-  if (verdict.log) console.log(verdict.log);                         // once-per-event (trip / unrecognized)
-  // #96: keep the per-check line observable; now also shows the breaker reason + device_id.
-  console.log(`[ota] update check from ${getClientIp(req)}: device=${deviceId || 'none'} client=${currentVersion || 'unknown'} latest=${latestVersion} update_available=${updateAvailable} reason=${verdict.reason} apk=${apkExists ? 'present' : 'MISSING'}`);
+  // #146 Item C: EARLY-RETURN before any filesystem work when we won't serve
+  // (rate-backoff, up-to-date, phantom, client-newer, …). A looping client that gets
+  // rate-backoff does ZERO fs calls — the flood can't turn into a statSync flood.
+  if (!verdict.update_available) {
+    if (verdict.log) console.log(verdict.log);
+    logOtaCheck(deviceId, currentVersion, latestVersion, false, verdict.reason);
+    return res.json({
+      latest_version: latestVersion, current_version: currentVersion || 'unknown',
+      update_available: false, reason: verdict.reason, download_url: '/download/apk',
+      apk_size: 0, apk_modified: 0,
+      ...(verdict.retry_after_seconds ? { retry_after_seconds: verdict.retry_after_seconds } : {}),
+    });
+  }
 
+  // Offering — read the CACHED apk metadata (no per-request statSync; refreshed on an
+  // interval by apkCache). Never offer if the APK isn't actually present.
+  const apk = apkCache.get();
+  const updateAvailable = apk.exists;
+  if (verdict.log) console.log(verdict.log);
+  logOtaCheck(deviceId, currentVersion, latestVersion, updateAvailable, updateAvailable ? verdict.reason : 'apk-missing');
   res.json({
-    latest_version: latestVersion,
-    current_version: currentVersion || 'unknown',
-    update_available: updateAvailable,
-    reason: verdict.reason,                 // #144: breaker decision, for observability (additive; old clients ignore)
+    latest_version: latestVersion, current_version: currentVersion || 'unknown',
+    update_available: updateAvailable, reason: updateAvailable ? verdict.reason : 'apk-missing',
     download_url: '/download/apk',
-    apk_size: apkSize,
-    apk_modified: apkModified,
-    ...(verdict.retry_after_seconds ? { retry_after_seconds: verdict.retry_after_seconds } : {}),
+    apk_size: updateAvailable ? apk.size : 0,
+    apk_modified: updateAvailable ? apk.mtime : 0,
   });
 });
 
@@ -715,40 +725,40 @@ app.post('/api/provision/pair', requireAuth, resolveTenancy, checkDeviceLimit, (
   res.json(updated);
 });
 
-// Resolve the OTA APK. A copy under the data dir (DATA_DIR) wins, so a container
-// operator can mount one at /data/ScreenTinker.apk; otherwise the legacy in-repo
-// root path (unchanged when DATA_DIR is unset). Returns null if neither exists.
-function resolveApkPath() {
-  for (const p of [path.join(config.dataDir, 'ScreenTinker.apk'), path.join(__dirname, '..', 'ScreenTinker.apk')]) {
-    if (fs.existsSync(p)) return p;
-  }
-  return null;
+// #146 Item C: OTA update-check log. One line per check today; Item E coalesces the
+// high-frequency lines. Never keys on IP for any decision (SNAT). Kept as a helper so
+// both the offer and no-offer paths log consistently.
+function logOtaCheck(deviceId, client, latest, available, reason) {
+  console.log(`[ota] update check: device=${deviceId || 'none'} client=${client || 'unknown'} latest=${latest} update_available=${available} reason=${reason}`);
 }
 
-// #139: a device that can't silently install re-downloads the APK every check cycle. Don't
-// word a download as "in progress" (it may be a stuck loop, not progress), and rate-limit the
-// line to once per IP per window so a looping device can't flood the log.
-const otaDownloadLoggedAt = new Map(); // ip -> last-logged ms
-const OTA_DOWNLOAD_LOG_WINDOW_MS = 10 * 60 * 1000;
+// #146 Item C: GLOBAL download admission (lib/ota-download-guard) — concurrency + rate
+// caps + critical-band shed, NEVER per-IP (SNAT). Single bounded rolling state.
+const otaDownloadGuard = require('./lib/ota-download-guard');
+const otaDownloadState = otaDownloadGuard.newState();
 
-// Serve APK download
 app.get('/download/apk', (req, res) => {
-  const apkPath = resolveApkPath();
-  if (apkPath) {
-    const ip = getClientIp(req);
-    const now = Date.now();
-    if (now - (otaDownloadLoggedAt.get(ip) || 0) > OTA_DOWNLOAD_LOG_WINDOW_MS) {
-      otaDownloadLoggedAt.set(ip, now);
-      console.log(`[ota] APK served to ${ip} (${fs.statSync(apkPath).size} bytes)`);
-    }
-    res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-    res.setHeader('Content-Disposition', 'attachment; filename="ScreenTinker.apk"');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.sendFile(apkPath);
-  } else {
-    console.warn(`[ota] APK download requested by ${getClientIp(req)} but no APK is available (404)`);
-    res.status(404).send(`<!DOCTYPE html><html><head><title>APK Not Found</title><style>body{font-family:-apple-system,system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#0f172a;color:#e2e8f0}div{text-align:center;max-width:500px;padding:24px}h1{color:#f87171;font-size:24px}code{background:#1e293b;padding:2px 8px;border-radius:4px;font-size:14px}p{line-height:1.6;color:#94a3b8}</style></head><body><div><h1>APK Not Available</h1><p>The Android APK has not been compiled yet. To build it from source:</p><p><code>cd android</code><br><code>./gradlew assembleDebug</code><br><code>cp app/build/outputs/apk/debug/app-debug.apk ../ScreenTinker.apk</code></p><p>See the <a href="/" style="color:#3b82f6">README</a> for full build instructions.</p><p>In Docker, mount a built APK at <code>/data/ScreenTinker.apk</code> (the data dir).</p><p>Alternatively, use the <a href="/player" style="color:#3b82f6">web player</a> in any browser.</p></div></body></html>`);
+  const apk = apkCache.get();
+  if (!apk.exists) {
+    return res.status(404).send(`<!DOCTYPE html><html><head><title>APK Not Found</title><style>body{font-family:-apple-system,system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#0f172a;color:#e2e8f0}div{text-align:center;max-width:500px;padding:24px}h1{color:#f87171;font-size:24px}code{background:#1e293b;padding:2px 8px;border-radius:4px;font-size:14px}p{line-height:1.6;color:#94a3b8}</style></head><body><div><h1>APK Not Available</h1><p>The Android APK has not been compiled yet. In Docker, mount a built APK at <code>/data/ScreenTinker.apk</code>, or use the <a href="/player" style="color:#3b82f6">web player</a>.</p></div></body></html>`);
   }
+
+  const verdict = otaDownloadGuard.admit(otaDownloadState, getBand());
+  if (verdict.summary) {
+    console.log(`[ota] downloads last ${Math.round(config.otaDownloadWindowMs / 1000)}s: ${verdict.summary.served} served, ${verdict.summary.shed} shed (in-flight ${verdict.summary.inFlight})`);
+  }
+  if (!verdict.allow) {
+    res.setHeader('Retry-After', String(verdict.retryAfter));
+    return res.status(verdict.status).json({ error: 'download capacity reached, retry shortly', retry_after: verdict.retryAfter });
+  }
+
+  let released = false;
+  const release = () => { if (released) return; released = true; otaDownloadGuard.release(otaDownloadState); };
+  res.on('finish', release); res.on('close', release);
+  res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+  res.setHeader('Content-Disposition', 'attachment; filename="ScreenTinker.apk"');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(apk.path, (err) => { if (err) release(); });
 });
 
 // SPA fallback for app routes. Unmatched /api/ paths return 404 so misrouted

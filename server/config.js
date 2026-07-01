@@ -176,6 +176,14 @@ module.exports = {
   // batches, so no sweep can block the loop regardless of table size. Keep well under
   // the ~50ms invariant per batch.
   statusLogPruneBatch: parseInt(process.env.STATUS_LOG_PRUNE_BATCH) || 2000,
+  // #146 hardening (Item C) — /download/apk GLOBAL guards (NOT per-IP; SNAT collapses
+  // the fleet to one IP). Concurrency + rate caps + critical-band shed protect the loop
+  // and IO from a download flood; the aggregate counter makes a flood VISIBLE (the old
+  // per-IP-per-10min log throttle hid it under SNAT).
+  otaDownloadMaxConcurrent: parseInt(process.env.OTA_DOWNLOAD_MAX_CONCURRENT) || 10,
+  otaDownloadMaxPerWindow: parseInt(process.env.OTA_DOWNLOAD_MAX_PER_WINDOW) || 120,
+  otaDownloadWindowMs: parseInt(process.env.OTA_DOWNLOAD_WINDOW_MS) || 60000,
+  otaApkRefreshMs: parseInt(process.env.OTA_APK_REFRESH_MS) || 60000,
   // #146 device_status_log write batching (lib/status-log-writer.js). Status
   // transitions are buffered and coalesced to the NET state per device per flush,
   // so a flapping device writes ~1 row/flush instead of a row per transition —
