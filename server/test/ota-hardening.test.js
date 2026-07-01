@@ -34,23 +34,29 @@ test('apk-cache: get() never touches the filesystem (resolution cached at boot/r
   assert.equal(calls, 0, 'get() does no fs; 1000 reads = 0 statSync');
 });
 
-test('download guard: global concurrency cap -> 503 (not per-IP)', () => {
+test('band-aware: NORMAL band serves freely (no cap) — healthy rollout not staggered', () => {
   const s = guard.newState();
-  assert.equal(guard.admit(s, 'normal').allow, true);
-  assert.equal(guard.admit(s, 'normal').allow, true);
-  assert.equal(guard.admit(s, 'normal').allow, true);   // 3 in-flight = cap
-  const over = guard.admit(s, 'normal');
+  for (let i = 0; i < 50; i++) assert.equal(guard.admit(s, 'normal').allow, true, 'normal band never caps');
+  assert.equal(s.shed, 0, 'nothing shed while healthy');
+});
+
+test('download guard: ELEVATED band applies the global concurrency cap -> 503 (not per-IP)', () => {
+  const s = guard.newState();
+  assert.equal(guard.admit(s, 'elevated').allow, true);
+  assert.equal(guard.admit(s, 'elevated').allow, true);
+  assert.equal(guard.admit(s, 'elevated').allow, true);   // 3 in-flight = cap
+  const over = guard.admit(s, 'elevated');
   assert.equal(over.allow, false);
   assert.equal(over.status, 503);
   assert.ok(over.retryAfter > 0);
-  guard.release(s);                                       // free one slot
-  assert.equal(guard.admit(s, 'normal').allow, true, 'a freed slot admits again');
+  guard.release(s);                                        // free one slot
+  assert.equal(guard.admit(s, 'elevated').allow, true, 'a freed slot admits again');
 });
 
-test('download guard: global per-window rate cap -> 503', () => {
+test('download guard: ELEVATED band applies the global per-window rate cap -> 503', () => {
   const s = guard.newState();
-  for (let i = 0; i < 5; i++) { assert.equal(guard.admit(s, 'normal').allow, true); guard.release(s); } // 5 served this window
-  const over = guard.admit(s, 'normal');
+  for (let i = 0; i < 5; i++) { assert.equal(guard.admit(s, 'elevated').allow, true); guard.release(s); } // 5 served this window
+  const over = guard.admit(s, 'elevated');
   assert.equal(over.allow, false, '6th in the window is shed');
   assert.equal(over.status, 503);
 });

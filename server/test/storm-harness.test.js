@@ -53,7 +53,7 @@ test('storm: bloated-table sweep + flapper + OTA flood — loop stays responsive
     for (let round = 0; round < 300; round++) {
       for (let i = 0; i < 40; i++) {
         if (!flap.check('d:storm-flapper').allow) flapRefused++;   // one hard flapper (identity-keyed, never IP)
-        const a = otaGuard.admit(guardState, 'normal');           // global download admission
+        const a = otaGuard.admit(guardState, 'elevated');         // under load -> band-aware caps engage
         if (a.allow) { otaServed++; otaGuard.release(guardState); } else otaShed++;
       }
       await new Promise((r) => setImmediate(r));

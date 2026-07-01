@@ -182,6 +182,7 @@ module.exports = {
   // the fleet to one IP). Concurrency + rate caps + critical-band shed protect the loop
   // and IO from a download flood; the aggregate counter makes a flood VISIBLE (the old
   // per-IP-per-10min log throttle hid it under SNAT).
+  otaDownloadGuardEnabled: process.env.OTA_DOWNLOAD_GUARD_ENABLED !== 'false',  // #146 P1.3 kill switch
   otaDownloadMaxConcurrent: parseInt(process.env.OTA_DOWNLOAD_MAX_CONCURRENT) || 10,
   otaDownloadMaxPerWindow: parseInt(process.env.OTA_DOWNLOAD_MAX_PER_WINDOW) || 120,
   otaDownloadWindowMs: parseInt(process.env.OTA_DOWNLOAD_WINDOW_MS) || 60000,

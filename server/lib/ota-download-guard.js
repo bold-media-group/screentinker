@@ -12,17 +12,29 @@ function newState() { return { inFlight: 0, windowStart: 0, windowCount: 0, serv
 // admit(state, band, now) -> { allow, status?, retryAfter?, summary? }
 //   summary (when a window just rolled) = { served, shed } to log, else null.
 // NEVER takes an IP — admission is global by construction.
+//
+// #146 P1.2: caps are BAND-AWARE — a LOAD-TIME backstop, not a healthy-state limiter.
+//   - normal   : serve FREELY (no concurrency/rate cap) so a coordinated rollout of the
+//                whole fleet isn't staggered while the server is perfectly healthy.
+//   - elevated : the configured concurrency/rate caps engage (early backpressure).
+//   - critical : shed (503) — the real protection.
+// Kill switch: OTA_DOWNLOAD_GUARD_ENABLED=false disables everything (always allow).
 function admit(state, band, now = Date.now()) {
   let summary = null;
   if (now - state.windowStart >= config.otaDownloadWindowMs) {
     if (state.served || state.shed) summary = { served: state.served, shed: state.shed, inFlight: state.inFlight };
     state.windowStart = now; state.windowCount = 0; state.served = 0; state.shed = 0;
   }
-  const overGlobal = state.inFlight >= config.otaDownloadMaxConcurrent || state.windowCount >= config.otaDownloadMaxPerWindow;
-  if (band === 'critical' || overGlobal) {
-    state.shed++;
-    return { allow: false, status: 503, retryAfter: band === 'critical' ? 30 : 10, summary };
+
+  if (config.otaDownloadGuardEnabled) {
+    if (band === 'critical') { state.shed++; return { allow: false, status: 503, retryAfter: 30, summary }; }
+    if (band === 'elevated') {
+      const overGlobal = state.inFlight >= config.otaDownloadMaxConcurrent || state.windowCount >= config.otaDownloadMaxPerWindow;
+      if (overGlobal) { state.shed++; return { allow: false, status: 503, retryAfter: 10, summary }; }
+    }
+    // band === 'normal': no cap — serve freely.
   }
+
   state.inFlight++; state.windowCount++; state.served++;
   return { allow: true, summary };
 }
