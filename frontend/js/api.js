@@ -209,6 +209,9 @@ export const api = {
   // Instance-level default branding (#15, platform admin).
   adminGetBranding: () => request('/admin/branding'),
   adminSetBranding: (data) => request('/admin/branding', { method: 'PUT', body: JSON.stringify(data) }),
+  // #146: toggle the /api/status debug block exposure (platform-admin only).
+  adminGetStatusDebug: () => request('/admin/status-debug'),
+  adminSetStatusDebug: (enabled) => request('/admin/status-debug', { method: 'PUT', body: JSON.stringify({ enabled }) }),
 
   // Per-user workspace membership management (platform Users page modal).
   adminGetUserWorkspaces: (id) => request(`/admin/users/${id}/workspaces`),

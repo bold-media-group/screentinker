@@ -90,6 +90,13 @@ story on its own — no client trust:
   global cap engaging (only under elevated/critical).
 - `maintenance.sweepsTotal` — confirms the prune is FIRING on its interval, not stalled
   (with `deleted`/`ms` for cost). All aggregate-only, cheap in-memory reads.
+- **`devices_connected`** — the ALWAYS-ON live-fleet gauge (top-level, next to `loop_lag`,
+  never gated): devices with a live WS socket THIS INSTANT (from the heartbeat connection
+  map), NOT `devices.status='online'` (which lags by the offline-timeout). The `debug`
+  block is now **admin-toggleable** (Admin tab → "Status endpoint" → "Expose /api/status
+  debug metrics"; persisted in `app_settings`, default follows `STATUS_DEBUG_ENABLED`);
+  the toggle takes effect on the next status poll with **no restart**, and when off the
+  `debug` key is omitted entirely while `loop_lag` + `devices_connected` remain.
 
 ## Before / after — worst-case synchronous blocking (measured)
 | Hot path | Before | After (measured) |

@@ -195,6 +195,9 @@ module.exports = {
   // #146 observability: rolling window for the /api/status.debug throughput counters, so
   // "lastWindow" is comparable across subsystems.
   debugStatsWindowMs: parseInt(process.env.DEBUG_STATS_WINDOW_MS) || 60000,
+  // #146: env DEFAULT for the /api/status debug block; a persisted app_settings value
+  // (admin toggle) overrides this once set. Default on (matches prior behavior).
+  statusDebugEnabled: process.env.STATUS_DEBUG_ENABLED !== 'false',
   // #146 Item E — coalescing log flush + batched event_loop_lag telemetry.
   logCoalesceFlushMs: parseInt(process.env.LOG_COALESCE_FLUSH_MS) || 30000,
   lagFlushMs: parseInt(process.env.LAG_FLUSH_MS) || 10000,

@@ -114,6 +114,13 @@ function getAllConnections() {
   return deviceConnections;
 }
 
+// #146: LIVE connected-device count — the set with a live socket THIS INSTANT. Cheap
+// in-memory read. Distinct from devices.status='online' (persisted, lags by the
+// offline-timeout). Surfaced as /api/status.devices_connected.
+function getConnectedCount() {
+  return deviceConnections.size;
+}
+
 // #142: sweep unclaimed provisioning devices older than 24h (imported devices keep a
 // user_id and are preserved). #146: now async + CHUNKED (rides idx_devices_provisioning)
 // so a provisioning-junk flood can't delete-cascade a huge batch in one synchronous
@@ -137,5 +144,6 @@ module.exports = {
   removeConnection,
   getConnection,
   getAllConnections,
+  getConnectedCount,
   pruneProvisioningDevices
 };

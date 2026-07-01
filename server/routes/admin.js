@@ -359,4 +359,21 @@ router.put('/branding', requirePlatformAdmin, (req, res) => {
   res.json(platformDefaultRow(db));
 });
 
+// ===================== /api/status debug exposure (#146) =====================
+// Platform-admin only. Toggles whether /api/status includes the internal `debug` block
+// (limiter/prune/OTA counters). Persisted in app_settings + cached, so it takes effect
+// on the NEXT status poll with no restart. Default follows STATUS_DEBUG_ENABLED env.
+const appSettings = require('../lib/app-settings');
+const config = require('../config');
+
+router.get('/status-debug', requirePlatformAdmin, (req, res) => {
+  res.json({ enabled: appSettings.getBool('status_debug_enabled', config.statusDebugEnabled) });
+});
+router.put('/status-debug', requirePlatformAdmin, (req, res) => {
+  const enabled = !!req.body.enabled;
+  appSettings.setBool('status_debug_enabled', enabled);   // persists + refreshes the cache
+  logActivity(req.user.id, 'admin_set_status_debug', `enabled: ${enabled}`, null, getClientIp(req), null);
+  res.json({ enabled });
+});
+
 module.exports = router;

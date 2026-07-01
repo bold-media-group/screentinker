@@ -238,6 +238,9 @@ const migrations = [
   // #146: index the provisioning-cleanup predicate so the chunked prune's batch
   // subquery is an index range, not a full devices scan under a provisioning flood.
   "CREATE INDEX IF NOT EXISTS idx_devices_provisioning ON devices(status, created_at)",
+  // #146: minimal global key/value settings for admin-toggleable runtime flags (none
+  // existed — ai_settings is per-workspace, white_labels is branding).
+  "CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))",
   // #143: operator device kill switch. blocked=1 refuses the device at the first
   // register gate on its next reconnect (no restart). Hand-settable by direct SQLite:
   //   UPDATE devices SET blocked = 1 WHERE id = '<device_id>';  (0 to unblock)

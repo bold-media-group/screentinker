@@ -46,6 +46,7 @@ test('/api/status exposes a current loop_lag snapshot', async () => {
   const r = await fetch(BASE + '/api/status');
   const body = await r.json();
   assert.ok(body.loop_lag, 'loop_lag present on /api/status');
+  assert.equal(typeof body.devices_connected, 'number', 'devices_connected always-on live-fleet gauge');
   assert.ok(['normal', 'elevated', 'critical'].includes(body.loop_lag.band), 'band is a valid level');
   assert.equal(typeof body.loop_lag.p99_ms, 'number', 'p99_ms is numeric');
   assert.equal(typeof body.loop_lag.mean_ms, 'number', 'mean_ms is numeric');
