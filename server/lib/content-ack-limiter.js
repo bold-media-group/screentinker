@@ -60,5 +60,22 @@ function check(deviceId, contentId, status, band = 'normal', now = Date.now()) {
   return { action: 'pass' };
 }
 
+// #146 Item E: evict idle per-device buckets so this Map can't grow unbounded over
+// churned device_ids (a SNAT flood minting provisioning ids inflated every un-swept
+// per-device Map). Keyed by winStart age.
+function sweep(now = Date.now()) {
+  let n = 0;
+  const idle = config.contentAckRateWindowMs * 4;
+  for (const [k, s] of state) if (now - s.winStart > idle) { state.delete(k); n++; }
+  return n;
+}
+let sweepTimer = null;
+function startSweep() {
+  if (sweepTimer) return sweepTimer;
+  sweepTimer = setInterval(() => sweep(), config.contentAckRateWindowMs * 4);
+  if (sweepTimer.unref) sweepTimer.unref();
+  return sweepTimer;
+}
+
 function reset() { state.clear(); } // tests
-module.exports = { check, reset };
+module.exports = { check, reset, sweep, startSweep, _size: () => state.size };

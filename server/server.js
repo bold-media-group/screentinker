@@ -583,6 +583,7 @@ const otaBreaker = require('./lib/ota-breaker');
 otaBreaker.startSweep();   // #144: periodically evict idle breaker buckets so keyed state stays bounded
 require('./lib/reconnect-throttle').startSweep();   // #146: same, for the reconnect throttle's per-device buckets
 require('./lib/flap-limiter').startSweep();          // #146 Item B: evict idle flap-limiter buckets
+require('./lib/content-ack-limiter').startSweep();   // #146 Item E: evict idle content-ack buckets
 const apkCache = require('./lib/apk-cache');
 apkCache.start();                                    // #146 Item C: resolve APK path/size/mtime once + refresh on interval (no per-request fs)
 const { getBand } = require('./services/loop-lag');  // #146 Item C: critical-band download shed
@@ -725,11 +726,12 @@ app.post('/api/provision/pair', requireAuth, resolveTenancy, checkDeviceLimit, (
   res.json(updated);
 });
 
-// #146 Item C: OTA update-check log. One line per check today; Item E coalesces the
-// high-frequency lines. Never keys on IP for any decision (SNAT). Kept as a helper so
-// both the offer and no-offer paths log consistently.
+// #146 Item C/E: OTA update-check log — COALESCED (one summarized line per reason per
+// window) so a poll flood can't turn synchronous stdout writes into a loop hog. Never
+// keys on IP for any decision (SNAT).
+const logCoalescer = require('./lib/log-coalescer');
 function logOtaCheck(deviceId, client, latest, available, reason) {
-  console.log(`[ota] update check: device=${deviceId || 'none'} client=${client || 'unknown'} latest=${latest} update_available=${available} reason=${reason}`);
+  logCoalescer.record(`ota-check:${reason}:${available}`, `[ota] update check: latest=${latest} update_available=${available} reason=${reason}`);
 }
 
 // #146 Item C: GLOBAL download admission (lib/ota-download-guard) — concurrency + rate

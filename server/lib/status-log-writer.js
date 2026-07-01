@@ -58,6 +58,14 @@ function flush() {
       }
     });
     writeAll(batch);
+    // #146 Item E: bound lastWritten so it can't grow unbounded over churned device_ids.
+    // It only suppresses a redundant consecutive same-status row, so evicting the oldest
+    // entries is safe (worst case: one extra row later). Keep it to the newest ~5k ids.
+    if (lastWritten.size > 5000) {
+      const excess = lastWritten.size - 5000;
+      let i = 0;
+      for (const k of lastWritten.keys()) { if (i++ >= excess) break; lastWritten.delete(k); }
+    }
     return batch.length;
   } catch (_) {
     // table might not exist yet (early boot) — drop silently, same as the old path

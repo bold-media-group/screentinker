@@ -26,6 +26,7 @@ before(async () => {
     env: {
       ...process.env, DATA_DIR, SELF_HOSTED: 'true', PORT: String(PORT), NODE_ENV: 'test',
       LAG_SAMPLE_INTERVAL_MS: '200',          // sample fast
+      LAG_FLUSH_MS: '200',                    // #146 Item E: batch-insert fast so persistence is observable in-test
       LAG_TELEMETRY_RETENTION_DAYS: '0.00001', // ~0.86s retention
       LAG_PRUNE_INTERVAL_MS: '400',           // prune often
     },

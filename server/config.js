@@ -184,6 +184,10 @@ module.exports = {
   otaDownloadMaxPerWindow: parseInt(process.env.OTA_DOWNLOAD_MAX_PER_WINDOW) || 120,
   otaDownloadWindowMs: parseInt(process.env.OTA_DOWNLOAD_WINDOW_MS) || 60000,
   otaApkRefreshMs: parseInt(process.env.OTA_APK_REFRESH_MS) || 60000,
+  // #146 Item E — coalescing log flush + batched event_loop_lag telemetry.
+  logCoalesceFlushMs: parseInt(process.env.LOG_COALESCE_FLUSH_MS) || 30000,
+  lagFlushMs: parseInt(process.env.LAG_FLUSH_MS) || 10000,
+  lagBufferMax: parseInt(process.env.LAG_BUFFER_MAX) || 2000,
   // #146 device_status_log write batching (lib/status-log-writer.js). Status
   // transitions are buffered and coalesced to the NET state per device per flush,
   // so a flapping device writes ~1 row/flush instead of a row per transition —

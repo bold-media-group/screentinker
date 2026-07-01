@@ -12,6 +12,7 @@ const statusLogWriter = require('../lib/status-log-writer');
 const { protectSocket } = require('../lib/safe-socket');
 const flapLimiter = require('../lib/flap-limiter');
 const { resolveIdentity } = require('../lib/device-identity');
+const logCoalescer = require('../lib/log-coalescer');
 const loopLag = require('../services/loop-lag');
 
 // Debounce window for marking a device offline on socket disconnect. Brief
@@ -554,7 +555,7 @@ module.exports = function setupDeviceSocket(io) {
           emitToDeviceWorkspace(dashboardNs, device_id, 'dashboard:device-status', { device_id, status: 'online' });
           // Only log a genuine reconnect (new socket). Same-socket periodic refreshes stay
           // quiet so the log reflects real connection events, not the 45s refresh cadence.
-          if (!isPlaylistRefresh) console.log(`Device reconnected: ${device_id}`);
+          if (!isPlaylistRefresh) logCoalescer.record('device-reconnected', `Device reconnected: ${device_id}`);
           return;
         }
 
