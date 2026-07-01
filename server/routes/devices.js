@@ -231,6 +231,28 @@ router.put('/:id', (req, res) => {
   res.json(stripDeviceSecrets(updated));
 });
 
+// #146 Item D: operator BLOCK / UNBLOCK toggle. Writes devices.blocked; the device
+// socket re-reads `blocked` on every register, so the block takes effect on the
+// device's NEXT register with NO server restart (and, via the #146 identity chain, is
+// enforced even if that reconnect arrives without a device_id). Write-gated + workspace-
+// scoped by checkDeviceOwnership. OUTAGE PROCEDURE (dashboard down): set it by hand via
+// direct SQLite — `UPDATE devices SET blocked = 1 WHERE id = '<device_id>';` (0 to
+// unblock) — same column, same next-register effect.
+router.post('/:id/block', (req, res) => {
+  const device = checkDeviceOwnership(req, res);
+  if (!device) return;
+  db.prepare("UPDATE devices SET blocked = 1, updated_at = strftime('%s','now') WHERE id = ?").run(req.params.id);
+  console.warn(`[blocked] device ${req.params.id} blocked via dashboard (user ${req.user.id})`);
+  res.json({ success: true, id: req.params.id, blocked: true });
+});
+router.post('/:id/unblock', (req, res) => {
+  const device = checkDeviceOwnership(req, res);
+  if (!device) return;
+  db.prepare("UPDATE devices SET blocked = 0, updated_at = strftime('%s','now') WHERE id = ?").run(req.params.id);
+  console.log(`[blocked] device ${req.params.id} unblocked via dashboard (user ${req.user.id})`);
+  res.json({ success: true, id: req.params.id, blocked: false });
+});
+
 // Delete device
 router.delete('/:id', (req, res) => {
   const device = checkDeviceOwnership(req, res);

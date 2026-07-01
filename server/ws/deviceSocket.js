@@ -290,18 +290,25 @@ module.exports = function setupDeviceSocket(io) {
     socket.on('device:register', (data) => {
       const { pairing_code, device_id, device_token, device_info, fingerprint } = data;
 
-      // #143 operator KILL SWITCH — the FIRST gate, before the fingerprint block,
-      // the reconnect throttle, any DB writes, or playlist build. A device flagged
-      // `blocked` is refused immediately. Settable by DIRECT SQLite during an outage
-      // (dashboard down):  UPDATE devices SET blocked = 1 WHERE id = '<device_id>';
-      // The row is re-read on every register, so a hand-edited UPDATE takes effect on
-      // the device's NEXT reconnect with NO server restart. Unblock: blocked = 0.
+      // #146: resolve identity ONCE via the SNAT-safe chain (device_id -> fingerprint
+      // -> token -> global anon), used by BOTH the operator block and the flap limiter.
+      const ident = resolveIdentity({ device_id, fingerprint, device_token });
+
+      // #143 operator KILL SWITCH — the FIRST gate, before the fingerprint block, the
+      // throttle, any DB writes, or playlist build. #146: resolve the effective
+      // device_id via the identity chain (device_id directly, OR fingerprint->device_id)
+      // so a blocked device that reconnects WITHOUT a device_id is STILL caught — the
+      // old `if (device_id)` gate let a device_id-less reconnect slip past. Settable by
+      // DIRECT SQLite during an outage (dashboard down), takes effect on the device's
+      // NEXT register with NO restart (the row is re-read every register):
+      //   UPDATE devices SET blocked = 1 WHERE id = '<device_id>';   (0 to unblock)
       // Unlike nulling the token (#143: that re-provisioned instead of locking out),
-      // this is an explicit, enforceable block.
-      if (device_id) {
-        const blk = db.prepare('SELECT blocked FROM devices WHERE id = ?').get(device_id);
+      // `blocked` is an explicit, enforceable lever. Also settable via the dashboard
+      // (routes/devices.js POST /:id/block) — same DB write, same next-register effect.
+      if (ident.deviceId) {
+        const blk = db.prepare('SELECT blocked FROM devices WHERE id = ?').get(ident.deviceId);
         if (blk && blk.blocked) {
-          console.warn(`[blocked] refused device ${device_id} (operator block) from ${getClientIp(socket)}`);
+          console.warn(`[blocked] refused device ${ident.deviceId} (operator block, via ${ident.kind})`);
           socket.emit('device:auth-error', { error: 'Device blocked' });
           process.nextTick(() => { try { socket.disconnect(true); } catch (_) { /* */ } });
           return;
@@ -311,11 +318,9 @@ module.exports = function setupDeviceSocket(io) {
       // #146 Item B: SUSTAINED flap limiter — BEFORE fingerprint tracking, throttle,
       // DB writes, or playlist build, so a refusal is cheap. Skips same-socket playlist
       // refreshes (currentDeviceId===device_id — a periodic pull, not a new connection).
-      // Keyed via the SNAT-safe identity chain (device_id -> fingerprint -> token ->
-      // global anon), NEVER IP. Over the sustained rate -> refuse + disconnect.
+      // Keyed via the same SNAT-safe identity, NEVER IP.
       const isRefreshConnect = device_id && currentDeviceId === device_id;
       if (!isRefreshConnect) {
-        const ident = resolveIdentity({ device_id, fingerprint, device_token });
         const fv = flapLimiter.check(ident.key);
         if (!fv.allow) {
           console.warn(`[flap] refused ${ident.kind} ${ident.deviceId || ident.key} reason=${fv.reason} retry=${fv.retryAfterMs}ms trips=${fv.trips || 0}`);

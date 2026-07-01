@@ -162,6 +162,7 @@ async function loadDevice(deviceId, activeTab = null) {
             </svg>
             ${t('device.screenshot_btn')}
           </button>
+          <button class="btn btn-secondary btn-sm" id="blockDeviceBtn">${device.blocked ? 'Unblock' : 'Block'}</button>
           <button class="btn btn-danger btn-sm" id="deleteDeviceBtn">${t('device.remove')}</button>
         </div>
       </div>
@@ -791,6 +792,19 @@ async function setupActions(device) {
       if (res.ok) showToast(t('device.copy.toast', { n: data.copied, device: target.name }), 'success');
       else showToast(data.error, 'error');
     } catch (err) { showToast(err.message, 'error'); }
+  });
+
+  // #146 Item D: operator block/unblock — takes effect on the device's next register,
+  // no restart. Server enforces even a device_id-less reconnect via the identity chain.
+  const blockBtn = document.getElementById('blockDeviceBtn');
+  blockBtn?.addEventListener('click', async () => {
+    blockBtn.disabled = true;
+    try {
+      if (device.blocked) { await api.unblockDevice(device.id); device.blocked = 0; showToast('Device unblocked', 'success'); }
+      else { await api.blockDevice(device.id); device.blocked = 1; showToast('Device blocked — refused on next reconnect', 'success'); }
+      blockBtn.textContent = device.blocked ? 'Unblock' : 'Block';
+    } catch (err) { showToast(err.message, 'error'); }
+    finally { blockBtn.disabled = false; }
   });
 
   // Delete (double-click to confirm)
