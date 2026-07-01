@@ -49,6 +49,13 @@ test('/api/status exposes a current loop_lag snapshot', async () => {
   assert.ok(['normal', 'elevated', 'critical'].includes(body.loop_lag.band), 'band is a valid level');
   assert.equal(typeof body.loop_lag.p99_ms, 'number', 'p99_ms is numeric');
   assert.equal(typeof body.loop_lag.mean_ms, 'number', 'mean_ms is numeric');
+  // #146 P3.8: soak observability block
+  assert.ok(body.debug, 'debug block present');
+  assert.equal(typeof body.debug.flap.buckets, 'number', 'flap bucket count exposed');
+  assert.equal(typeof body.debug.flap.quarantined, 'number', 'flap quarantine count exposed');
+  assert.equal(typeof body.debug.ota_download.inFlight, 'number', 'download in-flight exposed');
+  assert.ok('maintenance' in body.debug && typeof body.debug.maintenance.ms === 'number', 'last-prune stats exposed');
+  assert.equal(typeof body.debug.log_coalescer_buffer, 'number', 'coalescer buffer size exposed');
 });
 
 test('lag samples are persisted AND bounded by retention prune (not unbounded)', async () => {

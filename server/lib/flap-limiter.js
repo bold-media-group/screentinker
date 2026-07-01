@@ -88,4 +88,10 @@ function startSweep() {
 
 function reset() { state.clear(); }        // tests
 function _size() { return state.size; }
-module.exports = { check, sweep, startSweep, reset, _size };
+// #146 P3.8: soak observability — bucket count + currently-quarantined count.
+function stats(now = Date.now()) {
+  let quarantined = 0;
+  for (const [, s] of state) if (now < s.quarantinedUntil) quarantined++;
+  return { buckets: state.size, quarantined };
+}
+module.exports = { check, sweep, startSweep, reset, _size, stats };

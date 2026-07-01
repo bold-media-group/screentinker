@@ -737,7 +737,7 @@ function logOtaCheck(deviceId, client, latest, available, reason) {
 // #146 Item C: GLOBAL download admission (lib/ota-download-guard) — concurrency + rate
 // caps + critical-band shed, NEVER per-IP (SNAT). Single bounded rolling state.
 const otaDownloadGuard = require('./lib/ota-download-guard');
-const otaDownloadState = otaDownloadGuard.newState();
+const otaDownloadState = otaDownloadGuard.prodState();   // #146 P3.8: shared singleton so /api/status can read stats
 
 app.get('/download/apk', (req, res) => {
   const apk = apkCache.get();

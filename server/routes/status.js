@@ -8,6 +8,11 @@ const config = require('../config');
 const VERSION = require('../version');
 const { PLATFORM_ROLES } = require('../middleware/auth');
 const loopLag = require('../services/loop-lag');
+// #146 P3.8: soak observability — internal limiter/maintenance states.
+const flapLimiter = require('../lib/flap-limiter');
+const otaDownloadGuard = require('../lib/ota-download-guard');
+const logCoalescer = require('../lib/log-coalescer');
+const { getMaintenanceStats } = require('../db/database');
 
 // Public status page
 router.get('/', (req, res) => {
@@ -28,6 +33,14 @@ router.get('/', (req, res) => {
     // #142: current event-loop lag snapshot, so site lag is diagnosable from the
     // health endpoint independent of any throttling. Cheap (in-memory read).
     loop_lag: loopLag.getLag(),
+    // #146 P3.8: soak observability — see the limiters biting without grepping logs.
+    // Aggregate counts only (no device ids / secrets); cheap in-memory reads.
+    debug: {
+      flap: flapLimiter.stats(),                  // { buckets, quarantined }
+      ota_download: otaDownloadGuard.stats(),     // { inFlight, servedThisWindow, shedThisWindow, windowCount }
+      maintenance: getMaintenanceStats(),         // { deleted, ms, at, running } of the last status-log prune
+      log_coalescer_buffer: logCoalescer._size(),
+    },
   });
 });
 

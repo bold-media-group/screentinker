@@ -42,4 +42,10 @@ function admit(state, band, now = Date.now()) {
 // release() — call when a served response finishes/closes (once).
 function release(state) { state.inFlight = Math.max(0, state.inFlight - 1); }
 
-module.exports = { newState, admit, release };
+// #146 P3.8: the production singleton state + a stats view for /api/status. Tests use
+// newState() for isolation.
+const _prod = newState();
+function prodState() { return _prod; }
+function stats() { return { inFlight: _prod.inFlight, servedThisWindow: _prod.served, shedThisWindow: _prod.shed, windowCount: _prod.windowCount }; }
+
+module.exports = { newState, admit, release, prodState, stats };

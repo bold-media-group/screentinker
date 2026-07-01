@@ -772,10 +772,13 @@ const { applyTenantDeleteCascade } = require('../lib/tenant-cascade-migration');
 //     table self-heals on next deploy without a restart.
 // Rides idx_device_status_log_device_ts(device_id, timestamp).
 let _statusPruneRunning = false;
+let _lastPrune = { deleted: 0, ms: 0, at: 0 };        // #146 P3.8: soak observability
+function getMaintenanceStats() { return { ..._lastPrune, running: _statusPruneRunning }; }
 async function pruneStatusLog(opts = {}) {
   if (_statusPruneRunning) return 0;                  // re-entrancy: work runs once
   if (opts.bandGate && config.maintenanceBandGateEnabled && currentBand() !== 'normal') return 0;
   _statusPruneRunning = true;
+  const _t0 = Date.now();
   try {
     const batch = config.statusLogPruneBatch;
     const cap = config.statusLogMaxRowsPerDevice;
@@ -796,6 +799,7 @@ async function pruneStatusLog(opts = {}) {
       await yieldTick();                              // breathe between devices
     }
     if (total > 0) console.log(`[status-log] pruned ${total} row(s) (per-device, newest ${cap}/device + ${config.statusLogRetentionDays}d retention, batches of ${batch})`);
+    _lastPrune = { deleted: total, ms: Date.now() - _t0, at: Math.floor(Date.now() / 1000) };
     return total;
   } catch (_) { return 0; } finally { _statusPruneRunning = false; }
 }
@@ -873,4 +877,4 @@ try {
 const { verifyAndRepairSchema } = require('../lib/schema-check');
 verifyAndRepairSchema(db);
 
-module.exports = { db, pruneTelemetry, pruneScreenshots, pruneStatusLog };
+module.exports = { db, pruneTelemetry, pruneScreenshots, pruneStatusLog, getMaintenanceStats };
