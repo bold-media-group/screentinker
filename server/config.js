@@ -144,9 +144,11 @@ module.exports = {
   connectRateAnonMax: parseInt(process.env.CONNECT_RATE_ANON_MAX) || 60,         // the shared global anon bucket, higher (collective)
   connectRateCooldownMs: parseInt(process.env.CONNECT_RATE_COOLDOWN_MS) || 60000, // refuse window after a trip
   connectRateIdleMs: parseInt(process.env.CONNECT_RATE_IDLE_MS) || 2 * 300000,   // sweep buckets idle this long
-  // after this many trips in a window a device_id-resolved flapper is auto-quarantined
-  // (devices.blocked=1) so it stops entirely instead of being refused forever. 0=off.
+  // after this many trips within a window the identity is auto-quarantined — an
+  // IN-MEMORY, TIME-LIMITED refusal (NOT a DB block; the devices.blocked column is only
+  // ever written by an operator). Self-heals after connectRateQuarantineMs. 0 = off.
   connectRateQuarantineTrips: parseInt(process.env.CONNECT_RATE_QUARANTINE_TRIPS) || 5,
+  connectRateQuarantineMs: parseInt(process.env.CONNECT_RATE_QUARANTINE_MS) || 30 * 60 * 1000,
   // Cold start: for this long after process start, lag is high while the whole
   // fleet reconnects at once. Treat leniently — force the 'normal' band and apply
   // only the hard ceiling (no rate-band throttle) so a deploy can't throttle

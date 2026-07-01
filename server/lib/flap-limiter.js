@@ -14,26 +14,41 @@
 // to wipe this state every ~40s before it could bite. Bounded: an idle sweep evicts
 // stale buckets and the anonymous fallback is a single shared bucket (an anon flood is
 // capped collectively, never one-bucket-per-attacker growth).
+//
+// #146 P0: a hard flapper (connectRateQuarantineTrips trips in a window) is QUARANTINED
+// in-memory for connectRateQuarantineMs — a cheap, auto-clearing refusal, NOT a DB block.
+// The devices.blocked column is the operator's deliberate, durable lever and is never
+// written automatically.
 
 const config = require('../config');
 const { ANON_KEY } = require('./device-identity');
 
-// key -> { hits: number[], blockedUntil: ms, lastSeen: ms, trips: number, tripWinStart: ms }
+// key -> { hits: number[], blockedUntil, lastSeen, trips, tripWinStart, quarantinedUntil }
 const state = new Map();
 
 function maxFor(key) { return key === ANON_KEY ? config.connectRateAnonMax : config.connectRateMax; }
 
 // Decide whether to allow this connection for `key`. Returns
 //   { allow: true }
-//   { allow: false, retryAfterMs, reason, tripped, trips }   // tripped=true on the trip edge
+//   { allow: false, retryAfterMs, reason, tripped?, trips?, quarantined? }
+// reason: 'quarantined' (in-memory time-limited), 'flap-cooldown' (post-trip), 'flap-rate'
+// (the trip edge). `quarantined:true` marks the START of a quarantine (log once).
 function check(key, now = Date.now()) {
   let s = state.get(key);
-  if (!s) { s = { hits: [], blockedUntil: 0, lastSeen: now, trips: 0, tripWinStart: now }; state.set(key, s); }
+  if (!s) { s = { hits: [], blockedUntil: 0, lastSeen: now, trips: 0, tripWinStart: now, quarantinedUntil: 0 }; state.set(key, s); }
   s.lastSeen = now;
+
+  // #146 P0: quarantine is an IN-MEMORY, TIME-LIMITED refusal that AUTO-CLEARS — never a
+  // DB block. A stuck-then-recovered device comes back on its own after the window. This
+  // is safe in-memory now that Item A ended the prune-induced restart loop; a
+  // self-healing auto-action must NOT survive as a devices.blocked row.
+  if (now < s.quarantinedUntil) {
+    return { allow: false, retryAfterMs: s.quarantinedUntil - now, reason: 'quarantined' };
+  }
 
   // Inside an enforced cooldown -> refuse cheaply.
   if (now < s.blockedUntil) {
-    return { allow: false, retryAfterMs: s.blockedUntil - now, reason: 'flap-cooldown', tripped: false, trips: s.trips };
+    return { allow: false, retryAfterMs: s.blockedUntil - now, reason: 'flap-cooldown' };
   }
 
   // Sliding window of genuine connects.
@@ -41,12 +56,15 @@ function check(key, now = Date.now()) {
   s.hits.push(now);
 
   if (s.hits.length > maxFor(key)) {
-    // Trip: enter a cooldown, clear the window (a fresh burst must re-accumulate).
-    s.blockedUntil = now + config.connectRateCooldownMs;
+    s.blockedUntil = now + config.connectRateCooldownMs;   // cooldown; a fresh burst must re-accumulate
     s.hits = [];
-    // Count trips within a window for optional auto-quarantine (Item D).
     if (now - s.tripWinStart > config.connectRateWindowMs) { s.tripWinStart = now; s.trips = 0; }
     s.trips += 1;
+    // Escalate to a time-limited quarantine after N trips in the window (0 = off).
+    if (config.connectRateQuarantineTrips > 0 && s.trips >= config.connectRateQuarantineTrips) {
+      s.quarantinedUntil = now + config.connectRateQuarantineMs;
+      return { allow: false, retryAfterMs: config.connectRateQuarantineMs, reason: 'flap-rate', tripped: true, trips: s.trips, quarantined: true };
+    }
     return { allow: false, retryAfterMs: config.connectRateCooldownMs, reason: 'flap-rate', tripped: true, trips: s.trips };
   }
   return { allow: true };

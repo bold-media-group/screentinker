@@ -324,11 +324,14 @@ module.exports = function setupDeviceSocket(io) {
       if (!isRefreshConnect) {
         const fv = flapLimiter.check(ident.key);
         if (!fv.allow) {
-          console.warn(`[flap] refused ${ident.kind} ${ident.deviceId || ident.key} reason=${fv.reason} retry=${fv.retryAfterMs}ms trips=${fv.trips || 0}`);
-          // Optional auto-quarantine (Item D): a device_id-resolved HARD flapper is
-          // blocked=1 so it stops entirely rather than being refused forever.
-          if (fv.tripped && ident.deviceId && config.connectRateQuarantineTrips > 0 && (fv.trips || 0) >= config.connectRateQuarantineTrips) {
-            try { db.prepare('UPDATE devices SET blocked = 1 WHERE id = ?').run(ident.deviceId); console.warn(`[flap] auto-quarantined ${ident.deviceId} after ${fv.trips} trips (blocked=1)`); } catch (_) { /* */ }
+          // #146 P0: auto-quarantine is IN-MEMORY + TIME-LIMITED (lib/flap-limiter),
+          // never a DB block — a stuck-then-recovered device self-heals. The
+          // devices.blocked column is now written ONLY by an operator. Log the
+          // quarantine START once; coalesce the repeat refusals.
+          if (fv.quarantined) {
+            console.warn(`[flap] quarantined ${ident.deviceId || ident.key} for ${Math.round(config.connectRateQuarantineMs / 60000)}m after ${fv.trips} trips`);
+          } else {
+            logCoalescer.record(`flap-refused:${ident.key}`, `[flap] refused ${ident.kind} ${ident.deviceId || ident.key} reason=${fv.reason}`);
           }
           socket.emit('device:throttled', { retry_after_ms: fv.retryAfterMs, reason: 'connect_rate' });
           process.nextTick(() => { try { socket.disconnect(true); } catch (_) { /* */ } });
