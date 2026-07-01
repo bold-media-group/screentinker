@@ -10,6 +10,8 @@ const reconnectThrottle = require('../lib/reconnect-throttle');
 const contentAckLimiter = require('../lib/content-ack-limiter');
 const statusLogWriter = require('../lib/status-log-writer');
 const { protectSocket } = require('../lib/safe-socket');
+const flapLimiter = require('../lib/flap-limiter');
+const { resolveIdentity } = require('../lib/device-identity');
 const loopLag = require('../services/loop-lag');
 
 // Debounce window for marking a device offline on socket disconnect. Brief
@@ -301,6 +303,28 @@ module.exports = function setupDeviceSocket(io) {
         if (blk && blk.blocked) {
           console.warn(`[blocked] refused device ${device_id} (operator block) from ${getClientIp(socket)}`);
           socket.emit('device:auth-error', { error: 'Device blocked' });
+          process.nextTick(() => { try { socket.disconnect(true); } catch (_) { /* */ } });
+          return;
+        }
+      }
+
+      // #146 Item B: SUSTAINED flap limiter — BEFORE fingerprint tracking, throttle,
+      // DB writes, or playlist build, so a refusal is cheap. Skips same-socket playlist
+      // refreshes (currentDeviceId===device_id — a periodic pull, not a new connection).
+      // Keyed via the SNAT-safe identity chain (device_id -> fingerprint -> token ->
+      // global anon), NEVER IP. Over the sustained rate -> refuse + disconnect.
+      const isRefreshConnect = device_id && currentDeviceId === device_id;
+      if (!isRefreshConnect) {
+        const ident = resolveIdentity({ device_id, fingerprint, device_token });
+        const fv = flapLimiter.check(ident.key);
+        if (!fv.allow) {
+          console.warn(`[flap] refused ${ident.kind} ${ident.deviceId || ident.key} reason=${fv.reason} retry=${fv.retryAfterMs}ms trips=${fv.trips || 0}`);
+          // Optional auto-quarantine (Item D): a device_id-resolved HARD flapper is
+          // blocked=1 so it stops entirely rather than being refused forever.
+          if (fv.tripped && ident.deviceId && config.connectRateQuarantineTrips > 0 && (fv.trips || 0) >= config.connectRateQuarantineTrips) {
+            try { db.prepare('UPDATE devices SET blocked = 1 WHERE id = ?').run(ident.deviceId); console.warn(`[flap] auto-quarantined ${ident.deviceId} after ${fv.trips} trips (blocked=1)`); } catch (_) { /* */ }
+          }
+          socket.emit('device:throttled', { retry_after_ms: fv.retryAfterMs, reason: 'connect_rate' });
           process.nextTick(() => { try { socket.disconnect(true); } catch (_) { /* */ } });
           return;
         }

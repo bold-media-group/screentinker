@@ -131,6 +131,22 @@ module.exports = {
   // unbounded over churned device_ids (the sweep ota-breaker has but the #142
   // throttle lacked). A device quiet this long has its bucket dropped.
   reconnectIdleResetMs: parseInt(process.env.RECONNECT_IDLE_RESET_MS) || 60 * 60 * 1000,
+  // #146 hardening — SUSTAINED flap limiter (lib/flap-limiter.js). The #142 burst
+  // throttle trips at reconnectBaseMax/reconnectWindowMs (5/10s) — a device flapping
+  // every 3-5s does ~2-3/10s and passes clean, yet each cycle is an expensive
+  // register+playlist build+acks and one status_log row. This SEPARATE limiter catches
+  // sustained flapping over a long window. Keyed via the identity fallback chain
+  // (device_id -> fingerprint -> device_token -> ONE global anon bucket), NEVER IP
+  // (SNAT collapses the fleet into one key). In-memory (persists now that Item A ends
+  // the restart loop); bounded by an idle sweep + the single anon bucket.
+  connectRateWindowMs: parseInt(process.env.CONNECT_RATE_WINDOW_MS) || 300000,   // 5 min
+  connectRateMax: parseInt(process.env.CONNECT_RATE_MAX) || 20,                  // per identity per window
+  connectRateAnonMax: parseInt(process.env.CONNECT_RATE_ANON_MAX) || 60,         // the shared global anon bucket, higher (collective)
+  connectRateCooldownMs: parseInt(process.env.CONNECT_RATE_COOLDOWN_MS) || 60000, // refuse window after a trip
+  connectRateIdleMs: parseInt(process.env.CONNECT_RATE_IDLE_MS) || 2 * 300000,   // sweep buckets idle this long
+  // after this many trips in a window a device_id-resolved flapper is auto-quarantined
+  // (devices.blocked=1) so it stops entirely instead of being refused forever. 0=off.
+  connectRateQuarantineTrips: parseInt(process.env.CONNECT_RATE_QUARANTINE_TRIPS) || 5,
   // Cold start: for this long after process start, lag is high while the whole
   // fleet reconnects at once. Treat leniently — force the 'normal' band and apply
   // only the hard ceiling (no rate-band throttle) so a deploy can't throttle

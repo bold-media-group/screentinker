@@ -582,6 +582,7 @@ app.use('/api/status', require('./routes/status'));
 const otaBreaker = require('./lib/ota-breaker');
 otaBreaker.startSweep();   // #144: periodically evict idle breaker buckets so keyed state stays bounded
 require('./lib/reconnect-throttle').startSweep();   // #146: same, for the reconnect throttle's per-device buckets
+require('./lib/flap-limiter').startSweep();          // #146 Item B: evict idle flap-limiter buckets
 app.get('/api/update/check', (req, res) => {
   const currentVersion = req.query.version;
   const deviceId = req.query.device_id || null;   // #144: optional; beta4+ clients send it for per-device keying
