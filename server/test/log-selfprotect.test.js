@@ -32,6 +32,17 @@ test('N identical lines in a window emit ONE summarized line with the count', ()
   assert.match(out[0], /band=critical/, 'keeps the sample text');
 });
 
+test('P3.7: coalesced numeric line carries the PEAK over the window, not a random sample', () => {
+  coalescer.reset();
+  coalescer.record('lag', '[loop-lag] band=critical', { peak: 300, peakUnit: 'ms' });
+  coalescer.record('lag', '[loop-lag] band=critical', { peak: 1502, peakUnit: 'ms' });
+  coalescer.record('lag', '[loop-lag] band=critical', { peak: 900, peakUnit: 'ms' });
+  const out = capture(() => coalescer.flush());
+  assert.equal(out.length, 1);
+  assert.match(out[0], /x3/);
+  assert.match(out[0], /peak 1502ms/, 'emits the MAX p99 over the window');
+});
+
 test('a single occurrence logs verbatim (no count suffix)', () => {
   coalescer.reset();
   coalescer.record('k', 'one-off line');

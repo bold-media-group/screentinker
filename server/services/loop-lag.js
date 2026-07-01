@@ -83,7 +83,9 @@ function sample() {
   if (band !== prev) {
     console.log(`[loop-lag] band=${band} (was ${prev}) mean=${snap.mean_ms}ms p99=${snap.p99_ms}ms max=${snap.max_ms}ms`);
   } else if (band !== 'normal') {
-    logCoalescer.record(`loop-lag:${band}`, `[loop-lag] band=${band} p99=${snap.p99_ms}ms max=${snap.max_ms}ms`);
+    // #146 P3.7: coalesce repeats and carry the PEAK p99 over the window (not a random
+    // sample's) — the peak is the number that matters during an incident.
+    logCoalescer.record(`loop-lag:${band}`, `[loop-lag] band=${band}`, { peak: snap.p99_ms, peakUnit: 'ms' });
   }
 
   // #143 global pressure valve — log ONLY the band edge (open/close), not per shed
