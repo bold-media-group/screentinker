@@ -154,6 +154,12 @@ module.exports = {
   // the table is bounded by (devices * N) REGARDLESS of churn — and the very first
   // sweep trims the existing backlog (table healthy now, not in retentionDays).
   statusLogMaxRowsPerDevice: parseInt(process.env.STATUS_LOG_MAX_ROWS_PER_DEVICE) || 500,
+  // #146 hardening: max rows any single synchronous maintenance DELETE may touch. All
+  // table-growth sweeps (status_log, play_logs, provisioning cascade, event_loop_lag,
+  // telemetry) delete in batches of this size, yielding to the event loop between
+  // batches, so no sweep can block the loop regardless of table size. Keep well under
+  // the ~50ms invariant per batch.
+  statusLogPruneBatch: parseInt(process.env.STATUS_LOG_PRUNE_BATCH) || 2000,
   // #146 device_status_log write batching (lib/status-log-writer.js). Status
   // transitions are buffered and coalesced to the NET state per device per flush,
   // so a flapping device writes ~1 row/flush instead of a row per transition —

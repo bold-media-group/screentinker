@@ -2,14 +2,17 @@ const { db, pruneStatusLog } = require('../db/database');
 const config = require('../config');
 const { deviceRoom, emitToWorkspace } = require('../lib/socket-rooms');
 const statusLogWriter = require('../lib/status-log-writer');
+const { chunkedDelete, currentBand } = require('../lib/chunked-prune'); // #146 non-blocking sweeps
 
 // Track connected device sockets: deviceId -> { socketId, lastHeartbeat }
 const deviceConnections = new Map();
 
 function startHeartbeatChecker(io) {
-  // #142: sweep stale device_status_log rows once at startup (recovers a bloated
-  // table immediately after a deploy), then again on each interval below.
-  pruneStatusLog();
+  // #146: startup sweep is chunked + async + fire-and-forget + NOT band-gated, so a
+  // bloated device_status_log self-heals on next deploy WITHOUT freezing boot (the old
+  // whole-table sort froze boot 40-48s -> healthcheck fail -> restart loop). It
+  // trickles in bounded batches while the server comes up and serves.
+  pruneStatusLog({ bandGate: false }).catch(() => {});
 
   // #146: start the batched device_status_log flush loop.
   statusLogWriter.start();
@@ -56,29 +59,38 @@ function startHeartbeatChecker(io) {
       }
     }
 
-    // Cleanup: delete unclaimed provisioning devices older than 24 hours.
-    pruneProvisioningDevices();
-
-    // Cleanup: prune play logs older than 90 days
-    db.prepare(`
-      DELETE FROM play_logs WHERE started_at < strftime('%s','now') - (90 * 86400)
-    `).run();
-
-    // #142: global device_status_log retention sweep (all devices, incl. removed/idle
-    // and the offline_timeout insert path that bypasses the per-device prune).
-    pruneStatusLog();
-
-    // Cleanup: expired team invites
-    db.prepare(`
-      DELETE FROM team_invites WHERE expires_at < strftime('%s','now')
-    `).run();
-
-    // Cleanup: expired workspace invites
-    db.prepare(`
-      DELETE FROM workspace_invites WHERE expires_at < strftime('%s','now')
-    `).run();
+    // #146: all table-growth maintenance runs OFF the interval body — async, chunked,
+    // band-gated, re-entrancy-guarded — so a sweep can never block the loop or stack.
+    // The offline-marking above stays synchronous (it's the core heartbeat function).
+    runMaintenance();
 
   }, config.heartbeatInterval);
+}
+
+// #146: batched play-log prune (idx_play_logs_time), chunked so a 90-day backlog
+// trims across many bounded DELETEs instead of one large statement.
+const _delPlayLogs = db.prepare('DELETE FROM play_logs WHERE rowid IN (SELECT rowid FROM play_logs WHERE started_at < ? LIMIT ?)');
+async function prunePlayLogs() {
+  const cutoff = Math.floor(Date.now() / 1000) - (90 * 86400);
+  return (await chunkedDelete((lim) => _delPlayLogs.run(cutoff, lim).changes, { batch: config.statusLogPruneBatch })).deleted;
+}
+
+// #146 interval maintenance — band-gated (skip while loaded; runs next tick) and
+// re-entrancy-guarded (a long run never stacks with the next interval). Never throws
+// into the interval. NOT for startup (see the un-gated startup prune above).
+let _maintRunning = false;
+async function runMaintenance() {
+  if (_maintRunning) return;
+  if (currentBand() !== 'normal') return;
+  _maintRunning = true;
+  try {
+    await pruneProvisioningDevices();
+    await prunePlayLogs();
+    await pruneStatusLog({ bandGate: true });   // per-device chunked; own re-entrancy
+    // Expiry sweeps on small tables — single cheap statements, bounded by table size.
+    db.prepare("DELETE FROM team_invites WHERE expires_at < strftime('%s','now')").run();
+    db.prepare("DELETE FROM workspace_invites WHERE expires_at < strftime('%s','now')").run();
+  } catch (_) { /* maintenance must never crash the interval */ } finally { _maintRunning = false; }
 }
 
 function registerConnection(deviceId, socketId) {
@@ -102,17 +114,20 @@ function getAllConnections() {
   return deviceConnections;
 }
 
-// #142: sweep unclaimed provisioning devices older than 24h. The window previously
-// read `365 * 86400` (a YEAR), contradicting its own "older than 24 hours" comment,
-// so socket-register pairing junk lingered far longer than intended. Imported
-// devices keep a user_id and are preserved so they can be re-paired. Extracted from
-// the interval above so the correctness fix is unit-testable. Returns rows deleted.
-function pruneProvisioningDevices() {
-  return db.prepare(`
-    DELETE FROM devices
-    WHERE status = 'provisioning' AND user_id IS NULL
-    AND created_at < strftime('%s','now') - (24 * 3600)
-  `).run().changes;
+// #142: sweep unclaimed provisioning devices older than 24h (imported devices keep a
+// user_id and are preserved). #146: now async + CHUNKED (rides idx_devices_provisioning)
+// so a provisioning-junk flood can't delete-cascade a huge batch in one synchronous
+// statement. Returns rows deleted. NOTE: async now — callers must await.
+const _delProvisioning = db.prepare(`
+  DELETE FROM devices WHERE rowid IN (
+    SELECT rowid FROM devices
+    WHERE status = 'provisioning' AND user_id IS NULL AND created_at < ?
+    LIMIT ?
+  )
+`);
+async function pruneProvisioningDevices() {
+  const cutoff = Math.floor(Date.now() / 1000) - (24 * 3600);
+  return (await chunkedDelete((lim) => _delProvisioning.run(cutoff, lim).changes, { batch: config.statusLogPruneBatch })).deleted;
 }
 
 module.exports = {

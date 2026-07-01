@@ -15,7 +15,7 @@ const assert = require('node:assert/strict');
 const { db } = require('../db/database');
 const { pruneProvisioningDevices } = require('../services/heartbeat');
 
-test('sweeps unclaimed provisioning devices older than 24h, keeps the rest', () => {
+test('sweeps unclaimed provisioning devices older than 24h, keeps the rest', async () => {
   db.pragma('foreign_keys = OFF'); // seed user_id without a real users row
   db.exec('DELETE FROM devices');
   const ins = db.prepare("INSERT INTO devices (id, status, user_id, created_at) VALUES (?, ?, ?, strftime('%s','now') - ?)");
@@ -27,7 +27,7 @@ test('sweeps unclaimed provisioning devices older than 24h, keeps the rest', () 
 
   assert.equal(db.prepare('SELECT COUNT(*) c FROM devices').get().c, 4, 'seeded 4');
 
-  const deleted = pruneProvisioningDevices();
+  const deleted = await pruneProvisioningDevices();
   assert.equal(deleted, 1, 'only the >24h unclaimed provisioning device is swept');
 
   const ids = db.prepare('SELECT id FROM devices ORDER BY id').all().map(r => r.id);
@@ -36,6 +36,6 @@ test('sweeps unclaimed provisioning devices older than 24h, keeps the rest', () 
   // would have survived before the fix.
 });
 
-test('idempotent: a second sweep with nothing stale deletes nothing', () => {
-  assert.equal(pruneProvisioningDevices(), 0);
+test('idempotent: a second sweep with nothing stale deletes nothing', async () => {
+  assert.equal(await pruneProvisioningDevices(), 0);
 });

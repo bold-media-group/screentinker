@@ -2,6 +2,7 @@ const Database = require('better-sqlite3');
 const fs = require('fs');
 const path = require('path');
 const config = require('../config');
+const { chunkedDelete, yieldTick, currentBand } = require('../lib/chunked-prune'); // #146 non-blocking sweeps
 
 const dbDir = path.dirname(config.dbPath);
 if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
@@ -234,6 +235,9 @@ const migrations = [
   // schema.sql creates these on fresh installs; this covers existing DBs.
   "CREATE TABLE IF NOT EXISTS event_loop_lag (id INTEGER PRIMARY KEY AUTOINCREMENT, sampled_at INTEGER NOT NULL DEFAULT (strftime('%s','now')), mean_ms REAL NOT NULL, p50_ms REAL NOT NULL, p99_ms REAL NOT NULL, max_ms REAL NOT NULL, band TEXT NOT NULL DEFAULT 'normal')",
   "CREATE INDEX IF NOT EXISTS idx_event_loop_lag_sampled ON event_loop_lag(sampled_at)",
+  // #146: index the provisioning-cleanup predicate so the chunked prune's batch
+  // subquery is an index range, not a full devices scan under a provisioning flood.
+  "CREATE INDEX IF NOT EXISTS idx_devices_provisioning ON devices(status, created_at)",
   // #143: operator device kill switch. blocked=1 refuses the device at the first
   // register gate on its next reconnect (no restart). Hand-settable by direct SQLite:
   //   UPDATE devices SET blocked = 1 WHERE id = '<device_id>';  (0 to unblock)
@@ -754,51 +758,59 @@ const { applyTenantDeleteCascade } = require('../lib/tenant-cascade-migration');
   }
 })();
 
-// #142 GLOBAL device_status_log retention sweep across ALL devices. Run on startup
-// and on the heartbeat interval (services/heartbeat.js). This covers the rows the
-// per-device insert-time prune in deviceSocket.js misses: removed/idle devices that
-// never insert again, and the heartbeat offline_timeout insert that bypasses
-// logDeviceStatus. A plain time-range delete (like the play_logs prune) — runs off
-// the hot path; after the first sweep the table is small, so the cost is negligible.
-function pruneStatusLog() {
+// #146 hardening — device_status_log retention sweep, rewritten to NEVER block the
+// loop. The old version ran a WHOLE-TABLE `ROW_NUMBER() OVER (PARTITION BY device_id)`
+// sort — 40-48s synchronous on the 1.1M-row incident table, freezing boot into a
+// restart loop (the #146 amplifier). Now:
+//   - PER DEVICE, walking distinct device_ids via a loose index-scan seek
+//     (`WHERE device_id > ? ORDER BY device_id LIMIT 1` — an O(log n) index seek each),
+//     so no statement scans or sorts the whole table;
+//   - each device's backlog trims in bounded batches (rowid IN (SELECT ... LIMIT ?))
+//     with a setImmediate yield between batches AND between devices (chunked-prune.js);
+//   - async + re-entrancy-guarded so overlapping interval fires don't stack;
+//   - band-gated on the INTERVAL (skip while loaded), un-gated at STARTUP so a bloated
+//     table self-heals on next deploy without a restart.
+// Rides idx_device_status_log_device_ts(device_id, timestamp).
+let _statusPruneRunning = false;
+async function pruneStatusLog(opts = {}) {
+  if (_statusPruneRunning) return 0;                  // re-entrancy: work runs once
+  if (opts.bandGate && currentBand() !== 'normal') return 0;
+  _statusPruneRunning = true;
   try {
-    const maxAgeSec = Math.round(config.statusLogRetentionDays * 86400);
-    const n = db.prepare("DELETE FROM device_status_log WHERE timestamp < strftime('%s','now') - ?").run(maxAgeSec).changes;
-    // #146 HARD per-device row-count cap. Age alone can't bound a write storm: a
-    // reconnect storm writes faster than the age window expires (rows all younger
-    // than retentionDays), which is how prod reached 1.1M rows. Keep only the newest
-    // N transitions per device so the table is bounded by (devices * N) regardless
-    // of churn — and because this runs on startup + the heartbeat interval, the FIRST
-    // sweep trims the existing backlog immediately (healthy now, not in retentionDays).
+    const batch = config.statusLogPruneBatch;
     const cap = config.statusLogMaxRowsPerDevice;
-    let capped = 0;
-    if (cap > 0) {
-      capped = db.prepare(`
-        DELETE FROM device_status_log
-        WHERE id NOT IN (
-          SELECT id FROM (
-            SELECT id, ROW_NUMBER() OVER (PARTITION BY device_id ORDER BY timestamp DESC, id DESC) AS rn
-            FROM device_status_log
-          ) WHERE rn <= ?
-        )
-      `).run(cap).changes;
+    const cutoff = Math.floor(Date.now() / 1000) - Math.round(config.statusLogRetentionDays * 86400);
+    const nextDevice = db.prepare('SELECT device_id FROM device_status_log WHERE device_id > ? ORDER BY device_id LIMIT 1');
+    const delOld = db.prepare('DELETE FROM device_status_log WHERE rowid IN (SELECT rowid FROM device_status_log WHERE device_id = ? AND timestamp < ? LIMIT ?)');
+    const delCap = cap > 0 ? db.prepare('DELETE FROM device_status_log WHERE rowid IN (SELECT rowid FROM device_status_log WHERE device_id = ? ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?)') : null;
+
+    let total = 0, lastDev = '';
+    for (;;) {
+      const row = nextDevice.get(lastDev);            // O(log n) index seek to next distinct device_id
+      if (!row) break;
+      lastDev = row.device_id;
+      // 1) retention — drop rows older than the window, in batches
+      total += (await chunkedDelete((lim) => delOld.run(lastDev, cutoff, lim).changes, { batch })).deleted;
+      // 2) cap — drop rows beyond the newest `cap` (OFFSET cap skips the kept rows), in batches
+      if (delCap) total += (await chunkedDelete((lim) => delCap.run(lastDev, lim, cap).changes, { batch })).deleted;
+      await yieldTick();                              // breathe between devices
     }
-    const total = n + capped;
-    if (total > 0) console.log(`[status-log] pruned ${n} row(s) older than ${config.statusLogRetentionDays}d + ${capped} over the ${cap}/device cap`);
+    if (total > 0) console.log(`[status-log] pruned ${total} row(s) (per-device, newest ${cap}/device + ${config.statusLogRetentionDays}d retention, batches of ${batch})`);
     return total;
-  } catch (_) { return 0; }
+  } catch (_) { return 0; } finally { _statusPruneRunning = false; }
 }
 
-// Prune old telemetry (keep last 24h worth at 15s intervals = ~5760, cap at 6000)
+// Prune old telemetry (keep last 24h worth at 15s intervals = ~5760, cap at 6000).
+// #146: BOUNDED single statement — delete at most statusLogPruneBatch rows beyond the
+// newest 6000 (OFFSET 6000). Runs per-heartbeat (deviceSocket.js), so it keeps up
+// incrementally; a post-downtime backlog trims over several heartbeats, never one giant
+// DELETE. Rides idx_telemetry_device(device_id, reported_at DESC). Stays synchronous —
+// it's a single index-bounded statement, well under the ~50ms invariant.
+const _delTelemetry = db.prepare(
+  'DELETE FROM device_telemetry WHERE rowid IN (SELECT rowid FROM device_telemetry WHERE device_id = ? ORDER BY reported_at DESC LIMIT ? OFFSET 6000)'
+);
 function pruneTelemetry(deviceId) {
-  db.prepare(`
-    DELETE FROM device_telemetry
-    WHERE device_id = ? AND id NOT IN (
-      SELECT id FROM device_telemetry
-      WHERE device_id = ?
-      ORDER BY reported_at DESC LIMIT 6000
-    )
-  `).run(deviceId, deviceId);
+  _delTelemetry.run(deviceId, config.statusLogPruneBatch);
 }
 
 // Prune old screenshots (keep only latest per device)
