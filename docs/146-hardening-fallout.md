@@ -26,22 +26,35 @@ watch, and the measured worst-case blocking cost per hot path.
   (20) per `CONNECT_RATE_WINDOW_MS` (5min), keyed via the identity chain. Emits
   `device:throttled {reason:'connect_rate'}` + disconnect. Sweep started in server.js.
 - **Wider blast radius:** shares the `device:throttled` event with the #142 reconnect
-  throttle (clients already handle it). Auto-quarantine writes `devices.blocked=1` after
-  `CONNECT_RATE_QUARANTINE_TRIPS` (5) trips — a hard flapper self-blocks.
-- **Soak signals:** `[flap] refused …` and `[flap] auto-quarantined …` logs. A legit
-  device on a flaky network reconnecting >20×/5min would be refused — if false positives
-  appear, raise `CONNECT_RATE_MAX`. The global anon bucket (cap 60) collectively caps
-  truly-unidentifiable clients; real fleet devices always resolve to device_id/fingerprint.
+  throttle (clients already handle it).
+- **Auto-quarantine (P0 — behavior change):** after `CONNECT_RATE_QUARANTINE_TRIPS` (5)
+  trips a hard flapper is quarantined **IN-MEMORY for `CONNECT_RATE_QUARANTINE_MS`
+  (30min) and AUTO-CLEARS** — it is **NOT** a DB block. A stuck-then-recovered device
+  comes back on its own with no human action. `devices.blocked` is written **only** by an
+  operator (dashboard / direct SQLite). (Was: a permanent `blocked=1` auto-write — a
+  self-healing auto-action must not survive as a durable DB row.)
+- **Soak signals:** `[flap] quarantined <id> for 30m after N trips` (logged once at the
+  START); repeat refusals are coalesced. Also visible on `/api/status` →
+  `debug.flap.{buckets,quarantined}`. A legit device on a flaky network reconnecting
+  >20×/5min would be refused — if false positives appear, raise `CONNECT_RATE_MAX`. The
+  global anon bucket (cap 60) collectively caps truly-unidentifiable clients; real fleet
+  devices always resolve to device_id/fingerprint.
 
 ### C — OTA under SNAT (`apk-cache.js`, `ota-download-guard.js`, server.js)
 - **Touches:** `/api/update/check` early-returns before any fs on no-offer; APK
-  metadata cached (60s refresh); `/download/apk` gains global concurrency + rate caps +
-  critical-band shed (**503 Retry-After**); IP-keyed log throttle replaced by a per-window
-  served/shed aggregate.
-- **Behavior change (watch):** downloads can now return **503** under flood/critical —
+  metadata cached (60s refresh); `/download/apk` gains BAND-AWARE global concurrency +
+  rate caps + critical-band shed (**503 Retry-After**); IP-keyed log throttle replaced by
+  a per-window served/shed aggregate.
+- **Band-aware downloads (P1.2 — behavior):** the concurrency/rate caps are a **load-time
+  backstop, not a healthy-state limiter**. Under `band=normal` downloads serve **FREELY**
+  (no cap) — a coordinated whole-fleet rollout is NOT staggered when the server is
+  healthy. The caps engage only under `elevated`; `critical` sheds (503). This fixes
+  rollout staggering (a shed 503 costs a client a full ~30-min re-check cycle).
+- **Behavior change (watch):** downloads can return **503** only under elevated/critical —
   clients retry per Retry-After. A freshly-swapped APK is picked up within the 60s cache
-  refresh (slight delay by design). If legit downloads get shed, raise
-  `OTA_DOWNLOAD_MAX_CONCURRENT` / `OTA_DOWNLOAD_MAX_PER_WINDOW`.
+  refresh (slight delay by design). Observable on `/api/status` →
+  `debug.ota_download.{inFlight,servedThisWindow,shedThisWindow}`. If legit downloads get
+  shed under load, raise `OTA_DOWNLOAD_MAX_CONCURRENT` / `OTA_DOWNLOAD_MAX_PER_WINDOW`.
 - **Soak signals:** `[ota] downloads last 60s: X served, Y shed` — a flood is now VISIBLE.
 
 ### D — operator block (`deviceSocket`, `routes/devices.js`, frontend)
