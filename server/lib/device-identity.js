@@ -19,9 +19,21 @@ const { db } = require('../db/database');
 
 const ANON_KEY = 'anon:global';
 
+// Memoized statement — prepared once, lazily (safe on a partially-migrated DB).
+let _fpStmt = null;
+function fpStmt() {
+  if (!_fpStmt) { try { _fpStmt = db.prepare('SELECT device_id FROM device_fingerprints WHERE fingerprint = ?'); } catch (_) { return null; } }
+  return _fpStmt;
+}
+
 // Returns { key, kind, deviceId } — `key` is stable for keying; `deviceId` is the
 // resolved device id when the chain produced one (device_id directly or via
 // fingerprint), else null.
+//
+// #146 P1: SHORT-CIRCUITS on device_id — the common case (a device that sends its
+// device_id) returns immediately with ZERO DB lookups. The device_fingerprints SELECT
+// runs ONLY when device_id is absent. Called on every register (block + flap gates), so
+// the hot path must stay lookup-free.
 function resolveIdentity(payload = {}) {
   const { device_id, fingerprint, device_token } = payload;
 
@@ -30,7 +42,8 @@ function resolveIdentity(payload = {}) {
   if (fingerprint) {
     let mapped = null;
     try {
-      const row = db.prepare('SELECT device_id FROM device_fingerprints WHERE fingerprint = ?').get(fingerprint);
+      const st = fpStmt();
+      const row = st && st.get(fingerprint);
       mapped = row && row.device_id ? row.device_id : null;
     } catch (_) { /* table may not exist on a partially-migrated DB */ }
     if (mapped) return { key: 'd:' + mapped, kind: 'fingerprint->device_id', deviceId: mapped };
