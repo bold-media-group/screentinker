@@ -90,6 +90,19 @@ change or bisect. All read at process start.
 Note the startup prune is intentionally NEVER band-gated (it must clear a boot-time
 backlog); `MAINTENANCE_BAND_GATE_ENABLED` only affects the interval run.
 
+## P2 findings (investigated; measured)
+- **Playlist build under mass reconnect — MITIGATED, no change.** `buildPlaylistPayload`
+  is synchronous (indexed SELECTs + one `JSON.parse` of the published snapshot). Measured
+  with a 200-item snapshot: **avg 0.078ms, max 0.70ms per call**; a 230-device fleet-wide
+  reconnect is ~18ms of CPU **spread across 230 separate socket.io handler invocations**
+  (the loop yields between them), never one block. Per-call is the real unit and is far
+  under the 50ms invariant. (`test/playlist-build-cost.test.js`.)
+- **Boot health during a large startup trim — CONFIRMED.** Booting against a pre-bloated
+  300k-row `device_status_log`, `/api/status` answers in **<3s** while the table is still
+  large (prune trickling), and the backlog drains to the cap in the background with the
+  server responsive throughout. The old whole-table sort froze boot ~40s. This is the
+  point of the async/chunked, un-gated startup prune. (`test/boot-health.test.js`.)
+
 ## Interlock note
 Item A ends the prune-induced restart loop; Item B's in-memory flap state now persists
 long enough to bite (it used to be wiped every ~40s by the restart). The two are a pair:
