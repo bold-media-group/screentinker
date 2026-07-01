@@ -34,6 +34,7 @@ function maxFor(key) { return key === ANON_KEY ? config.connectRateAnonMax : con
 // reason: 'quarantined' (in-memory time-limited), 'flap-cooldown' (post-trip), 'flap-rate'
 // (the trip edge). `quarantined:true` marks the START of a quarantine (log once).
 function check(key, now = Date.now()) {
+  if (!config.flapLimiterEnabled) return { allow: true };   // #146 P1.3 kill switch
   let s = state.get(key);
   if (!s) { s = { hits: [], blockedUntil: 0, lastSeen: now, trips: 0, tripWinStart: now, quarantinedUntil: 0 }; state.set(key, s); }
   s.lastSeen = now;

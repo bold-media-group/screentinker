@@ -81,7 +81,7 @@ async function prunePlayLogs() {
 let _maintRunning = false;
 async function runMaintenance() {
   if (_maintRunning) return;
-  if (currentBand() !== 'normal') return;
+  if (config.maintenanceBandGateEnabled && currentBand() !== 'normal') return;   // #146 P1.3 kill switch
   _maintRunning = true;
   try {
     await pruneProvisioningDevices();

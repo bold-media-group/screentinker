@@ -73,6 +73,23 @@ watch, and the measured worst-case blocking cost per hot path.
 | `event_loop_lag` telemetry | synchronous INSERT per sample | buffered, **batch-inserted every 10s** |
 | `device:register` (4s flapper) | full register + `buildPlaylistPayload` every ~4s | refused at the gate (identity resolve + one indexed SELECT), cheap |
 
+## Kill switches (env — disable a subsystem with a flip + restart, no redeploy)
+Every new subsystem is disable-able so a misfire on alpha is neutralized without a code
+change or bisect. All read at process start.
+
+| Subsystem | Env | Disable value | Effect when off |
+|---|---|---|---|
+| Flap limiter | `FLAP_LIMITER_ENABLED` | `false` | `check()` always allows — no connect-frequency limiting |
+| Auto-quarantine | `CONNECT_RATE_QUARANTINE_TRIPS` | `0` | flappers still cool down, but are never quarantined |
+| Download guard | `OTA_DOWNLOAD_GUARD_ENABLED` | `false` | `/download/apk` never sheds (no concurrency/rate/band caps) |
+| Maintenance band-gate | `MAINTENANCE_BAND_GATE_ENABLED` | `false` | interval maintenance runs regardless of loop-lag band |
+| Flap window / cap (tune, not off) | `CONNECT_RATE_MAX`, `CONNECT_RATE_WINDOW_MS` | raise `MAX` | loosen if healthy devices are refused |
+| Download caps (tune) | `OTA_DOWNLOAD_MAX_CONCURRENT`, `OTA_DOWNLOAD_MAX_PER_WINDOW` | raise | loosen the elevated-band caps |
+| Prune batch (tune) | `STATUS_LOG_PRUNE_BATCH` | lower | smaller batches = smaller max block |
+
+Note the startup prune is intentionally NEVER band-gated (it must clear a boot-time
+backlog); `MAINTENANCE_BAND_GATE_ENABLED` only affects the interval run.
+
 ## Interlock note
 Item A ends the prune-induced restart loop; Item B's in-memory flap state now persists
 long enough to bite (it used to be wiped every ~40s by the restart). The two are a pair:

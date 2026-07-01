@@ -774,7 +774,7 @@ const { applyTenantDeleteCascade } = require('../lib/tenant-cascade-migration');
 let _statusPruneRunning = false;
 async function pruneStatusLog(opts = {}) {
   if (_statusPruneRunning) return 0;                  // re-entrancy: work runs once
-  if (opts.bandGate && currentBand() !== 'normal') return 0;
+  if (opts.bandGate && config.maintenanceBandGateEnabled && currentBand() !== 'normal') return 0;
   _statusPruneRunning = true;
   try {
     const batch = config.statusLogPruneBatch;

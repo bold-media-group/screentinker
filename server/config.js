@@ -139,6 +139,7 @@ module.exports = {
   // (device_id -> fingerprint -> device_token -> ONE global anon bucket), NEVER IP
   // (SNAT collapses the fleet into one key). In-memory (persists now that Item A ends
   // the restart loop); bounded by an idle sweep + the single anon bucket.
+  flapLimiterEnabled: process.env.FLAP_LIMITER_ENABLED !== 'false',              // #146 P1.3 kill switch
   connectRateWindowMs: parseInt(process.env.CONNECT_RATE_WINDOW_MS) || 300000,   // 5 min
   connectRateMax: parseInt(process.env.CONNECT_RATE_MAX) || 20,                  // per identity per window
   connectRateAnonMax: parseInt(process.env.CONNECT_RATE_ANON_MAX) || 60,         // the shared global anon bucket, higher (collective)
@@ -178,6 +179,10 @@ module.exports = {
   // batches, so no sweep can block the loop regardless of table size. Keep well under
   // the ~50ms invariant per batch.
   statusLogPruneBatch: parseInt(process.env.STATUS_LOG_PRUNE_BATCH) || 2000,
+  // #146 P1.3 kill switch: when false, interval maintenance runs regardless of loop-lag
+  // band (disables the band-gate that skips maintenance while loaded). Startup prune is
+  // never band-gated regardless.
+  maintenanceBandGateEnabled: process.env.MAINTENANCE_BAND_GATE_ENABLED !== 'false',
   // #146 hardening (Item C) — /download/apk GLOBAL guards (NOT per-IP; SNAT collapses
   // the fleet to one IP). Concurrency + rate caps + critical-band shed protect the loop
   // and IO from a download flood; the aggregate counter makes a flood VISIBLE (the old
