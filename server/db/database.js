@@ -241,6 +241,12 @@ const migrations = [
   // #146: minimal global key/value settings for admin-toggleable runtime flags (none
   // existed — ai_settings is per-workspace, white_labels is branding).
   "CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))",
+  // #146 BILLING: durable daily usage rollup (contractual system-of-record). One tiny row
+  // per device per calendar day; accumulated incrementally off the heartbeat tick (NOT
+  // reconstructed from status_log, which is 3-day retention). Retained ~400 days, pruned
+  // chunked. day is UTC 'YYYY-MM-DD'; the index serves month-range queries.
+  "CREATE TABLE IF NOT EXISTS device_usage_daily (device_id TEXT NOT NULL, day TEXT NOT NULL, online_seconds INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (device_id, day))",
+  "CREATE INDEX IF NOT EXISTS idx_usage_daily_day ON device_usage_daily(day)",
   // #143: operator device kill switch. blocked=1 refuses the device at the first
   // register gate on its next reconnect (no restart). Hand-settable by direct SQLite:
   //   UPDATE devices SET blocked = 1 WHERE id = '<device_id>';  (0 to unblock)

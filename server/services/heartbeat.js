@@ -2,7 +2,7 @@ const { db, pruneStatusLog } = require('../db/database');
 const config = require('../config');
 const { deviceRoom, emitToWorkspace } = require('../lib/socket-rooms');
 const statusLogWriter = require('../lib/status-log-writer');
-const { chunkedDelete, currentBand } = require('../lib/chunked-prune'); // #146 non-blocking sweeps
+const { chunkedDelete, currentBand, yieldTick } = require('../lib/chunked-prune'); // #146 non-blocking sweeps
 
 // Track connected device sockets: deviceId -> { socketId, lastHeartbeat }
 const deviceConnections = new Map();
@@ -22,6 +22,11 @@ function startHeartbeatChecker(io) {
   setInterval(() => {
     const now = Date.now();
     const dashboardNs = io.of('/dashboard');
+
+    // #146 BILLING: credit currently-connected devices' usage for this interval.
+    // Fire-and-forget + never throws into the interval (billing must not perturb the
+    // heartbeat). Reads the same live presence map as the offline check below.
+    accrueUsage(now).catch(() => {});
 
     // Check database for devices that should be offline
     const onlineDevices = db.prepare("SELECT id, last_heartbeat FROM devices WHERE status = 'online'").all();
@@ -87,6 +92,7 @@ async function runMaintenance() {
     await pruneProvisioningDevices();
     await prunePlayLogs();
     await pruneStatusLog({ bandGate: true });   // per-device chunked; own re-entrancy
+    await pruneUsageDaily();                     // #146 BILLING rollup retention (chunked)
     // Expiry sweeps on small tables — single cheap statements, bounded by table size.
     db.prepare("DELETE FROM team_invites WHERE expires_at < strftime('%s','now')").run();
     db.prepare("DELETE FROM workspace_invites WHERE expires_at < strftime('%s','now')").run();
@@ -121,6 +127,48 @@ function getConnectedCount() {
   return deviceConnections.size;
 }
 
+// #146 BILLING accumulator — credit each currently-connected device's today-row with the
+// seconds elapsed since the last accrual. Retention-INDEPENDENT: it reuses the SAME live
+// presence map as devices_connected (never reconstructs online time from status_log,
+// which is only 3-day). Cheap + non-blocking: chunked UPSERTs, one bounded transaction
+// per chunk, yielding between chunks. The per-accrual credit is CAPPED (accrualCapSeconds)
+// so a stalled loop or restart gap can't inject a bogus large credit; the DAILY total is
+// capped at 86400 in the UPSERT itself. Day is the UTC calendar day of the tick.
+const _usageUpsert = db.prepare(`
+  INSERT INTO device_usage_daily (device_id, day, online_seconds) VALUES (?, ?, ?)
+  ON CONFLICT(device_id, day) DO UPDATE SET online_seconds = MIN(86400, online_seconds + excluded.online_seconds)
+`);
+let _lastAccrue = 0;
+let _accrualRunning = false;
+async function accrueUsage(now = Date.now()) {
+  if (_accrualRunning) return 0;                        // never stack; elapsed-based credit self-heals a skipped tick
+  if (_lastAccrue === 0) { _lastAccrue = now; return 0; } // first tick establishes the baseline; credit nothing
+  const credit = Math.min(Math.floor((now - _lastAccrue) / 1000), config.billing.accrualCapSeconds);
+  _lastAccrue = now;
+  if (credit <= 0) return 0;
+  const ids = Array.from(deviceConnections.keys());
+  if (!ids.length) return 0;
+  const day = new Date(now).toISOString().slice(0, 10);
+  _accrualRunning = true;
+  try {
+    const upsertMany = db.transaction((slice) => { for (const id of slice) _usageUpsert.run(id, day, credit); });
+    const batch = config.billing.accrualBatch;
+    for (let i = 0; i < ids.length; i += batch) {
+      upsertMany(ids.slice(i, i + batch));
+      if (i + batch < ids.length) await yieldTick();     // keep a huge fleet's accrual off the event loop
+    }
+  } finally { _accrualRunning = false; }
+  return ids.length;
+}
+
+// #146 BILLING: prune the daily rollup beyond retention (chunked, so it can never
+// bloat-then-freeze). `day` is a sortable 'YYYY-MM-DD' string → lexical < is a date <.
+const _delUsage = db.prepare('DELETE FROM device_usage_daily WHERE rowid IN (SELECT rowid FROM device_usage_daily WHERE day < ? LIMIT ?)');
+async function pruneUsageDaily() {
+  const cutoff = new Date(Date.now() - config.billing.usageRetentionDays * 86400 * 1000).toISOString().slice(0, 10);
+  return (await chunkedDelete((lim) => _delUsage.run(cutoff, lim).changes, { batch: config.statusLogPruneBatch })).deleted;
+}
+
 // #142: sweep unclaimed provisioning devices older than 24h (imported devices keep a
 // user_id and are preserved). #146: now async + CHUNKED (rides idx_devices_provisioning)
 // so a provisioning-junk flood can't delete-cascade a huge batch in one synchronous
@@ -145,5 +193,8 @@ module.exports = {
   getConnection,
   getAllConnections,
   getConnectedCount,
-  pruneProvisioningDevices
+  pruneProvisioningDevices,
+  accrueUsage,
+  pruneUsageDaily,
+  __resetAccrual: () => { _lastAccrue = 0; },   // #146 test hook: reset the accrual baseline
 };

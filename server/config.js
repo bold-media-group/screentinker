@@ -9,6 +9,17 @@ const DATA_DIR = process.env.DATA_DIR || __dirname;
 const uploadsDir = process.env.UPLOADS_DIR || path.join(DATA_DIR, 'uploads');
 const certsDir = process.env.CERTS_DIR || path.join(DATA_DIR, 'certs');
 
+// #146 billing: optional JSON override for the rate card (else the agreement defaults).
+// Must be a non-empty array of {minScreens, rate}; anything malformed falls back to null.
+function parseBillingRateTable(raw) {
+  if (!raw) return null;
+  try {
+    const t = JSON.parse(raw);
+    if (Array.isArray(t) && t.length && t.every(r => typeof r.minScreens === 'number' && typeof r.rate === 'number')) return t;
+  } catch (_) { /* fall through to defaults */ }
+  return null;
+}
+
 module.exports = {
   port: process.env.PORT || 3001,
   httpsPort: process.env.HTTPS_PORT || 3443,
@@ -198,6 +209,30 @@ module.exports = {
   // #146: env DEFAULT for the /api/status debug block; a persisted app_settings value
   // (admin toggle) overrides this once set. Default on (matches prior behavior).
   statusDebugEnabled: process.env.STATUS_DEBUG_ENABLED !== 'false',
+
+  // #146 BILLING — usage metering per the ByteTinker–Bold Media distribution agreement.
+  // This is the contractual system-of-record; the DEFAULTS BELOW ARE THE AGREEMENT. Change
+  // them only if the contract changes. Single GLOBAL rate card for now — per-tenant rate
+  // cards are a future concern (would key the table by workspace/org).
+  billing: {
+    // ASD (Active Screen-Day) denominator = a "standard 8-hour day" → 8*3600 = 28800s.
+    hoursPerDay: parseInt(process.env.BILLING_HOURS_PER_DAY) || 8,
+    // FLAT (not marginal) tier: the single rate whose minScreens is the greatest ≤ the
+    // month's total Billable Screens applies to ALL of them. Ascending by minScreens.
+    rateTable: parseBillingRateTable(process.env.BILLING_RATE_TABLE) || [
+      { minScreens: 1,    rate: 1.50 },
+      { minScreens: 500,  rate: 1.25 },
+      { minScreens: 1000, rate: 1.00 },
+    ],
+    // device_usage_daily is tiny (1 row/device/day) and retained long; pruned (chunked)
+    // beyond this so it can never bloat-then-freeze.
+    usageRetentionDays: parseInt(process.env.BILLING_USAGE_RETENTION_DAYS) || 400,
+    // Accumulator: UPSERT chunk size per transaction (chunked so a huge fleet can't block
+    // the loop), and the max seconds credited per accrual tick — a stall/restart guard so a
+    // long gap between ticks can't inject a bogus large credit (default 30s = 3× the 10s tick).
+    accrualBatch: parseInt(process.env.BILLING_ACCRUAL_BATCH) || 2000,
+    accrualCapSeconds: parseInt(process.env.BILLING_ACCRUAL_CAP_SECONDS) || 30,
+  },
   // #146 Item E — coalescing log flush + batched event_loop_lag telemetry.
   logCoalesceFlushMs: parseInt(process.env.LOG_COALESCE_FLUSH_MS) || 30000,
   lagFlushMs: parseInt(process.env.LAG_FLUSH_MS) || 10000,
