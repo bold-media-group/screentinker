@@ -6,7 +6,16 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { needsReattach, shouldShowIdle } = require('../lib/player-media-health');
+const PlayerMediaHealth = require('../lib/player-media-health');
+const { needsReattach, shouldShowIdle } = PlayerMediaHealth;
+
+// Guards the define-vs-call class of bug: every method the player calls on
+// PlayerMediaHealth must actually be exported (a missing one throws "X is not a function"
+// at the browser call site and aborts the socket handler).
+test('module surface: needsReattach AND shouldShowIdle are both exported functions', () => {
+  assert.equal(typeof PlayerMediaHealth.needsReattach, 'function');
+  assert.equal(typeof PlayerMediaHealth.shouldShowIdle, 'function');
+});
 
 const video = (o) => ({ isPlaying: true, hasCurrentItem: true, itemKind: 'video', videoEl: o, surfaceAttached: true });
 

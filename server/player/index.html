@@ -812,8 +812,13 @@
         // playing. Showing the idle "Waiting for content..." overlay unconditionally covered
         // the live video (audio kept playing underneath) and the subsequent "Playlist
         // unchanged" left it up. Only fall to idle when nothing is actually playing.
-        const showIdle = window.PlayerMediaHealth
-          ? PlayerMediaHealth.shouldShowIdle({ isPlaying: isPlaying, hasContent: playlist.length > 0 })
+        // Guard the METHOD, not just the object: a device running a stale-cached
+        // player-media-health.js (older module, no shouldShowIdle) would otherwise throw
+        // "shouldShowIdle is not a function" here and abort the rest of this handler. The
+        // !isPlaying fallback is equivalent for the playing case (playing -> not idle).
+        const PMH = window.PlayerMediaHealth;
+        const showIdle = (PMH && typeof PMH.shouldShowIdle === 'function')
+          ? PMH.shouldShowIdle({ isPlaying: isPlaying, hasContent: playlist.length > 0 })
           : !isPlaying;
         if (showIdle) showStatus('Waiting for content...');
       });
@@ -1338,7 +1343,7 @@
               : null,
             surfaceAttached: !!(container && container.querySelector('video,img,iframe,.wall-stage')),
           };
-          if (window.PlayerMediaHealth && PlayerMediaHealth.needsReattach(state)) {
+          if (window.PlayerMediaHealth && typeof PlayerMediaHealth.needsReattach === 'function' && PlayerMediaHealth.needsReattach(state)) {
             console.log('[refresh] media surface lost on no-change refresh — re-attaching current item');
             playCurrentItem();
           } else if (isPlaying) {
