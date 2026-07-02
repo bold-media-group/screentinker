@@ -6,7 +6,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { needsReattach } = require('../lib/player-media-health');
+const { needsReattach, shouldShowIdle } = require('../lib/player-media-health');
 
 const video = (o) => ({ isPlaying: true, hasCurrentItem: true, itemKind: 'video', videoEl: o, surfaceAttached: true });
 
@@ -39,4 +39,17 @@ test('non-video surface (image/youtube/widget): re-attach only when the surface 
   assert.equal(needsReattach({ ...base, itemKind: 'image', surfaceAttached: false }), true);
   assert.equal(needsReattach({ ...base, itemKind: 'youtube', surfaceAttached: false }), true);
   assert.equal(needsReattach({ ...base, itemKind: 'widget', surfaceAttached: true }), false);
+});
+
+// shouldShowIdle — the reconnect reset guard (device:paired / unchanged reconciliation).
+test('THE RECONNECT BUG: already playing -> NEVER show the idle "Waiting" screen', () => {
+  // reconnect re-emits device:paired while content is playing: must stay on the content
+  assert.equal(shouldShowIdle({ isPlaying: true, hasContent: true }), false);
+  assert.equal(shouldShowIdle({ isPlaying: true, hasContent: false }), false);
+});
+
+test('idle screen shows ONLY when genuinely no content and nothing playing', () => {
+  assert.equal(shouldShowIdle({ isPlaying: false, hasContent: false }), true);  // first pair, empty
+  assert.equal(shouldShowIdle({ isPlaying: false, hasContent: true }), false);  // content present, about to render
+  assert.equal(shouldShowIdle(undefined), true);
 });

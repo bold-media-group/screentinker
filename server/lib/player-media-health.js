@@ -44,5 +44,17 @@
     return !s.surfaceAttached;
   }
 
-  return { needsReattach: needsReattach };
+  // Whether the idle "Waiting for content..." screen should be shown, given player state.
+  // THE RECONNECT BUG: the server re-emits device:paired on every re-register of an already-
+  // paired device, and the player showed the idle overlay UNCONDITIONALLY — covering live
+  // content (audio kept playing underneath), and the following "Playlist unchanged" left it
+  // up. Rule: only fall to idle when nothing is playing AND there is genuinely no content to
+  // play. Already playing, or content present and about to render, is NEVER idle.
+  function shouldShowIdle(state) {
+    var s = state || {};
+    if (s.isPlaying) return false;   // something is playing -> never cover it with idle
+    return !s.hasContent;            // idle only when there's genuinely no content
+  }
+
+  return { needsReattach: needsReattach, shouldShowIdle: shouldShowIdle };
 });
