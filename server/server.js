@@ -575,11 +575,12 @@ app.get('/api/version', (req, res) => {
 // Public status page
 app.use('/api/status', require('./routes/status'));
 
-// #146 BILLING: admin-gated Usage Report on its OWN route (NOT part of /api/status —
-// billing is revenue data, admin-only, and a heavier aggregate than the hot status path).
-// JWT-only (no tenancy — platform-global); requireAuth populates req.user, then the route's
-// requirePlatformAdmin gates on role.
-app.use('/api/billing', requireAuth, require('./routes/billing'));
+// #146 BILLING: Usage Report on its OWN route (NOT part of /api/status — billing is revenue
+// data and a heavier aggregate than the hot status path). bearerAuth is the dual front door:
+// a 'billing:read' API token (Bearer st_...) OR a JWT session both reach it; the route's
+// requireBillingRead then authorizes a billing:read token OR a platform-admin session.
+// No tenancy — billing is platform-global.
+app.use('/api/billing', bearerAuth, require('./routes/billing'));
 
 // Activity logging middleware now mounted earlier (just before the workspace
 // route block) - leaving this comment here as a breadcrumb for the move.

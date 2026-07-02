@@ -14,7 +14,7 @@
 
 const crypto = require('crypto');
 const { db } = require('../db/database');
-const { requireAuth } = require('./auth');
+const { requireAuth, isPlatformRole } = require('./auth');
 
 const TOKEN_PREFIX = 'st_';
 
@@ -129,7 +129,22 @@ function agencyGate(req, res, next) {
   next();
 }
 
+// #146 BILLING: dual-path gate for GET /api/billing/usage. Authorize if EITHER path holds,
+// written as an EXPLICIT OR so neither can lock out the other:
+//   (a) a valid API token whose scope is 'billing:read'  (tooling / invoice-time pulls), OR
+//   (b) an authenticated platform-admin SESSION (no token) — admins keep read access but
+//       are NOT required.
+// 'billing:read' is OFF the read/write/full ladder (not in SCOPE_RANK), so tokenScopeGate
+// rejects a billing token on every PUBLIC_ROUTER and JWT-only routers reject any st_ token
+// (jwt.verify → 401): the scope grants billing-read and NOTHING else.
+function requireBillingRead(req, res, next) {
+  const viaBillingToken = req.viaToken && req.tokenScope === 'billing:read';
+  const viaAdminSession = !req.viaToken && req.user && isPlatformRole(req.user.role);
+  if (viaBillingToken || viaAdminSession) return next();
+  return res.status(403).json({ error: 'billing read requires a billing:read token or a platform-admin session' });
+}
+
 module.exports = {
-  bearerAuth, apiTokenAuth, tokenScopeGate, requireScope, agencyGate,
+  bearerAuth, apiTokenAuth, tokenScopeGate, requireScope, agencyGate, requireBillingRead,
   hashToken, generateToken, displayPrefix, TOKEN_PREFIX,
 };

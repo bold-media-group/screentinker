@@ -48,9 +48,12 @@ the rate table by workspace/org). All values are config-driven: `BILLING_HOURS_P
 
 ## API (admin-only, standalone route)
 
-`GET /api/billing/usage?month=YYYY-MM` (default: current month) — platform-admin gated,
-mounted separately from `/api/status` (billing is revenue data and a heavier aggregate; it
-must not touch the hot status path). Reads the rollup only. Returns:
+`GET /api/billing/usage?month=YYYY-MM` (default: current month) — readable via a
+**`billing:read` scoped API token** (owner/platform-admin-minted, revocable, grants
+billing-read ONLY) **OR** a platform-admin session; a `billing:read` token is the intended
+consumer (tooling / invoice-time pulls / §4.2 verification) and cannot reach any other
+endpoint. Mounted separately from `/api/status` (billing is revenue data and a heavier
+aggregate; it must not touch the hot status path). Reads the rollup only. Returns:
 `{ month, days_in_month, days_elapsed, provisioned_screens, billable_screens,
 billable_screens_final?, is_final, tier, rate_usd, cost_usd, daily:[{day, active_screen_days}] }`.
 
