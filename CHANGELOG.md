@@ -1,5 +1,78 @@
 # Changelog
 
+## 1.9.2
+
+**⚠ Major internal hardening release (the "#146" rewrite) — large blast radius.** 1.9.2
+rewrites the connection / maintenance / OTA hot paths to kill an event-loop death spiral,
+plus adds usage-metering (billing) and web-player fixes. If you bisect a regression to the
+1.9.x line, 1.9.2 is the big one. Core invariant introduced: **no synchronous op may block
+the event loop for more than ~50ms**, ever. Every new subsystem has an env kill-switch.
+
+### Fixed — maintenance / prune (the death-spiral root cause)
+- **Non-blocking, chunked, per-device `device_status_log` prune.** The old whole-table
+  `ROW_NUMBER` sort froze boot for 40–48s at ~1M rows → healthcheck fail → restart loop that
+  wiped in-memory throttle state → the spiral. Prune is now per-device, indexed, batched with
+  `setImmediate` yields (`lib/chunked-prune.js`), async, re-entrant, and band-gated on the
+  interval run (the startup prune is intentionally un-gated so a bloated table self-heals on
+  first boot without freezing it). All table-growth sweeps (status-log, play-logs,
+  provisioning, telemetry, lag) route through the chunked helper. New index
+  `idx_devices_provisioning`. **Measured worst-case event-loop gap under the storm harness:
+  <300ms across 300k rows (was 40–48s).**
+
+### Fixed — reconnect / flap
+- **Per-device flap-rate limiter** (`lib/flap-limiter.js`): a device reconnecting faster than
+  `CONNECT_RATE_MAX` (20) per `CONNECT_RATE_WINDOW_MS` (5min) is refused at the register gate,
+  keyed via a **SNAT-safe identity chain** (device_id → fingerprint → token → one bounded
+  global anon bucket) — **never by IP** (the whole fleet egresses one IP). After repeated
+  trips a hard flapper is **quarantined IN-MEMORY for 30min and auto-clears** — it is NOT a
+  durable DB block.
+- **Operator block kill-switch:** `POST /api/devices/:id/{block,unblock}` + a dashboard
+  button; the block check resolves the effective device_id via the identity chain so a
+  device_id-less reconnect of a blocked device is still caught. Takes effect on next register,
+  no restart.
+- Also folded in: false-offline fixes (live-socket liveness beats a lagged heartbeat clock;
+  evicted-socket re-arm race) and per-connection fail-fast so one device's handler throw can
+  never exit the process.
+
+### Fixed — OTA (SNAT-safe)
+- `/api/update/check` early-returns before any filesystem call when there's no offer; APK
+  metadata is cached. `/download/apk` gains a **band-aware** global concurrency + rate guard
+  that sheds with **503 Retry-After only under elevated/critical loop-lag** — under normal
+  band, downloads serve freely (a coordinated fleet rollout is never staggered when healthy).
+  All limiting is global/aggregate — **no per-IP limiting** (SNAT).
+
+### Added — telemetry / logging / observability
+- Batched `event_loop_lag` inserts (buffered, flushed every 10s) and coalesced high-frequency
+  logging (one summarized line per key per 30s; band *changes* stay immediate).
+- **Throughput counters** (running total + last-completed-window) in the `/api/status` debug
+  block so a flapper/flood shows on the server itself (`flap.refusedLastWindow` climbing while
+  `band=normal` = the limiter absorbing it cheaply). The debug block is now **admin-toggleable**
+  (Admin tab, persisted, no restart; default follows `STATUS_DEBUG_ENABLED`).
+- **`devices_connected`** on `/api/status` (always-on): the live WS-socket count from the
+  heartbeat connection map (NOT the lagging `devices.status='online'` column).
+
+### Added — billing (usage metering)
+- **Billable Screens** metering per the ByteTinker–Bold agreement — the contractual
+  system-of-record. A durable daily rollup (`device_usage_daily`) is accumulated incrementally
+  off the heartbeat tick from live presence (retention-independent), pruned chunked. Exposed on
+  a **dedicated, admin-gated `GET /api/billing/usage`** route (NOT on `/api/status`; billing is
+  revenue data). Readable via an **owner-minted, revocable `billing:read` scoped token**
+  (`scripts/mint-billing-token.js`) that authorizes billing-read and nothing else, OR a
+  platform-admin session. See [`docs/billing.md`](docs/billing.md).
+
+### Fixed — web player
+- **"Unchanged" refresh no longer drops the video.** On a reconnect the server re-emits
+  `device:paired` while content is already playing; the player showed the idle "Waiting for
+  content…" overlay unconditionally (covering live video; audio kept playing underneath) and
+  the following "Playlist unchanged" left it up. Idle now shows only when genuinely idle, and
+  an unchanged refresh is a strict no-op that leaves playback exactly as-is.
+- Hardened `PlayerMediaHealth` call sites to guard by **method** (not object) so a stale-cached
+  player module can't throw `shouldShowIdle is not a function` and abort a socket handler.
+
+### Added — translations
+- Italian (`it`) locale updated (#145).
+
+
 ## 1.9.2-beta1 — unreleased
 
 ### Fixed — server resilience (#142)
