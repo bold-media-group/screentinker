@@ -2,6 +2,7 @@ const Database = require('better-sqlite3');
 const fs = require('fs');
 const path = require('path');
 const config = require('../config');
+const { chunkedDelete, yieldTick, currentBand } = require('../lib/chunked-prune'); // #146 non-blocking sweeps
 
 const dbDir = path.dirname(config.dbPath);
 if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
@@ -234,6 +235,22 @@ const migrations = [
   // schema.sql creates these on fresh installs; this covers existing DBs.
   "CREATE TABLE IF NOT EXISTS event_loop_lag (id INTEGER PRIMARY KEY AUTOINCREMENT, sampled_at INTEGER NOT NULL DEFAULT (strftime('%s','now')), mean_ms REAL NOT NULL, p50_ms REAL NOT NULL, p99_ms REAL NOT NULL, max_ms REAL NOT NULL, band TEXT NOT NULL DEFAULT 'normal')",
   "CREATE INDEX IF NOT EXISTS idx_event_loop_lag_sampled ON event_loop_lag(sampled_at)",
+  // #146: index the provisioning-cleanup predicate so the chunked prune's batch
+  // subquery is an index range, not a full devices scan under a provisioning flood.
+  "CREATE INDEX IF NOT EXISTS idx_devices_provisioning ON devices(status, created_at)",
+  // #146: minimal global key/value settings for admin-toggleable runtime flags (none
+  // existed — ai_settings is per-workspace, white_labels is branding).
+  "CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))",
+  // #146 BILLING: durable daily usage rollup (contractual system-of-record). One tiny row
+  // per device per calendar day; accumulated incrementally off the heartbeat tick (NOT
+  // reconstructed from status_log, which is 3-day retention). Retained ~400 days, pruned
+  // chunked. day is UTC 'YYYY-MM-DD'; the index serves month-range queries.
+  "CREATE TABLE IF NOT EXISTS device_usage_daily (device_id TEXT NOT NULL, day TEXT NOT NULL, online_seconds INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (device_id, day))",
+  "CREATE INDEX IF NOT EXISTS idx_usage_daily_day ON device_usage_daily(day)",
+  // #143: operator device kill switch. blocked=1 refuses the device at the first
+  // register gate on its next reconnect (no restart). Hand-settable by direct SQLite:
+  //   UPDATE devices SET blocked = 1 WHERE id = '<device_id>';  (0 to unblock)
+  "ALTER TABLE devices ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0",
 ];
 // Apply each ALTER idempotently. A "duplicate column name" / "already exists"
 // error means the column is already present (expected on a migrated DB) - benign.
@@ -750,31 +767,65 @@ const { applyTenantDeleteCascade } = require('../lib/tenant-cascade-migration');
   }
 })();
 
-// #142 GLOBAL device_status_log retention sweep across ALL devices. Run on startup
-// and on the heartbeat interval (services/heartbeat.js). This covers the rows the
-// per-device insert-time prune in deviceSocket.js misses: removed/idle devices that
-// never insert again, and the heartbeat offline_timeout insert that bypasses
-// logDeviceStatus. A plain time-range delete (like the play_logs prune) — runs off
-// the hot path; after the first sweep the table is small, so the cost is negligible.
-function pruneStatusLog() {
+// #146 hardening — device_status_log retention sweep, rewritten to NEVER block the
+// loop. The old version ran a WHOLE-TABLE `ROW_NUMBER() OVER (PARTITION BY device_id)`
+// sort — 40-48s synchronous on the 1.1M-row incident table, freezing boot into a
+// restart loop (the #146 amplifier). Now:
+//   - PER DEVICE, walking distinct device_ids via a loose index-scan seek
+//     (`WHERE device_id > ? ORDER BY device_id LIMIT 1` — an O(log n) index seek each),
+//     so no statement scans or sorts the whole table;
+//   - each device's backlog trims in bounded batches (rowid IN (SELECT ... LIMIT ?))
+//     with a setImmediate yield between batches AND between devices (chunked-prune.js);
+//   - async + re-entrancy-guarded so overlapping interval fires don't stack;
+//   - band-gated on the INTERVAL (skip while loaded), un-gated at STARTUP so a bloated
+//     table self-heals on next deploy without a restart.
+// Rides idx_device_status_log_device_ts(device_id, timestamp).
+let _statusPruneRunning = false;
+let _lastPrune = { deleted: 0, ms: 0, at: 0 };        // #146 P3.8: soak observability
+let _sweepsTotal = 0;                                 // #146: prune sweeps completed (confirm it's firing, not stalled)
+function getMaintenanceStats() { return { ..._lastPrune, running: _statusPruneRunning, sweepsTotal: _sweepsTotal }; }
+async function pruneStatusLog(opts = {}) {
+  if (_statusPruneRunning) return 0;                  // re-entrancy: work runs once
+  if (opts.bandGate && config.maintenanceBandGateEnabled && currentBand() !== 'normal') return 0;
+  _statusPruneRunning = true;
+  const _t0 = Date.now();
   try {
-    const maxAgeSec = Math.round(config.statusLogRetentionDays * 86400);
-    const n = db.prepare("DELETE FROM device_status_log WHERE timestamp < strftime('%s','now') - ?").run(maxAgeSec).changes;
-    if (n > 0) console.log(`[status-log] pruned ${n} row(s) older than ${config.statusLogRetentionDays}d`);
-    return n;
-  } catch (_) { return 0; }
+    const batch = config.statusLogPruneBatch;
+    const cap = config.statusLogMaxRowsPerDevice;
+    const cutoff = Math.floor(Date.now() / 1000) - Math.round(config.statusLogRetentionDays * 86400);
+    const nextDevice = db.prepare('SELECT device_id FROM device_status_log WHERE device_id > ? ORDER BY device_id LIMIT 1');
+    const delOld = db.prepare('DELETE FROM device_status_log WHERE rowid IN (SELECT rowid FROM device_status_log WHERE device_id = ? AND timestamp < ? LIMIT ?)');
+    const delCap = cap > 0 ? db.prepare('DELETE FROM device_status_log WHERE rowid IN (SELECT rowid FROM device_status_log WHERE device_id = ? ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?)') : null;
+
+    let total = 0, lastDev = '';
+    for (;;) {
+      const row = nextDevice.get(lastDev);            // O(log n) index seek to next distinct device_id
+      if (!row) break;
+      lastDev = row.device_id;
+      // 1) retention — drop rows older than the window, in batches
+      total += (await chunkedDelete((lim) => delOld.run(lastDev, cutoff, lim).changes, { batch })).deleted;
+      // 2) cap — drop rows beyond the newest `cap` (OFFSET cap skips the kept rows), in batches
+      if (delCap) total += (await chunkedDelete((lim) => delCap.run(lastDev, lim, cap).changes, { batch })).deleted;
+      await yieldTick();                              // breathe between devices
+    }
+    if (total > 0) console.log(`[status-log] pruned ${total} row(s) (per-device, newest ${cap}/device + ${config.statusLogRetentionDays}d retention, batches of ${batch})`);
+    _lastPrune = { deleted: total, ms: Date.now() - _t0, at: Math.floor(Date.now() / 1000) };
+    _sweepsTotal += 1;
+    return total;
+  } catch (_) { return 0; } finally { _statusPruneRunning = false; }
 }
 
-// Prune old telemetry (keep last 24h worth at 15s intervals = ~5760, cap at 6000)
+// Prune old telemetry (keep last 24h worth at 15s intervals = ~5760, cap at 6000).
+// #146: BOUNDED single statement — delete at most statusLogPruneBatch rows beyond the
+// newest 6000 (OFFSET 6000). Runs per-heartbeat (deviceSocket.js), so it keeps up
+// incrementally; a post-downtime backlog trims over several heartbeats, never one giant
+// DELETE. Rides idx_telemetry_device(device_id, reported_at DESC). Stays synchronous —
+// it's a single index-bounded statement, well under the ~50ms invariant.
+const _delTelemetry = db.prepare(
+  'DELETE FROM device_telemetry WHERE rowid IN (SELECT rowid FROM device_telemetry WHERE device_id = ? ORDER BY reported_at DESC LIMIT ? OFFSET 6000)'
+);
 function pruneTelemetry(deviceId) {
-  db.prepare(`
-    DELETE FROM device_telemetry
-    WHERE device_id = ? AND id NOT IN (
-      SELECT id FROM device_telemetry
-      WHERE device_id = ?
-      ORDER BY reported_at DESC LIMIT 6000
-    )
-  `).run(deviceId, deviceId);
+  _delTelemetry.run(deviceId, config.statusLogPruneBatch);
 }
 
 // Prune old screenshots (keep only latest per device)
@@ -837,4 +888,4 @@ try {
 const { verifyAndRepairSchema } = require('../lib/schema-check');
 verifyAndRepairSchema(db);
 
-module.exports = { db, pruneTelemetry, pruneScreenshots, pruneStatusLog };
+module.exports = { db, pruneTelemetry, pruneScreenshots, pruneStatusLog, getMaintenanceStats };

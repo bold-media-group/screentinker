@@ -32,6 +32,10 @@ export const api = {
   getDevice: (id) => request(`/devices/${id}`),
   updateDevice: (id, data) => request(`/devices/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteDevice: (id) => request(`/devices/${id}`, { method: 'DELETE' }),
+  // #146 Item D: operator block/unblock — refuses the device at its next register with
+  // no restart. Server enforces via the SNAT-safe identity chain (deviceSocket).
+  blockDevice: (id) => request(`/devices/${id}/block`, { method: 'POST' }),
+  unblockDevice: (id) => request(`/devices/${id}/unblock`, { method: 'POST' }),
 
   // #109 PiP overlay: push/clear a floating overlay on a device or group. `id` may be a
   // device id OR a group id (the server resolves + expands). Needs full scope (no-op for JWT).
@@ -205,6 +209,9 @@ export const api = {
   // Instance-level default branding (#15, platform admin).
   adminGetBranding: () => request('/admin/branding'),
   adminSetBranding: (data) => request('/admin/branding', { method: 'PUT', body: JSON.stringify(data) }),
+  // #146: toggle the /api/status debug block exposure (platform-admin only).
+  adminGetStatusDebug: () => request('/admin/status-debug'),
+  adminSetStatusDebug: (enabled) => request('/admin/status-debug', { method: 'PUT', body: JSON.stringify({ enabled }) }),
 
   // Per-user workspace membership management (platform Users page modal).
   adminGetUserWorkspaces: (id) => request(`/admin/users/${id}/workspaces`),

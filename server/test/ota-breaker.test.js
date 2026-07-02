@@ -1,0 +1,113 @@
+'use strict';
+
+// #144 — OTA-check circuit-breaker + phantom guard. Deterministic unit tests with
+// injected `now` (no waiting), covering the required cases (a)-(f). No DB/socket;
+// the breaker module is pure + in-memory.
+
+const { test, beforeEach } = require('node:test');
+const assert = require('node:assert/strict');
+const ota = require('../lib/ota-breaker');
+
+const LATEST = '1.9.2-beta4';   // simulate the beta4 server
+const T0 = 1_000_000;
+beforeEach(() => ota.reset());
+
+test('semver comparator: real-older < latest, same-core beta order, equal/newer', () => {
+  assert.equal(ota.cmp('1.7.12', LATEST) < 0, true, '1.7.12 older');
+  assert.equal(ota.cmp('1.9.2-beta3', LATEST) < 0, true, 'beta3 < beta4 (same core)');
+  assert.equal(ota.cmp('1.9.2-beta4', LATEST), 0, 'equal');
+  assert.equal(ota.cmp('1.9.3', LATEST) > 0, true, 'newer core');
+  assert.equal(ota.cmp('banana', LATEST), null, 'garbage unparseable');
+});
+
+test('(a) PHANTOM/unrecognized -> instant no-offer, no grace, no rate state', () => {
+  // superseded old-core prerelease (strobe's 1.9.1-beta4) — caught on the FIRST check
+  let v = ota.decide('1.9.1-beta4', LATEST, null, T0);
+  assert.equal(v.update_available, false);
+  assert.equal(v.reason, 'superseded-prerelease');
+  // garbage string
+  v = ota.decide('banana', LATEST, null, T0);
+  assert.equal(v.update_available, false);
+  assert.equal(v.reason, 'unrecognized-version');
+  // never offer a downgrade
+  assert.equal(ota.decide('1.9.3', LATEST, null, T0).update_available, false);
+});
+
+test('(b) fast loop (every 15s) trips within ~3 checks / ~45s, NOT minutes', () => {
+  const r = (dt) => ota.decide('1.7.12', LATEST, null, T0 + dt);
+  assert.equal(r(0).update_available, true, 'check1 offered');
+  assert.equal(r(15_000).update_available, true, 'check2 offered');
+  assert.equal(r(30_000).update_available, true, 'check3 offered');
+  const trip = r(45_000);
+  assert.equal(trip.update_available, false, 'check4 (~45s) trips');
+  assert.equal(trip.reason, 'rate-backoff');
+  assert.ok(trip.retry_after_seconds >= 1, 'backoff has a retry hint');
+});
+
+test('(c) healthy straggler on beta3, polling every 12 min, is ALWAYS offered beta4 (rollout NOT throttled)', () => {
+  for (let i = 0; i < 6; i++) {
+    const v = ota.decide('1.9.2-beta3', LATEST, null, T0 + i * 12 * 60_000);
+    assert.equal(v.update_available, true, `12-min poll #${i + 1} still offered`);
+    assert.equal(v.reason, 'offer');
+  }
+});
+
+test('(d) a device that APPLIES the update (version advances) is never throttled', () => {
+  // it was looping/being offered on the old version...
+  ota.decide('1.7.12', LATEST, 'devX', T0);
+  ota.decide('1.7.12', LATEST, 'devX', T0 + 1000);
+  // ...then it applies -> now reports latest
+  const v = ota.decide(LATEST, LATEST, 'devX', T0 + 2000);
+  assert.equal(v.update_available, false);
+  assert.equal(v.reason, 'up-to-date');     // up-to-date, NOT rate-backoff
+});
+
+test('(e) device_id looping is throttled PER-DEVICE; another device on the same version is unaffected', () => {
+  const loopA = (dt) => ota.decide('1.7.12', LATEST, 'A', T0 + dt);
+  loopA(0); loopA(15_000); loopA(30_000);
+  assert.equal(loopA(45_000).update_available, false, 'device A trips');
+  // device B, same version, checking normally -> its own key, still offered
+  assert.equal(ota.decide('1.7.12', LATEST, 'B', T0 + 46_000).update_available, true, 'device B unaffected');
+});
+
+test('(f) legacy client without device_id is caught by the version-keyed path (and lumps per version)', () => {
+  // two legacy devices, no device_id, same version -> share the v:1.7.12 bucket
+  const v = (dt) => ota.decide('1.7.12', LATEST, null, T0 + dt);
+  assert.equal(v(0).update_available, true);
+  assert.equal(v(10_000).update_available, true);
+  assert.equal(v(20_000).update_available, true);
+  assert.equal(v(30_000).update_available, false, 'combined version-keyed rate trips without any device_id');
+});
+
+test('(scope) slow #144 drip: stable 1.7.12 polling ~every 12 min is NEVER throttled (fast-flood only)', () => {
+  // documents the deliberate scope: this build catches the fast flood + phantoms, NOT the
+  // slow 1.7.12 drip (that needs #144 option-3 skip-after-N, not included here).
+  for (let i = 0; i < 10; i++) {
+    const v = ota.decide('1.7.12', LATEST, null, T0 + i * 12 * 60_000);
+    assert.equal(v.update_available, true, `12-min drip poll #${i + 1} still offered (not throttled)`);
+    assert.equal(v.reason, 'offer');
+  }
+});
+
+test('state Map is bounded: sweep() evicts idle buckets, keeps recent', () => {
+  ota.decide('1.7.12', LATEST, 'old', T0);                 // bucket d:old, lastSeen=T0
+  const now = T0 + 2 * 60 * 60_000;                        // 2h later
+  ota.decide('1.7.12', LATEST, 'recent', now - 60_000);   // bucket d:recent, lastSeen=now-1min
+  assert.equal(ota._size(), 2, 'two buckets');
+  const removed = ota.sweep(now);
+  assert.equal(removed, 1, 'the 2h-idle bucket is evicted');
+  assert.equal(ota._size(), 1, 'the recent bucket is kept (no unbounded growth)');
+});
+
+test('exponential backoff escalates across cooldowns (30s -> 2m)', () => {
+  const r = (dt) => ota.decide('1.7.12', LATEST, 'esc', T0 + dt);
+  r(0); r(15_000); r(30_000);
+  const t1 = r(45_000);                 // first trip
+  assert.equal(t1.retry_after_seconds, 30, 'first cooldown 30s');
+  // after the 30s cooldown elapses, flood again -> next cooldown (2m)
+  const base = 45_000 + 31_000;
+  r(base); r(base + 1000); r(base + 2000);
+  const t2 = r(base + 3000);
+  assert.equal(t2.update_available, false);
+  assert.equal(t2.retry_after_seconds, 120, 'second cooldown escalates to 2m');
+});

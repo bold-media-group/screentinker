@@ -14,7 +14,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { db, pruneStatusLog } = require('../db/database');
 
-test('global sweep deletes rows older than retention across ALL devices, keeps recent', () => {
+test('global sweep deletes rows older than retention across ALL devices, keeps recent', async () => {
   db.exec('DELETE FROM device_status_log'); // clean slate
   const old = db.prepare("INSERT INTO device_status_log (device_id, status, timestamp) VALUES (?, ?, strftime('%s','now') - ?)");
 
@@ -30,7 +30,7 @@ test('global sweep deletes rows older than retention across ALL devices, keeps r
 
   assert.equal(db.prepare('SELECT COUNT(*) c FROM device_status_log').get().c, 5, 'seeded 5 rows');
 
-  const deleted = pruneStatusLog();
+  const deleted = await pruneStatusLog();
   assert.equal(deleted, 3, 'the 3 over-retention rows pruned (incl. removed-idle + offline_timeout paths)');
 
   const remaining = db.prepare('SELECT device_id, status FROM device_status_log ORDER BY device_id').all();
@@ -42,7 +42,7 @@ test('global sweep deletes rows older than retention across ALL devices, keeps r
   assert.ok(oldestNow >= cutoff, 'no surviving row is older than the retention cutoff');
 });
 
-test('sweep is safe and idempotent on an empty/already-clean table', () => {
+test('sweep is safe and idempotent on an empty/already-clean table', async () => {
   db.exec('DELETE FROM device_status_log');
-  assert.equal(pruneStatusLog(), 0, 'nothing to delete -> 0, no throw');
+  assert.equal(await pruneStatusLog(), 0, 'nothing to delete -> 0, no throw');
 });

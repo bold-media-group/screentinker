@@ -8,19 +8,21 @@ const config = require('../config');
 const VERSION = require('../version');
 const { PLATFORM_ROLES } = require('../middleware/auth');
 const loopLag = require('../services/loop-lag');
+// #146 P3.8: soak observability — internal limiter/maintenance states.
+const flapLimiter = require('../lib/flap-limiter');
+const otaBreaker = require('../lib/ota-breaker');
+const otaDownloadGuard = require('../lib/ota-download-guard');
+const logCoalescer = require('../lib/log-coalescer');
+const { getMaintenanceStats } = require('../db/database');
+const heartbeat = require('../services/heartbeat');
+const appSettings = require('../lib/app-settings');
 
 // Public status page
 router.get('/', (req, res) => {
-  const totalDevices = db.prepare('SELECT COUNT(*) as count FROM devices').get().count;
-  const onlineDevices = db.prepare("SELECT COUNT(*) as count FROM devices WHERE status = 'online'").get().count;
-  const totalContent = db.prepare('SELECT COUNT(*) as count FROM content').get().count;
-  const totalUsers = db.prepare('SELECT COUNT(*) as count FROM users').get().count;
   const uptime = process.uptime();
-
-  // Public status - minimal info only (no user counts, no server internals)
   const version = VERSION;
 
-  res.json({
+  const body = {
     status: 'ok',
     version,
     uptime_human: formatUptime(uptime),
@@ -28,7 +30,26 @@ router.get('/', (req, res) => {
     // #142: current event-loop lag snapshot, so site lag is diagnosable from the
     // health endpoint independent of any throttling. Cheap (in-memory read).
     loop_lag: loopLag.getLag(),
-  });
+    // #146: ALWAYS-ON live-fleet gauge — devices with a live WS socket THIS INSTANT
+    // (from the heartbeat connection map), NOT devices.status='online' (which lags by
+    // the offline-timeout). The single most-glanced operational number; never gated.
+    devices_connected: heartbeat.getConnectedCount(),
+  };
+
+  // #146: the debug block is admin-toggleable (app_settings.status_debug_enabled),
+  // defaulting to the STATUS_DEBUG_ENABLED env behavior. Cheap cached boolean. When off,
+  // the `debug` key is omitted entirely. Aggregate counts only (no ids/secrets).
+  if (appSettings.getBool('status_debug_enabled', config.statusDebugEnabled)) {
+    body.debug = {
+      flap: flapLimiter.stats(),                  // buckets, quarantined, refused{Total,LastWindow}, quarantineStarts{Total,LastWindow}
+      ota_breaker: otaBreaker.stats(),            // rateBackoff{Total,LastWindow}
+      ota_download: otaDownloadGuard.stats(),     // inFlight, served/shed ThisWindow + Total
+      maintenance: getMaintenanceStats(),         // deleted, ms, at, running, sweepsTotal
+      log_coalescer_buffer: logCoalescer._size(),
+    };
+  }
+
+  res.json(body);
 });
 
 function formatUptime(seconds) {
