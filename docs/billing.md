@@ -57,6 +57,13 @@ aggregate; it must not touch the hot status path). Reads the rollup only. Return
 `{ month, days_in_month, days_elapsed, provisioned_screens, billable_screens,
 billable_screens_final?, is_final, tier, rate_usd, cost_usd, daily:[{day, active_screen_days}] }`.
 
+**Minting a `billing:read` token — owner only:** billing tokens are minted server-side by
+the platform owner via `node scripts/mint-billing-token.js --name "<label>"` (printed ONCE;
+`--list` / `--revoke <id>` to manage). They are **intentionally NOT** in the workspace
+API-Tokens UI (that surface is workspace-scoped and self-service; a billing token grants
+platform-wide billing-read). The token authorizes ONLY `GET /api/billing/usage` — off the
+read/write/full ladder, refused everywhere else.
+
 **Month-to-date rule:** for the current month the average is computed over **completed
 calendar days only** — today accrues live and appears in `daily` but is excluded from the
 running average until it completes, so a partial today doesn't drag the estimate.
