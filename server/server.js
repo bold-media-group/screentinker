@@ -276,6 +276,13 @@ app.get('/player/schedule-eval.js', (req, res) => {
   res.sendFile(path.join(__dirname, 'lib', 'schedule-eval.js'));
 });
 
+// #146 web-player fix: serve the media-surface health decision from its single source
+// (server/lib/player-media-health.js) so the player and the Node test can't drift.
+app.get('/player/player-media-health.js', (req, res) => {
+  res.type('application/javascript').setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(__dirname, 'lib', 'player-media-health.js'));
+});
+
 // Serve web player at /player (same no-cache for JS/HTML). The index.html
 // route above intercepts the HTML requests; everything else still falls
 // through to this static handler (debug-overlay.js, sw.js, manifest, etc).

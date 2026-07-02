@@ -232,6 +232,7 @@
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="/player/schedule-eval.js"></script>
+  <script src="/player/player-media-health.js"></script>
   <script>
     // ==================== i18n ====================
     // Lightweight inline i18n for the player. The player is a standalone page
@@ -1307,6 +1308,33 @@
 
       if (newFp === oldFp && playlist.length > 0 && !wallChanged) {
         console.log('Playlist unchanged');
+        // #146 fix: a no-change refresh used to blindly return — so if the <video> surface
+        // had been lost (detached from the DOM while its element kept decoding audio: video
+        // gone, audio still playing), the re-attach (which lives ONLY in the content-changed
+        // branch below) never ran. Re-render the CURRENT item, but ONLY when the surface is
+        // actually unhealthy, so a healthy poll stays a no-op (no flicker on every refresh).
+        try {
+          const item = playlist[currentIndex];
+          const kind = !item ? 'other'
+            : item.widget_id ? 'widget'
+            : item.mime_type === 'video/youtube' ? 'youtube'
+            : (typeof item.mime_type === 'string' && item.mime_type.startsWith('video/')) ? 'video'
+            : (typeof item.mime_type === 'string' && item.mime_type.startsWith('image/')) ? 'image' : 'other';
+          const container = document.getElementById('playerContainer');
+          const state = {
+            isPlaying: isPlaying,
+            hasCurrentItem: !!item,
+            itemKind: kind,
+            videoEl: currentVideoEl
+              ? { attached: document.contains(currentVideoEl), ended: !!currentVideoEl.ended, errored: !!currentVideoEl.error }
+              : null,
+            surfaceAttached: !!(container && container.querySelector('video,img,iframe,.wall-stage')),
+          };
+          if (window.PlayerMediaHealth && PlayerMediaHealth.needsReattach(state)) {
+            console.log('[refresh] media surface lost on no-change refresh — re-attaching current item');
+            playCurrentItem();
+          }
+        } catch (e) { /* never let the health check break a refresh */ }
         return;
       }
 
@@ -1606,6 +1634,17 @@
           } catch (e) { /* element may already be detached */ }
         });
         container.innerHTML = '';
+      }
+      // #146 fix: also release currentVideoEl even if it was DETACHED from the container —
+      // a detached-but-playing <video> keeps emitting audio and the querySelectorAll above
+      // (scoped to the container) can't find it. This is what kills the "ghost audio".
+      if (currentVideoEl) {
+        try {
+          currentVideoEl.onended = null; currentVideoEl.onerror = null; currentVideoEl.onloadeddata = null;
+          currentVideoEl.pause();
+          currentVideoEl.removeAttribute('src');
+          currentVideoEl.load();
+        } catch (e) { /* element may already be gone */ }
       }
       currentVideoEl = null;
     }
