@@ -232,6 +232,7 @@
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="/player/schedule-eval.js"></script>
+  <script src="/player/player-media-health.js"></script>
   <script>
     // ==================== i18n ====================
     // Lightweight inline i18n for the player. The player is a standalone page
@@ -806,7 +807,20 @@
         saveConfig(config);
         console.log('Paired as:', data.name);
         document.getElementById('setupScreen').style.display = 'none';
-        showStatus('Waiting for content...');
+        // #146 fix: the server re-emits device:paired on EVERY re-register of an already-
+        // paired device (deviceSocket.js), i.e. on every reconnect — while content is already
+        // playing. Showing the idle "Waiting for content..." overlay unconditionally covered
+        // the live video (audio kept playing underneath) and the subsequent "Playlist
+        // unchanged" left it up. Only fall to idle when nothing is actually playing.
+        // Guard the METHOD, not just the object: a device running a stale-cached
+        // player-media-health.js (older module, no shouldShowIdle) would otherwise throw
+        // "shouldShowIdle is not a function" here and abort the rest of this handler. The
+        // !isPlaying fallback is equivalent for the playing case (playing -> not idle).
+        const PMH = window.PlayerMediaHealth;
+        const showIdle = (PMH && typeof PMH.shouldShowIdle === 'function')
+          ? PMH.shouldShowIdle({ isPlaying: isPlaying, hasContent: playlist.length > 0 })
+          : !isPlaying;
+        if (showIdle) showStatus('Waiting for content...');
       });
 
       socket.on('device:unpaired', () => {
@@ -1307,6 +1321,38 @@
 
       if (newFp === oldFp && playlist.length > 0 && !wallChanged) {
         console.log('Playlist unchanged');
+        // #146 fix: a no-change refresh used to blindly return — so if the <video> surface
+        // had been lost (detached from the DOM while its element kept decoding audio: video
+        // gone, audio still playing), the re-attach (which lives ONLY in the content-changed
+        // branch below) never ran. Re-render the CURRENT item, but ONLY when the surface is
+        // actually unhealthy, so a healthy poll stays a no-op (no flicker on every refresh).
+        try {
+          const item = playlist[currentIndex];
+          const kind = !item ? 'other'
+            : item.widget_id ? 'widget'
+            : item.mime_type === 'video/youtube' ? 'youtube'
+            : (typeof item.mime_type === 'string' && item.mime_type.startsWith('video/')) ? 'video'
+            : (typeof item.mime_type === 'string' && item.mime_type.startsWith('image/')) ? 'image' : 'other';
+          const container = document.getElementById('playerContainer');
+          const state = {
+            isPlaying: isPlaying,
+            hasCurrentItem: !!item,
+            itemKind: kind,
+            videoEl: currentVideoEl
+              ? { attached: document.contains(currentVideoEl), ended: !!currentVideoEl.ended, errored: !!currentVideoEl.error }
+              : null,
+            surfaceAttached: !!(container && container.querySelector('video,img,iframe,.wall-stage')),
+          };
+          if (window.PlayerMediaHealth && typeof PlayerMediaHealth.needsReattach === 'function' && PlayerMediaHealth.needsReattach(state)) {
+            console.log('[refresh] media surface lost on no-change refresh — re-attaching current item');
+            playCurrentItem();
+          } else if (isPlaying) {
+            // #146 fix: unchanged + already playing must LEAVE playback exactly as-is. Clear
+            // any stale idle overlay (e.g. the one a reconnect's device:paired put up) so the
+            // "unchanged" confirmation never leaves "Waiting for content..." over live content.
+            hideStatus();
+          }
+        } catch (e) { /* never let the health check break a refresh */ }
         return;
       }
 
@@ -1606,6 +1652,17 @@
           } catch (e) { /* element may already be detached */ }
         });
         container.innerHTML = '';
+      }
+      // #146 fix: also release currentVideoEl even if it was DETACHED from the container —
+      // a detached-but-playing <video> keeps emitting audio and the querySelectorAll above
+      // (scoped to the container) can't find it. This is what kills the "ghost audio".
+      if (currentVideoEl) {
+        try {
+          currentVideoEl.onended = null; currentVideoEl.onerror = null; currentVideoEl.onloadeddata = null;
+          currentVideoEl.pause();
+          currentVideoEl.removeAttribute('src');
+          currentVideoEl.load();
+        } catch (e) { /* element may already be gone */ }
       }
       currentVideoEl = null;
     }

@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS devices (
     name            TEXT NOT NULL DEFAULT 'Unnamed Display',
     pairing_code    TEXT UNIQUE,
     status          TEXT NOT NULL DEFAULT 'offline',
+    blocked         INTEGER NOT NULL DEFAULT 0,
     last_heartbeat  INTEGER,
     ip_address      TEXT,
     android_version TEXT,
@@ -545,7 +546,7 @@ CREATE TABLE IF NOT EXISTS api_tokens (
     name            TEXT NOT NULL,                            -- user-given label
     user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     workspace_id    TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    scope           TEXT NOT NULL DEFAULT 'read',             -- 'read' | 'write' | 'full' | 'agency'
+    scope           TEXT NOT NULL DEFAULT 'read',             -- 'read' | 'write' | 'full' | 'agency' | 'billing:read'
     auto_publish    INTEGER NOT NULL DEFAULT 0,                -- #73: agency only. 0 = items land DRAFT (default, fail-safe); 1 = admin opted this agency out of approval
     created_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')),
     last_used_at    INTEGER,

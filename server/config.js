@@ -9,6 +9,17 @@ const DATA_DIR = process.env.DATA_DIR || __dirname;
 const uploadsDir = process.env.UPLOADS_DIR || path.join(DATA_DIR, 'uploads');
 const certsDir = process.env.CERTS_DIR || path.join(DATA_DIR, 'certs');
 
+// #146 billing: optional JSON override for the rate card (else the agreement defaults).
+// Must be a non-empty array of {minScreens, rate}; anything malformed falls back to null.
+function parseBillingRateTable(raw) {
+  if (!raw) return null;
+  try {
+    const t = JSON.parse(raw);
+    if (Array.isArray(t) && t.length && t.every(r => typeof r.minScreens === 'number' && typeof r.rate === 'number')) return t;
+  } catch (_) { /* fall through to defaults */ }
+  return null;
+}
+
 module.exports = {
   port: process.env.PORT || 3001,
   httpsPort: process.env.HTTPS_PORT || 3443,
@@ -127,6 +138,29 @@ module.exports = {
   reconnectMaxBackoffMs: parseInt(process.env.RECONNECT_MAX_BACKOFF_MS) || 60000,
   reconnectMaxLevel: parseInt(process.env.RECONNECT_MAX_LEVEL) || 10,
   reconnectReleaseMs: parseInt(process.env.RECONNECT_RELEASE_MS) || 30000,
+  // #146 evict idle reconnect-throttle buckets so per-device state can't grow
+  // unbounded over churned device_ids (the sweep ota-breaker has but the #142
+  // throttle lacked). A device quiet this long has its bucket dropped.
+  reconnectIdleResetMs: parseInt(process.env.RECONNECT_IDLE_RESET_MS) || 60 * 60 * 1000,
+  // #146 hardening — SUSTAINED flap limiter (lib/flap-limiter.js). The #142 burst
+  // throttle trips at reconnectBaseMax/reconnectWindowMs (5/10s) — a device flapping
+  // every 3-5s does ~2-3/10s and passes clean, yet each cycle is an expensive
+  // register+playlist build+acks and one status_log row. This SEPARATE limiter catches
+  // sustained flapping over a long window. Keyed via the identity fallback chain
+  // (device_id -> fingerprint -> device_token -> ONE global anon bucket), NEVER IP
+  // (SNAT collapses the fleet into one key). In-memory (persists now that Item A ends
+  // the restart loop); bounded by an idle sweep + the single anon bucket.
+  flapLimiterEnabled: process.env.FLAP_LIMITER_ENABLED !== 'false',              // #146 P1.3 kill switch
+  connectRateWindowMs: parseInt(process.env.CONNECT_RATE_WINDOW_MS) || 300000,   // 5 min
+  connectRateMax: parseInt(process.env.CONNECT_RATE_MAX) || 20,                  // per identity per window
+  connectRateAnonMax: parseInt(process.env.CONNECT_RATE_ANON_MAX) || 60,         // the shared global anon bucket, higher (collective)
+  connectRateCooldownMs: parseInt(process.env.CONNECT_RATE_COOLDOWN_MS) || 60000, // refuse window after a trip
+  connectRateIdleMs: parseInt(process.env.CONNECT_RATE_IDLE_MS) || 2 * 300000,   // sweep buckets idle this long
+  // after this many trips within a window the identity is auto-quarantined — an
+  // IN-MEMORY, TIME-LIMITED refusal (NOT a DB block; the devices.blocked column is only
+  // ever written by an operator). Self-heals after connectRateQuarantineMs. 0 = off.
+  connectRateQuarantineTrips: parseInt(process.env.CONNECT_RATE_QUARANTINE_TRIPS) || 5,
+  connectRateQuarantineMs: parseInt(process.env.CONNECT_RATE_QUARANTINE_MS) || 30 * 60 * 1000,
   // Cold start: for this long after process start, lag is high while the whole
   // fleet reconnects at once. Treat leniently — force the 'normal' band and apply
   // only the hard ceiling (no rate-band throttle) so a deploy can't throttle
@@ -143,10 +177,100 @@ module.exports = {
   // is LOWER than the old hardcoded 7 days (the reporter's bloat happened under 7d);
   // 2-3 days is plenty for the dashboard's 24h uptime view + diagnostics.
   statusLogRetentionDays: parseFloat(process.env.STATUS_LOG_RETENTION_DAYS) || 3,
+  // #146 HARD per-device row-count ceiling on device_status_log, enforced by the
+  // global sweep alongside the age delete above. Age-based retention can't bound a
+  // write storm (rows are all younger than the window), so a reconnect storm grew
+  // the table to 1.1M. This cap keeps only the newest N transitions per device, so
+  // the table is bounded by (devices * N) REGARDLESS of churn — and the very first
+  // sweep trims the existing backlog (table healthy now, not in retentionDays).
+  statusLogMaxRowsPerDevice: parseInt(process.env.STATUS_LOG_MAX_ROWS_PER_DEVICE) || 500,
+  // #146 hardening: max rows any single synchronous maintenance DELETE may touch. All
+  // table-growth sweeps (status_log, play_logs, provisioning cascade, event_loop_lag,
+  // telemetry) delete in batches of this size, yielding to the event loop between
+  // batches, so no sweep can block the loop regardless of table size. Keep well under
+  // the ~50ms invariant per batch.
+  statusLogPruneBatch: parseInt(process.env.STATUS_LOG_PRUNE_BATCH) || 2000,
+  // #146 P1.3 kill switch: when false, interval maintenance runs regardless of loop-lag
+  // band (disables the band-gate that skips maintenance while loaded). Startup prune is
+  // never band-gated regardless.
+  maintenanceBandGateEnabled: process.env.MAINTENANCE_BAND_GATE_ENABLED !== 'false',
+  // #146 hardening (Item C) — /download/apk GLOBAL guards (NOT per-IP; SNAT collapses
+  // the fleet to one IP). Concurrency + rate caps + critical-band shed protect the loop
+  // and IO from a download flood; the aggregate counter makes a flood VISIBLE (the old
+  // per-IP-per-10min log throttle hid it under SNAT).
+  otaDownloadGuardEnabled: process.env.OTA_DOWNLOAD_GUARD_ENABLED !== 'false',  // #146 P1.3 kill switch
+  otaDownloadMaxConcurrent: parseInt(process.env.OTA_DOWNLOAD_MAX_CONCURRENT) || 10,
+  otaDownloadMaxPerWindow: parseInt(process.env.OTA_DOWNLOAD_MAX_PER_WINDOW) || 120,
+  otaDownloadWindowMs: parseInt(process.env.OTA_DOWNLOAD_WINDOW_MS) || 60000,
+  otaApkRefreshMs: parseInt(process.env.OTA_APK_REFRESH_MS) || 60000,
+  // #146 observability: rolling window for the /api/status.debug throughput counters, so
+  // "lastWindow" is comparable across subsystems.
+  debugStatsWindowMs: parseInt(process.env.DEBUG_STATS_WINDOW_MS) || 60000,
+  // #146: env DEFAULT for the /api/status debug block; a persisted app_settings value
+  // (admin toggle) overrides this once set. Default on (matches prior behavior).
+  statusDebugEnabled: process.env.STATUS_DEBUG_ENABLED !== 'false',
+
+  // #146 BILLING — usage metering per the ByteTinker–Bold Media distribution agreement.
+  // This is the contractual system-of-record; the DEFAULTS BELOW ARE THE AGREEMENT. Change
+  // them only if the contract changes. Single GLOBAL rate card for now — per-tenant rate
+  // cards are a future concern (would key the table by workspace/org).
+  billing: {
+    // ASD (Active Screen-Day) denominator = a "standard 8-hour day" → 8*3600 = 28800s.
+    hoursPerDay: parseInt(process.env.BILLING_HOURS_PER_DAY) || 8,
+    // FLAT (not marginal) tier: the single rate whose minScreens is the greatest ≤ the
+    // month's total Billable Screens applies to ALL of them. Ascending by minScreens.
+    rateTable: parseBillingRateTable(process.env.BILLING_RATE_TABLE) || [
+      { minScreens: 1,    rate: 1.50 },
+      { minScreens: 500,  rate: 1.25 },
+      { minScreens: 1000, rate: 1.00 },
+    ],
+    // device_usage_daily is tiny (1 row/device/day) and retained long; pruned (chunked)
+    // beyond this so it can never bloat-then-freeze.
+    usageRetentionDays: parseInt(process.env.BILLING_USAGE_RETENTION_DAYS) || 400,
+    // Accumulator: UPSERT chunk size per transaction (chunked so a huge fleet can't block
+    // the loop), and the max seconds credited per accrual tick — a stall/restart guard so a
+    // long gap between ticks can't inject a bogus large credit (default 30s = 3× the 10s tick).
+    accrualBatch: parseInt(process.env.BILLING_ACCRUAL_BATCH) || 2000,
+    accrualCapSeconds: parseInt(process.env.BILLING_ACCRUAL_CAP_SECONDS) || 30,
+  },
+  // #146 Item E — coalescing log flush + batched event_loop_lag telemetry.
+  logCoalesceFlushMs: parseInt(process.env.LOG_COALESCE_FLUSH_MS) || 30000,
+  lagFlushMs: parseInt(process.env.LAG_FLUSH_MS) || 10000,
+  lagBufferMax: parseInt(process.env.LAG_BUFFER_MAX) || 2000,
+  // #146 device_status_log write batching (lib/status-log-writer.js). Status
+  // transitions are buffered and coalesced to the NET state per device per flush,
+  // so a flapping device writes ~1 row/flush instead of a row per transition —
+  // breaking the storm -> table-growth -> slow-writes -> more-lag feedback loop.
+  statusLogFlushMs: parseInt(process.env.STATUS_LOG_FLUSH_MS) || 1000,
 
   // #142 content-ack dedup window (deviceSocket.js). A device (esp. older apps)
   // can spam "content <id>: ready" for the same item; suppress identical
   // (device_id, content_id, status) reports within this window. A status CHANGE
   // has a different key and passes immediately. In-memory; resets on restart.
   contentAckDedupMs: parseInt(process.env.CONTENT_ACK_DEDUP_MS) || 10000,
+
+  // #143 content-ack RATE budget (lib/content-ack-limiter.js), layered on top of the
+  // dedup above. Caps TOTAL acks per device per window REGARDLESS of differing
+  // content_id — the flood the dedup misses (a device cycling 2-4 ids makes every
+  // ack look unique, so dedup never fires, yet aggregate volume blocks the loop).
+  // TUNING GUESSES — validate against Bold's real fleet. Legit playlist cadence is
+  // roughly <=1 ack/s/device; the flood is many/s. 20 per 10s (=2/s) sits above
+  // legit and below the flood. Easy to retune via env.
+  contentAckMaxPerWindow: parseInt(process.env.CONTENT_ACK_MAX_PER_WINDOW) || 20,
+  contentAckRateWindowMs: parseInt(process.env.CONTENT_ACK_RATE_WINDOW_MS) || 10000,
+
+  // #143 fingerprint-reclaim liveness. A reinstalled app (same fingerprint, no
+  // device_id, has pairing_code) may reclaim its old device's identity once that
+  // device is gone by RUNTIME signals: no live socket AND last heartbeat older than
+  // this settle window. Previously an effective 24h calendar grace treated a device
+  // merely offline <24h as "active", so a legitimately-gone device (liveConn=false,
+  // status=offline, stale heartbeat) could never reclaim and retried every ~2s,
+  // flooding logs (Bold beta1). Settle = the max reclaim wait; keep it comfortably
+  // above heartbeatTimeout (45s) so a brief blip isn't mistaken for "gone".
+  // SECURITY TRADEOFF: this also shortens the anti-(fingerprint-theft) window from
+  // 24h — raise it to re-tighten, at the cost of reinstall latency. Tuning guess.
+  reclaimSettleSeconds: parseInt(process.env.RECLAIM_SETTLE_SECONDS) || 300,
+  // #143 throttle the reclaim-deferred log to once per device per window, so a
+  // retrying/stuck device can't flood stdout (same discipline as the content-ack shed log).
+  reclaimRejectLogWindowMs: parseInt(process.env.RECLAIM_REJECT_LOG_WINDOW_MS) || 60000,
 };

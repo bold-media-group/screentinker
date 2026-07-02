@@ -8,10 +8,12 @@ const { db } = require('../db/database');
 const { generateToken, hashToken, displayPrefix } = require('../middleware/apiToken');
 const { accessContext } = require('../lib/tenancy');
 const { isZonedPlaylist } = require('../lib/agency-targets'); // #73: full-screen-only guardrail
+const { isPlatformRole } = require('../middleware/auth');       // #146: billing:read mint gate
 
 // #73: 'agency' is OFF the read/write/full ladder (not in apiToken.js SCOPE_RANK), so a
 // tokenScopeGate-mounted router rejects it; it reaches only the AGENCY_ROUTER via agencyGate.
-const SCOPES = ['read', 'write', 'full', 'agency'];
+// #146: 'billing:read' is likewise off-ladder — reaches only /api/billing via requireBillingRead.
+const SCOPES = ['read', 'write', 'full', 'agency', 'billing:read'];
 
 // List the caller's tokens in the active workspace. Never returns the secret/hash.
 router.get('/', (req, res) => {
@@ -35,7 +37,15 @@ router.post('/', (req, res) => {
   const scope = req.body.scope || 'read';
   if (!name) return res.status(400).json({ error: 'name is required' });
   if (name.length > 100) return res.status(400).json({ error: 'name too long' });
-  if (!SCOPES.includes(scope)) return res.status(400).json({ error: "scope must be 'read', 'write', 'full' or 'agency'" });
+  if (!SCOPES.includes(scope)) return res.status(400).json({ error: "scope must be 'read', 'write', 'full', 'agency' or 'billing:read'" });
+  // #146 BILLING: a billing:read token grants GLOBAL billing-read, so minting it is
+  // PLATFORM-ADMIN ONLY — stricter than read/write/full/agency, which any workspace member
+  // may mint. The privilege is concentrated at ISSUANCE; the token then carries only the
+  // narrow read. NOTE: there is no finer "owner" tier than platform_admin here — #14
+  // collapsed legacy superadmin → platform_admin, so PLATFORM_ROLES is the top level.
+  if (scope === 'billing:read' && !isPlatformRole(req.user.role)) {
+    return res.status(403).json({ error: 'only a platform admin can mint a billing:read token' });
+  }
   // The token runs with platform powers stripped (role forced to 'user'), so it must
   // bind to a workspace the owner reaches via membership/org - not platform act-as -
   // else apiTokenAuth+resolveTenancy would land it in no workspace at use time.

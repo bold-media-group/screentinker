@@ -3,6 +3,7 @@ const { verifyToken } = require('../middleware/auth');
 const { db } = require('../db/database');
 const { accessContext, accessibleWorkspaceIds } = require('../lib/tenancy');
 const { workspaceRoom } = require('../lib/socket-rooms');
+const { protectSocket } = require('../lib/safe-socket');
 
 // Phase 2.3: workspace-scoped socket rooms + per-command permission gates.
 // Replaces the previous flat dashboardNs.emit broadcast (which leaked every
@@ -48,6 +49,9 @@ module.exports = function setupDashboardSocket(io) {
   });
 
   dashboardNs.on('connection', (socket) => {
+    // #146: same per-connection fail-fast as the device namespace — a throwing
+    // dashboard handler disconnects only that client, never crashes the server.
+    protectSocket(socket, () => socket.userId);
     // Note on workspace-switch lifecycle: the switcher (Phase 3 MVP) calls
     // window.location.reload() after switching, which forces a new socket
     // connection with fresh JWT claims. So workspace memberships are

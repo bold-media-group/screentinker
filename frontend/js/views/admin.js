@@ -92,6 +92,11 @@ export async function render(container) {
       <h3>${t('admin.system')}</h3>
       <div id="systemInfo"><p style="color:var(--text-muted)">${t('common.loading')}</p></div>
     </div>
+
+    <div class="settings-section">
+      <h3>Status endpoint</h3>
+      <div id="statusDebugForm"><p style="color:var(--text-muted)">${t('common.loading')}</p></div>
+    </div>
   `;
 
   // Add User (#10): platform admin provisions a user into ANY workspace. The
@@ -122,6 +127,7 @@ export async function render(container) {
   loadBranding();
   loadPlans();
   loadSystem();
+  loadStatusDebug();
 
 }
 
@@ -339,6 +345,29 @@ async function loadUsers() {
       };
     });
   } catch (err) { el.innerHTML = `<p style="color:var(--danger)">${esc(err.message)}</p>`; }
+}
+
+// #146: toggle /api/status debug-metrics exposure. Mirrors loadBranding's
+// load-then-save pattern; takes effect on the next status poll (no restart).
+async function loadStatusDebug() {
+  const el = document.getElementById('statusDebugForm');
+  if (!el) return;
+  let enabled = false;
+  try { enabled = (await api.adminGetStatusDebug()).enabled; }
+  catch (e) { el.innerHTML = `<p style="color:var(--danger)">${esc(e.message || 'Failed to load')}</p>`; return; }
+  el.innerHTML = `
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+      <input type="checkbox" id="statusDebugChk" ${enabled ? 'checked' : ''}> Expose /api/status debug metrics
+    </label>
+    <p style="color:var(--text-muted);font-size:12px;margin:4px 0 0 24px">Adds internal limiter/prune/OTA counters to the public status endpoint. Off by default.</p>
+  `;
+  document.getElementById('statusDebugChk').onchange = async (e) => {
+    const chk = e.target;
+    chk.disabled = true;
+    try { await api.adminSetStatusDebug(chk.checked); showToast('Status debug ' + (chk.checked ? 'enabled' : 'disabled'), 'success'); }
+    catch (err) { showToast(err.message, 'error'); chk.checked = !chk.checked; }
+    finally { chk.disabled = false; }
+  };
 }
 
 async function loadPlans() {

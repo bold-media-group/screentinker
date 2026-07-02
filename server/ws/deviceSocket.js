@@ -7,6 +7,13 @@ const config = require('../config');
 const heartbeat = require('../services/heartbeat');
 const commandQueue = require('../lib/command-queue');
 const reconnectThrottle = require('../lib/reconnect-throttle');
+const contentAckLimiter = require('../lib/content-ack-limiter');
+const statusLogWriter = require('../lib/status-log-writer');
+const { protectSocket } = require('../lib/safe-socket');
+const flapLimiter = require('../lib/flap-limiter');
+const { resolveIdentity } = require('../lib/device-identity');
+const logCoalescer = require('../lib/log-coalescer');
+const loopLag = require('../services/loop-lag');
 
 // Debounce window for marking a device offline on socket disconnect. Brief
 // flap (Wi-Fi blip, Engine.IO ping miss, server-side eviction-then-reconnect)
@@ -20,6 +27,15 @@ const reconnectThrottle = require('../lib/reconnect-throttle');
 const pendingOfflines = new Map();
 const OFFLINE_DEBOUNCE_MS = 5000;
 
+// #146: socket ids we force-disconnected via evictPriorSocket because a NEWER socket
+// took over the device. evictPriorSocket runs at register time BEFORE the new socket
+// is put in the connection map (registerConnection is later in the same handler), so
+// the evicted socket's disconnect handler would see the still-old map entry, pass the
+// stale-disconnect guard, and ARM a fresh offline timer — re-marking the device that
+// just reconnected offline (the self-reset race). Tagging the id here lets that
+// disconnect handler bail out instead of arming a timer. Drained on consumption.
+const evictedSockets = new Set();
+
 // Proof-of-play write throttle. A player stuck in a tight loop (e.g. a playlist
 // with 0-second item durations) fires device:play-event 'play_start' several
 // times per second; unthrottled this once bloated play_logs to ~900k rows
@@ -29,11 +45,13 @@ const OFFLINE_DEBOUNCE_MS = 5000;
 const lastPlayLogAt = new Map();
 const PLAY_LOG_MIN_GAP_MS = 2000;
 
-// #142 content-ack dedup. An older app can spam "content <id>: ready" for the same
-// item; each was logged + emitted individually (secondary load). Suppress identical
-// (device_id, content_id, status) reports within config.contentAckDedupMs. A status
-// CHANGE has a different key and passes immediately. In-memory; resets on restart.
-const lastContentAck = new Map();
+// #142 dedup + #143 per-device rate budget + global loop-lag valve for content-acks
+// all live in one control: lib/content-ack-limiter.js (required above as
+// contentAckLimiter). Kept out of this file so there is a single limiter on the path.
+
+// #143 fingerprint-reclaim deferral log throttle: deviceId -> last-logged ms, so a
+// device retrying reclaim every ~2s logs at most once per reclaimRejectLogWindowMs.
+const lastReclaimRejectLogAt = new Map();
 const { getUserPlan, getUserDeviceCount } = require('../middleware/subscription');
 // Phase 2.3: deviceRoom() resolves a device_id to its workspace room so
 // dashboardNs.emit can be scoped instead of broadcast platform-wide.
@@ -70,12 +88,14 @@ function getClientIp(socket) {
   return socket.handshake.address;
 }
 
+// #146: route status transitions through the batched, coalescing writer instead of
+// an immediate INSERT-per-transition. A flapping device no longer writes a row per
+// flap (the table-bloat feedback loop); the per-device age prune now lives in the
+// writer and uses config.statusLogRetentionDays (was a hardcoded 7 days here — one
+// source of truth). devices.status is still updated immediately by callers; only
+// this audit log is deferred to the next flush.
 function logDeviceStatus(deviceId, status) {
-  try {
-    db.prepare('INSERT INTO device_status_log (device_id, status) VALUES (?, ?)').run(deviceId, status);
-    // Prune entries older than 7 days
-    db.prepare("DELETE FROM device_status_log WHERE device_id = ? AND timestamp < strftime('%s','now') - 604800").run(deviceId);
-  } catch (e) { /* table might not exist yet */ }
+  statusLogWriter.record(deviceId, status);
 }
 
 
@@ -250,7 +270,10 @@ module.exports = function setupDeviceSocket(io) {
     const oldSocket = deviceNs.sockets.get(prior.socketId);
     if (oldSocket) {
       console.log(`Evicting prior socket ${prior.socketId} for device ${deviceId}`);
-      try { oldSocket.disconnect(true); } catch (_) {}
+      // Mark BEFORE disconnect: disconnect(true) fires the old socket's 'disconnect'
+      // handler synchronously, so the flag must already be set when it runs.
+      evictedSockets.add(prior.socketId);
+      try { oldSocket.disconnect(true); } catch (_) { evictedSockets.delete(prior.socketId); }
     }
   }
 
@@ -259,9 +282,62 @@ module.exports = function setupDeviceSocket(io) {
     let currentDeviceId = null;
     let authenticated = false; // Track whether this socket has been authenticated
 
+    // #146: wrap every handler on THIS socket so a throw disconnects only this device
+    // (logged with its id) instead of crashing the whole server. Backstop to the
+    // per-site try/catch in the handlers below.
+    protectSocket(socket, () => currentDeviceId);
+
     // Device registers with a pairing code (first time) or device_id + device_token (reconnect)
     socket.on('device:register', (data) => {
       const { pairing_code, device_id, device_token, device_info, fingerprint } = data;
+
+      // #146: resolve identity ONCE via the SNAT-safe chain (device_id -> fingerprint
+      // -> token -> global anon), used by BOTH the operator block and the flap limiter.
+      const ident = resolveIdentity({ device_id, fingerprint, device_token });
+
+      // #143 operator KILL SWITCH — the FIRST gate, before the fingerprint block, the
+      // throttle, any DB writes, or playlist build. #146: resolve the effective
+      // device_id via the identity chain (device_id directly, OR fingerprint->device_id)
+      // so a blocked device that reconnects WITHOUT a device_id is STILL caught — the
+      // old `if (device_id)` gate let a device_id-less reconnect slip past. Settable by
+      // DIRECT SQLite during an outage (dashboard down), takes effect on the device's
+      // NEXT register with NO restart (the row is re-read every register):
+      //   UPDATE devices SET blocked = 1 WHERE id = '<device_id>';   (0 to unblock)
+      // Unlike nulling the token (#143: that re-provisioned instead of locking out),
+      // `blocked` is an explicit, enforceable lever. Also settable via the dashboard
+      // (routes/devices.js POST /:id/block) — same DB write, same next-register effect.
+      if (ident.deviceId) {
+        const blk = db.prepare('SELECT blocked FROM devices WHERE id = ?').get(ident.deviceId);
+        if (blk && blk.blocked) {
+          console.warn(`[blocked] refused device ${ident.deviceId} (operator block, via ${ident.kind})`);
+          socket.emit('device:auth-error', { error: 'Device blocked' });
+          process.nextTick(() => { try { socket.disconnect(true); } catch (_) { /* */ } });
+          return;
+        }
+      }
+
+      // #146 Item B: SUSTAINED flap limiter — BEFORE fingerprint tracking, throttle,
+      // DB writes, or playlist build, so a refusal is cheap. Skips same-socket playlist
+      // refreshes (currentDeviceId===device_id — a periodic pull, not a new connection).
+      // Keyed via the same SNAT-safe identity, NEVER IP.
+      const isRefreshConnect = device_id && currentDeviceId === device_id;
+      if (!isRefreshConnect) {
+        const fv = flapLimiter.check(ident.key);
+        if (!fv.allow) {
+          // #146 P0: auto-quarantine is IN-MEMORY + TIME-LIMITED (lib/flap-limiter),
+          // never a DB block — a stuck-then-recovered device self-heals. The
+          // devices.blocked column is now written ONLY by an operator. Log the
+          // quarantine START once; coalesce the repeat refusals.
+          if (fv.quarantined) {
+            console.warn(`[flap] quarantined ${ident.deviceId || ident.key} for ${Math.round(config.connectRateQuarantineMs / 60000)}m after ${fv.trips} trips`);
+          } else {
+            logCoalescer.record(`flap-refused:${ident.key}`, `[flap] refused ${ident.kind} ${ident.deviceId || ident.key} reason=${fv.reason}`);
+          }
+          socket.emit('device:throttled', { retry_after_ms: fv.retryAfterMs, reason: 'connect_rate' });
+          process.nextTick(() => { try { socket.disconnect(true); } catch (_) { /* */ } });
+          return;
+        }
+      }
 
       // Track device fingerprint to prevent reinstall abuse
       if (fingerprint) {
@@ -276,20 +352,31 @@ module.exports = function setupDeviceSocket(io) {
               const oldDevice = db.prepare('SELECT * FROM devices WHERE id = ?').get(existing.device_id);
               if (oldDevice) {
                 // Fingerprint reclaim guard: a leaked/duplicated fingerprint shouldn't be enough
-                // to take over a live device. Reject the reclaim if the device is currently
-                // online OR has been online within the last 24h — by then a real reinstall has
-                // had plenty of time to come back, but a credential thief is more likely caught.
+                // to take over a LIVE device. #143: decide "still alive" from RUNTIME signals —
+                // a live socket, OR a genuinely recent heartbeat (within the settle window). The
+                // old check used `secondsSince < 24h`, which treated a device merely offline <24h
+                // as "active": a legitimately-gone device (liveConn=false, status=offline, stale
+                // heartbeat) could never reclaim and retried every ~2s, flooding logs (Bold beta1
+                // / 2febcaa9, 1984694c, 139159eb). NOT a missing clear — liveConn IS removed on
+                // disconnect + the offline-timeout sweep, and status IS set offline on both; the
+                // 24h TIME gate was the cause. A device gone by every runtime signal is reclaimable.
                 const liveConn = heartbeat.getConnection(existing.device_id);
-                const RECLAIM_GRACE_SECONDS = 24 * 60 * 60;
                 const lastBeat = oldDevice.last_heartbeat || 0;
                 const secondsSince = Math.floor(Date.now() / 1000) - lastBeat;
-                if (liveConn || (oldDevice.status === 'online') || secondsSince < RECLAIM_GRACE_SECONDS) {
-                  console.warn(`Fingerprint reclaim rejected for ${existing.device_id}: device active (status=${oldDevice.status}, ${secondsSince}s since last heartbeat, liveConn=${!!liveConn})`);
+                const stillAlive = !!liveConn || secondsSince < config.reclaimSettleSeconds;
+                if (stillAlive) {
+                  // Log at most once per device per window so a retrying/stuck device can't flood stdout.
+                  const nowMs = Date.now();
+                  if (nowMs - (lastReclaimRejectLogAt.get(existing.device_id) || 0) >= config.reclaimRejectLogWindowMs) {
+                    lastReclaimRejectLogAt.set(existing.device_id, nowMs);
+                    console.warn(`Fingerprint reclaim deferred for ${existing.device_id}: still settling (status=${oldDevice.status}, ${secondsSince}s since heartbeat, liveConn=${!!liveConn}); reclaimable after ${config.reclaimSettleSeconds}s offline`);
+                  }
                   socket.emit('device:auth-error', {
-                    error: 'This display is currently active. If you reinstalled the app, the original device must be offline for 24 hours before its slot can be reclaimed.'
+                    error: `This display was recently active. If you reinstalled the app, retry after it has been offline for ${config.reclaimSettleSeconds} seconds.`
                   });
                   return;
                 }
+                lastReclaimRejectLogAt.delete(existing.device_id); // reclaim proceeding — clear any deferral log state
 
                 // Fingerprint matched — this is a reinstalled app reconnecting to its old device.
                 // Issue a fresh token so the app can authenticate going forward.
@@ -353,9 +440,16 @@ module.exports = function setupDeviceSocket(io) {
           // reconnected" and reading as connection instability (#134 — there were 1415
           // "reconnected" logs against only ~30 real socket connects and 0 heartbeat timeouts).
           const isPlaylistRefresh = currentDeviceId === device_id;
-          // Validate device token (skip for legacy devices that don't have a token yet)
-          if (device.device_token && !validateDeviceToken(device_id, device_token)) {
-            console.warn(`Invalid device token for ${device_id} from ${getClientIp(socket)} — received_len=${(device_token || '').length}, stored_len=${device.device_token.length}, received_prefix=${(device_token || '').substring(0, 8)}, stored_prefix=${device.device_token.substring(0, 8)}`);
+          // #143 AUTH FIX: an already-provisioned device (it has a row — every row,
+          // even `provisioning`, is created WITH a token) presenting a null/empty/
+          // invalid token is NOT authenticated — reject and disconnect. The old guard
+          // `device.device_token && !validate(...)` short-circuited on a NULL stored
+          // token, so nulling a device's token RE-PROVISIONED it (auth skipped + a
+          // fresh token minted) instead of locking it out (Bold #143 / 75c2a08a).
+          // validateDeviceToken already returns false for null-stored/missing/mismatch.
+          // First pairing is the pairing_code path below (no device_id) — unaffected.
+          if (!validateDeviceToken(device_id, device_token)) {
+            console.warn(`Invalid/missing device token for ${device_id} from ${getClientIp(socket)} — received_len=${(device_token || '').length}, has_stored_token=${!!device.device_token}`);
             socket.emit('device:auth-error', { error: 'Invalid device token' });
             return;
           }
@@ -388,12 +482,10 @@ module.exports = function setupDeviceSocket(io) {
           db.prepare("UPDATE devices SET status = 'online', last_heartbeat = strftime('%s','now'), ip_address = ?, updated_at = strftime('%s','now') WHERE id = ?")
             .run(getClientIp(socket), device_id);
 
-          // Generate token for legacy devices that don't have one yet
-          let tokenToSend = device.device_token;
-          if (!tokenToSend) {
-            tokenToSend = generateDeviceToken();
-            db.prepare('UPDATE devices SET device_token = ? WHERE id = ?').run(tokenToSend, device_id);
-          }
+          // #143: past the validateDeviceToken gate above the stored token is
+          // guaranteed non-null, so we just echo it back. The old "mint a token for a
+          // null-token device" path is removed — that was the re-provisioning vector.
+          const tokenToSend = device.device_token;
 
           if (device_info) {
             db.prepare(`UPDATE devices SET android_version = ?, app_version = ?, screen_width = ?, screen_height = ?, render_width = ?, render_height = ?,
@@ -407,6 +499,16 @@ module.exports = function setupDeviceSocket(io) {
           heartbeat.registerConnection(device_id, socket.id);
           socket.join(device_id);
           socket.emit('device:registered', { device_id, device_token: tokenToSend, status: 'online' });
+          // #143: a device paired/claimed server-side (user_id set) that RECONNECTS must be told
+          // it's paired — the app leaves the Connect page ONLY on 'device:paired' (web: hides the
+          // setup screen; Android ProvisioningActivity.onPaired -> MainActivity). The
+          // /api/provision/pair endpoint pushes device:paired to a LIVE socket at pair time
+          // (server.js), but a screen paired while disconnected — or that reconnects after pairing
+          // — never received it and sat on the Connect page forever showing the URL (Bold #143).
+          // Re-send the exact event the client already listens for; no client change needed.
+          if (device.user_id) {
+            socket.emit('device:paired', { device_id, name: device.name || 'Display' });
+          }
           logDeviceStatus(device_id, 'online');
           // Flush any commands/playlist-updates queued while this device was offline.
           commandQueue.flushQueue(deviceNs, device_id, buildPlaylistPayload);
@@ -456,7 +558,7 @@ module.exports = function setupDeviceSocket(io) {
           emitToDeviceWorkspace(dashboardNs, device_id, 'dashboard:device-status', { device_id, status: 'online' });
           // Only log a genuine reconnect (new socket). Same-socket periodic refreshes stay
           // quiet so the log reflects real connection events, not the 45s refresh cadence.
-          if (!isPlaylistRefresh) console.log(`Device reconnected: ${device_id}`);
+          if (!isPlaylistRefresh) logCoalescer.record('device-reconnected', `Device reconnected: ${device_id}`);
           return;
         }
 
@@ -470,21 +572,36 @@ module.exports = function setupDeviceSocket(io) {
         // New device registering with pairing code — generate a device_token
         const id = uuidv4();
         const newToken = generateDeviceToken();
+
+        // #146 scale-hardening: a DB error on this INSERT must reject THIS device's
+        // registration, never throw out of the handler. The likely error is a UNIQUE
+        // pairing_code collision when many devices provision at once (client-supplied
+        // 6-digit codes collide by birthday paradox), but ANY error counts. An
+        // unhandled throw in a socket handler escalates to uncaughtException ->
+        // logFatalAndExit -> the WHOLE server exits and every device drops — one
+        // colliding code crash-looped the fleet in the load test. Catch it, log, and
+        // tell just this device to retry. currentDeviceId/authenticated are set only
+        // AFTER the row exists, so a failed insert leaves no half-authenticated socket.
+        try {
+          db.prepare(`
+            INSERT INTO devices (id, pairing_code, device_token, status, ip_address, android_version, app_version, screen_width, screen_height, render_width, render_height, last_heartbeat)
+            VALUES (?, ?, ?, 'provisioning', ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
+          `).run(
+            id, pairing_code, newToken, getClientIp(socket),
+            device_info?.android_version || null,
+            device_info?.app_version || null,
+            device_info?.screen_width || null,
+            device_info?.screen_height || null,
+            device_info?.render_width || null,
+            device_info?.render_height || null
+          );
+        } catch (e) {
+          console.warn(`Provisioning rejected for pairing_code ${pairing_code} from ${getClientIp(socket)}: ${e.message}`);
+          socket.emit('device:auth-error', { error: 'Registration failed, please retry.' });
+          return;
+        }
         currentDeviceId = id;
         authenticated = true;
-
-        db.prepare(`
-          INSERT INTO devices (id, pairing_code, device_token, status, ip_address, android_version, app_version, screen_width, screen_height, render_width, render_height, last_heartbeat)
-          VALUES (?, ?, ?, 'provisioning', ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
-        `).run(
-          id, pairing_code, newToken, getClientIp(socket),
-          device_info?.android_version || null,
-          device_info?.app_version || null,
-          device_info?.screen_width || null,
-          device_info?.screen_height || null,
-          device_info?.render_width || null,
-          device_info?.render_height || null
-        );
 
         heartbeat.registerConnection(id, socket.id);
         socket.join(id);
@@ -585,13 +702,18 @@ module.exports = function setupDeviceSocket(io) {
       if (!requireDeviceAuth()) return;
       const { device_id, content_id, status } = data;
       if (device_id !== currentDeviceId) return;
-      // #142: drop repeats of the same (device, content, status) within the dedup
-      // window. Only a change (new content/status) or a report after the window
-      // logs+emits, so a device spamming the same "ready" can't add load.
-      const ackKey = `${device_id}|${content_id}|${status}`;
-      const nowAck = Date.now();
-      if (nowAck - (lastContentAck.get(ackKey) || 0) < config.contentAckDedupMs) return;
-      lastContentAck.set(ackKey, nowAck);
+      // #142 dedup + #143 per-device rate budget + global critical-lag valve, in one
+      // control. Anything but 'pass' is dropped BEFORE the log+emit (that per-ack work
+      // is the cost we shed). Drops are SILENT except a single line per device per
+      // window when rate-shedding STARTS (re-logging per drop would recreate the
+      // flood). The valve's open/close is logged once at the band edge in loop-lag.
+      const verdict = contentAckLimiter.check(device_id, content_id, status, loopLag.getBand());
+      if (verdict.action !== 'pass') {
+        if (verdict.action === 'shed-rate' && verdict.logStart) {
+          console.warn(`[content-ack] shedding device ${device_id}: ${verdict.observed}/${verdict.budget} per ${config.contentAckRateWindowMs}ms — flood control engaged`);
+        }
+        return;
+      }
       console.log(`Device ${device_id} content ${content_id}: ${status}`);
       emitToDeviceWorkspace(dashboardNs, device_id, 'dashboard:content-ack', { device_id, content_id, status });
     });
@@ -719,6 +841,14 @@ module.exports = function setupDeviceSocket(io) {
     });
 
     socket.on('disconnect', () => {
+      // #146: this socket was force-evicted by a newer registration for the same
+      // device. The new socket owns the device now (or is mid-register), so this
+      // disconnect must NOT arm an offline timer — doing so was the self-reset race
+      // that re-marked just-reconnected devices offline. The map-based stale guard
+      // below can't catch it because eviction runs before the new socket is in the
+      // map. Drain the flag and bail. (delete() returns true iff it was present.)
+      if (evictedSockets.delete(socket.id)) return;
+
       if (!currentDeviceId) return;
 
       // Stale-disconnect guard: a newer socket already took over this device_id
@@ -799,4 +929,17 @@ module.exports = function setupDeviceSocket(io) {
   });
 
   return deviceNs;
+};
+
+// #146 test hooks — read-only views of the internal offline-timer / eviction state,
+// so the cause-1 re-arm race (evicted socket arming an offline timer for a
+// just-reconnected device) is test-PROVEN, not just correct-by-construction. Prefixed
+// `__` and never used by production code.
+module.exports.__hasPendingOffline = (deviceId) => pendingOfflines.has(deviceId);
+module.exports.__pendingOfflineCount = () => pendingOfflines.size;
+module.exports.__evictedSize = () => evictedSockets.size;
+module.exports.__resetTimers = () => {
+  for (const t of pendingOfflines.values()) clearTimeout(t);
+  pendingOfflines.clear();
+  evictedSockets.clear();
 };
